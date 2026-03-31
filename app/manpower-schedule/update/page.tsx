@@ -226,7 +226,7 @@ export default function UpdateSchedulePage() {
     const dataToCalculate = isOriginalData ? (selectedRecord.originalSelections || selectedRecord.selections) : selections;
     if (!dataToCalculate) return [];
 
-    const managerNames = new Set(branchManagerData[selectedRecord.branch] || []);
+    const managerNames = new Set(Object.values(branchManagerData).flat());
     const allBranchStaff = (branchStaffData[selectedRecord.branch] || []).filter(n => !managerNames.has(n));
     const uniqueEmployeesToTrack: string[] = Array.from(new Set([
       ...allBranchStaff,

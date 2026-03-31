@@ -214,7 +214,7 @@ function PlanNewWeekPage() {
   };
 
   const calculateStaffHours = () => {
-    const managerNames = new Set(branchManagerData[selectedBranch] || []);
+    const managerNames = new Set(Object.values(branchManagerData).flat());
     const selectedInSlots = Object.values(selections).filter(val => val !== "" && val !== "None" && !managerNames.has(val));
     const nonManagerStaff = activeStaffList.filter(name => !managerNames.has(name));
     const uniqueEmployeesToTrack = Array.from(new Set([...nonManagerStaff, ...selectedInSlots]));
