@@ -506,11 +506,13 @@ function PlanNewWeekPage() {
                                     const colStaffList = replacementBranch
                                       ? (branchStaffData[replacementBranch] || [])
                                       : activeStaffList;
-                                    const namesUsedInOtherColumns = new Set(
-                                      COLUMNS.filter(c => c.id !== col.id)
+                                    const managerName = notes[`${day}-MANAGER`] || "";
+                                    const namesUsedInOtherColumns = new Set([
+                                      ...COLUMNS.filter(c => c.id !== col.id)
                                         .flatMap(c => daySlots.map(s => selections[`${day}-${s}-${c.id}`]))
-                                        .filter(Boolean)
-                                    );
+                                        .filter(Boolean),
+                                      ...(managerName ? [managerName] : []),
+                                    ]);
 
                                     return (
                                       <td key={col.id} className={`p-1.5 border-l ${col.type === 'exec' ? 'bg-slate-50' : ''}`}>
