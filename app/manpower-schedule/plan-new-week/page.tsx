@@ -130,6 +130,27 @@ function PlanNewWeekPage() {
     }
   }, [startDateStr, endDateStr, searchParams]);
 
+  // Restore draft from localStorage when branch + week are confirmed
+  useEffect(() => {
+    if (!selectedBranch || !startDateStr || isLocked) return;
+    const draftKey = `draft_${selectedBranch}_${startDateStr}`;
+    const draft = localStorage.getItem(draftKey);
+    if (draft) {
+      try {
+        const { selections: s, notes: n } = JSON.parse(draft);
+        if (s) setSelections(s);
+        if (n) setNotes(n);
+      } catch {}
+    }
+  }, [selectedBranch, startDateStr, isLocked]);
+
+  // Auto-save draft to localStorage whenever selections or notes change
+  useEffect(() => {
+    if (!selectedBranch || !startDateStr || isLocked) return;
+    const draftKey = `draft_${selectedBranch}_${startDateStr}`;
+    localStorage.setItem(draftKey, JSON.stringify({ selections, notes }));
+  }, [selections, notes, selectedBranch, startDateStr, isLocked]);
+
   useEffect(() => {
     const fetchStaff = async () => {
       const res = await fetch('/api/branch-staff');
@@ -304,6 +325,8 @@ function PlanNewWeekPage() {
 
       if (!response.ok) throw new Error("Failed to save");
 
+      // Clear the draft now that it's been finalized
+      localStorage.removeItem(`draft_${selectedBranch}_${startDateStr}`);
       alert("Schedule Finalized and Saved to Database! 🚀");
       router.push("/manpower-schedule");
       
