@@ -15,8 +15,7 @@ export default function RegistrationForm({
   isLoading = false,
 }: RegistrationFormProps) {
   const [formData, setFormData] = useState({
-    firstName: "",
-    lastName: "",
+    fullName: "",
     gender: "MALE",
     nickName: "",
     email: "",
@@ -24,11 +23,24 @@ export default function RegistrationForm({
     nric: "",
     dob: "",
     homeAddress: "",
+    Emc_Number: "",
+    Emc_Email: "",
+    Emc_Relationship: "",
+    Signed_Date: "",
+    Emp_Hire_Date: "",
+    Emp_Type: "",
+    Emp_Status: "",
+    Bank: "",
+    Bank_Name: "",
+    Bank_Account: "",
+    University: "",
     branch: "HQ",
-    role: "EMPLOYEE",
-    contract: "PERMANENT",
+    role: "HUMAN_RESOURCES",
+    contract: "12 MONTH",
     startDate: "",
+    endDate: "",
     probation: "",
+    rate: "",
   });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -38,8 +50,7 @@ export default function RegistrationForm({
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
 
-    if (!formData.firstName.trim()) newErrors.firstName = "First name is required";
-    if (!formData.lastName.trim()) newErrors.lastName = "Last name is required";
+    if (!formData.fullName.trim()) newErrors.fullName = "Full name is required";
     if (!formData.email.trim()) newErrors.email = "Email is required";
     if (!isValidEmail(formData.email)) newErrors.email = "Invalid email format";
     if (!formData.phone.trim()) newErrors.phone = "Phone is required";
@@ -100,8 +111,7 @@ export default function RegistrationForm({
 
       // Reset form
       setFormData({
-        firstName: "",
-        lastName: "",
+        fullName: "",
         gender: "MALE",
         nickName: "",
         email: "",
@@ -109,11 +119,24 @@ export default function RegistrationForm({
         nric: "",
         dob: "",
         homeAddress: "",
+        Emc_Number: "",
+        Emc_Email: "",
+        Emc_Relationship: "",
+        Signed_Date: "",
+        Emp_Hire_Date: "",
+        Emp_Type: "",
+        Emp_Status: "",
+        Bank: "",
+        Bank_Name: "",
+        Bank_Account: "",
+        University: "",
         branch: "HQ",
-        role: "EMPLOYEE",
-        contract: "PERMANENT",
+        role: "HUMAN_RESOURCES",
+        contract: "12 MONTH",
         startDate: "",
+        endDate: "",
         probation: "",
+        rate: "",
       });
 
       // Show success message with employee ID
@@ -141,45 +164,24 @@ export default function RegistrationForm({
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* First Name */}
-          <div>
+          {/* Full Name */}
+          <div className="md:col-span-2">
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              First Name
+              Full Name
             </label>
             <input
               type="text"
-              name="firstName"
-              value={formData.firstName}
+              name="fullName"
+              value={formData.fullName}
               onChange={handleChange}
               className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                errors.firstName ? "border-red-500" : "border-gray-300"
+                errors.fullName ? "border-red-500" : "border-gray-300"
               }`}
-              placeholder="Enter first name"
+              placeholder="Enter full name"
               disabled={submitting || isLoading}
             />
-            {errors.firstName && (
-              <p className="text-red-500 text-sm mt-1">{errors.firstName}</p>
-            )}
-          </div>
-
-          {/* Last Name */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Last Name
-            </label>
-            <input
-              type="text"
-              name="lastName"
-              value={formData.lastName}
-              onChange={handleChange}
-              className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                errors.lastName ? "border-red-500" : "border-gray-300"
-              }`}
-              placeholder="Enter last name"
-              disabled={submitting || isLoading}
-            />
-            {errors.lastName && (
-              <p className="text-red-500 text-sm mt-1">{errors.lastName}</p>
+            {errors.fullName && (
+              <p className="text-red-500 text-sm mt-1">{errors.fullName}</p>
             )}
           </div>
 
@@ -351,6 +353,22 @@ export default function RegistrationForm({
             />
           </div>
 
+          {/* Rate */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Rate
+            </label>
+            <input
+              type="number"
+              name="rate"
+              value={formData.rate}
+              onChange={handleChange}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="Enter rate"
+              disabled={submitting || isLoading}
+            />
+          </div>
+
           {/* NRIC */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -396,6 +414,196 @@ export default function RegistrationForm({
               placeholder="Enter home address"
               disabled={submitting || isLoading}
             />
+          </div>
+
+          {/* End Date */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              End Date
+            </label>
+            <input
+              type="date"
+              name="endDate"
+              value={formData.endDate}
+              onChange={handleChange}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              disabled={submitting || isLoading}
+            />
+          </div>
+
+          {/* University */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              University
+            </label>
+            <input
+              type="text"
+              name="University"
+              value={formData.University}
+              onChange={handleChange}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="Enter university"
+              disabled={submitting || isLoading}
+            />
+          </div>
+        </div>
+
+        {/* Employment Details */}
+        <div className="border-t pt-4">
+          <h3 className="text-lg font-semibold text-gray-700 mb-4">Employment Details</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Hire Date
+              </label>
+              <input
+                type="date"
+                name="Emp_Hire_Date"
+                value={formData.Emp_Hire_Date}
+                onChange={handleChange}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                disabled={submitting || isLoading}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Signed Date
+              </label>
+              <input
+                type="date"
+                name="Signed_Date"
+                value={formData.Signed_Date}
+                onChange={handleChange}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                disabled={submitting || isLoading}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Employee Type
+              </label>
+              <input
+                type="text"
+                name="Emp_Type"
+                value={formData.Emp_Type}
+                onChange={handleChange}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                placeholder="e.g. Full-Time"
+                disabled={submitting || isLoading}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Employee Status
+              </label>
+              <input
+                type="text"
+                name="Emp_Status"
+                value={formData.Emp_Status}
+                onChange={handleChange}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                placeholder="e.g. Active"
+                disabled={submitting || isLoading}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Emergency Contact */}
+        <div className="border-t pt-4">
+          <h3 className="text-lg font-semibold text-gray-700 mb-4">Emergency Contact</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Emergency Contact Number
+              </label>
+              <input
+                type="tel"
+                name="Emc_Number"
+                value={formData.Emc_Number}
+                onChange={handleChange}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                placeholder="Enter emergency contact number"
+                disabled={submitting || isLoading}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Emergency Contact Email
+              </label>
+              <input
+                type="email"
+                name="Emc_Email"
+                value={formData.Emc_Email}
+                onChange={handleChange}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                placeholder="Enter emergency contact email"
+                disabled={submitting || isLoading}
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Relationship
+              </label>
+              <input
+                type="text"
+                name="Emc_Relationship"
+                value={formData.Emc_Relationship}
+                onChange={handleChange}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                placeholder="e.g. Spouse, Parent"
+                disabled={submitting || isLoading}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Bank Details */}
+        <div className="border-t pt-4">
+          <h3 className="text-lg font-semibold text-gray-700 mb-4">Bank Details</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Bank
+              </label>
+              <input
+                type="text"
+                name="Bank"
+                value={formData.Bank}
+                onChange={handleChange}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                placeholder="e.g. Maybank"
+                disabled={submitting || isLoading}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Bank Account Name
+              </label>
+              <input
+                type="text"
+                name="Bank_Name"
+                value={formData.Bank_Name}
+                onChange={handleChange}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                placeholder="Enter account name"
+                disabled={submitting || isLoading}
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Bank Account Number
+              </label>
+              <input
+                type="text"
+                name="Bank_Account"
+                value={formData.Bank_Account}
+                onChange={handleChange}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                placeholder="Enter account number"
+                disabled={submitting || isLoading}
+              />
+            </div>
           </div>
         </div>
 

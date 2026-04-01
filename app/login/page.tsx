@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Eye, EyeOff, Lock, User } from "lucide-react";
 import { signIn } from "next-auth/react";
 
@@ -124,9 +125,9 @@ export default function LoginPage() {
                 />
                 <span className="text-blue-200">Remember me</span>
               </label>
-              <a href="#" className="text-blue-300 hover:text-white transition-colors">
+              <Link href="/forgot-password" className="text-blue-300 hover:text-white transition-colors">
                 Forgot password?
-              </a>
+              </Link>
             </div>
 
             {/* INLINE ERROR MESSAGE */}

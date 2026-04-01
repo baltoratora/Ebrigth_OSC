@@ -5,18 +5,17 @@ import path from 'path';
 const dataFilePath = path.join(process.cwd(), 'data', 'employees.json');
 
 // Helper to read employees from file
-function readEmployees() {
+function readEmployees(): Record<string, unknown>[] {
   try {
     const data = fs.readFileSync(dataFilePath, 'utf-8');
     return JSON.parse(data);
-  } catch (error) {
-    // If file doesn't exist, return empty array
+  } catch {
     return [];
   }
 }
 
 // Helper to write employees to file
-function writeEmployees(employees: any[]) {
+function writeEmployees(employees: Record<string, unknown>[]) {
   fs.writeFileSync(dataFilePath, JSON.stringify(employees, null, 2));
 }
 
@@ -33,8 +32,29 @@ function generateId(employees: any[]): string {
   return (employees.length + 1).toString();
 }
 
-export async function GET() {
-  const employees = readEmployees();
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const search = searchParams.get("search")?.toLowerCase() || "";
+  const branch = searchParams.get("branch") || "";
+  const role = searchParams.get("role") || "";
+  const accessStatus = searchParams.get("accessStatus") || "";
+
+  let employees = readEmployees() as Record<string, string>[];
+
+  if (search) {
+    employees = employees.filter((e) => {
+      const fullName = (e.fullName || `${e.firstName ?? ""} ${e.lastName ?? ""}`).toLowerCase();
+      return (
+        fullName.includes(search) ||
+        (e.email ?? "").toLowerCase().includes(search) ||
+        (e.employeeId ?? "").toLowerCase().includes(search)
+      );
+    });
+  }
+  if (branch) employees = employees.filter((e) => e.branch === branch);
+  if (role) employees = employees.filter((e) => e.role === role);
+  if (accessStatus) employees = employees.filter((e) => e.accessStatus === accessStatus);
+
   return NextResponse.json(employees);
 }
 
@@ -51,7 +71,7 @@ export async function DELETE(request: Request) {
     }
 
     let employees = readEmployees();
-    const employeeIndex = employees.findIndex((e) => e.id === id);
+    const employeeIndex = employees.findIndex((e: Record<string, unknown>) => e.id === id);
 
     if (employeeIndex === -1) {
       return NextResponse.json(
@@ -92,7 +112,7 @@ export async function PUT(request: Request) {
     }
 
     let employees = readEmployees();
-    const employeeIndex = employees.findIndex((e) => e.id === id);
+    const employeeIndex = employees.findIndex((e: Record<string, unknown>) => e.id === id);
 
     if (employeeIndex === -1) {
       return NextResponse.json(
@@ -129,9 +149,9 @@ export async function POST(request: Request) {
     const body = await request.json();
 
     // Validate required fields
-    const { firstName, lastName, email, phone, branch, role, gender, nickName, nric, dob, homeAddress, contract, startDate, probation } = body;
+    const { fullName, email, phone, branch, role, gender, nickName, nric, dob, homeAddress, contract, startDate, probation, rate } = body;
 
-    if (!firstName || !lastName || !email || !phone || !branch || !role) {
+    if (!fullName || !email || !phone || !branch || !role) {
       return NextResponse.json(
         { error: "Missing required fields" },
         { status: 400 }
@@ -141,7 +161,7 @@ export async function POST(request: Request) {
     let employees = readEmployees();
 
     // Check if email already exists
-    if (employees.some((e) => e.email === email)) {
+    if (employees.some((e: Record<string, unknown>) => e.email === email)) {
       return NextResponse.json(
         { error: "Email already exists" },
         { status: 409 }
@@ -152,8 +172,7 @@ export async function POST(request: Request) {
     const newEmployee = {
       id: generateId(employees),
       employeeId: generateEmployeeId(employees, branch),
-      firstName,
-      lastName,
+      fullName,
       gender: gender || "MALE",
       nickName: nickName || "",
       phone,
@@ -162,9 +181,10 @@ export async function POST(request: Request) {
       homeAddress: homeAddress || "",
       branch,
       role,
-      contract: contract || "PERMANENT",
+      contract: contract || "12 MONTH",
       startDate: startDate || "",
       probation: probation || "",
+      rate: rate || "",
       biometricTemplate: null,
       accessStatus: "AUTHORIZED",
       email,

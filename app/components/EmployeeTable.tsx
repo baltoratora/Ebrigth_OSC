@@ -1,13 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { getRoleLabel, getBranchLabel } from "@/lib/constants";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { getRoleLabel, getBranchLabel, BRANCH_OPTIONS, ROLE_OPTIONS } from "@/lib/constants";
 
 interface Employee {
   id: string;
   employeeId: string;
-  firstName: string;
-  lastName: string;
+  fullName?: string;
+  firstName?: string;
+  lastName?: string;
   gender: string;
   nickName: string;
   email: string;
@@ -27,12 +28,10 @@ interface Employee {
 
 interface EmployeeTableProps {
   refreshTrigger?: number;
-  onBiometricEnroll?: (employeeId: string) => void;
 }
 
 export default function EmployeeTable({
   refreshTrigger,
-  onBiometricEnroll,
 }: EmployeeTableProps) {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
@@ -40,6 +39,18 @@ export default function EmployeeTable({
   const [branchFilter, setBranchFilter] = useState("all");
   const [roleFilter, setRoleFilter] = useState("all");
   const [accessFilter, setAccessFilter] = useState("all");
+  const [openDropdown, setOpenDropdown] = useState<string | null>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setOpenDropdown(null);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   const fetchEmployees = useCallback(async () => {
     try {
@@ -68,53 +79,38 @@ export default function EmployeeTable({
     fetchEmployees();
   }, [fetchEmployees, refreshTrigger]);
 
-  const handleAccessToggle = async (employeeId: string, currentStatus: string) => {
-    try {
-      const newStatus = currentStatus === "AUTHORIZED" ? "UNAUTHORIZED" : "AUTHORIZED";
+  const ACCESS_OPTIONS = [
+    { value: "FULL_TIME", label: "Full Time" },
+    { value: "PART_TIME", label: "Part Time" },
+    { value: "INTERN", label: "Intern" },
+    { value: "HR", label: "HR" },
+    { value: "HQ", label: "HQ" },
+    { value: "OD", label: "OD" },
+    { value: "ACD", label: "ACD" },
+    { value: "MKT", label: "MKT" },
+    { value: "RM", label: "RM" },
+    { value: "FINANCE", label: "Finance" },
+    { value: "CEO", label: "CEO" },
+    { value: "IOP", label: "IOP" },
+  ];
 
+  const handleAccessChange = async (employeeId: string, selected: string[]) => {
+    const newStatus = selected.join(",");
+    try {
       const response = await fetch("/api/employees", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: employeeId, accessStatus: newStatus }),
       });
-
-      if (!response.ok) throw new Error("Failed to update access status");
-
-      // Update local state
+      if (!response.ok) throw new Error("Failed to update access");
       setEmployees((prev) =>
-        prev.map((emp) =>
-          emp.id === employeeId ? { ...emp, accessStatus: newStatus } : emp
-        )
+        prev.map((emp) => emp.id === employeeId ? { ...emp, accessStatus: newStatus } : emp)
       );
-
-      alert(`Access ${newStatus.toLowerCase()} successfully`);
     } catch (error) {
       alert(`Error: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   };
 
-  const handleDelete = async (employeeId: string) => {
-    if (!confirm("Are you sure you want to delete this employee? This action cannot be undone.")) {
-      return;
-    }
-
-    try {
-      const response = await fetch(`/api/employees?id=${employeeId}`, {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to delete employee");
-      }
-
-      // Remove employee from local state
-      setEmployees((prev) => prev.filter((emp) => emp.id !== employeeId));
-      alert("Employee deleted successfully");
-    } catch (error) {
-      alert(`Error: ${error instanceof Error ? error.message : "Unknown error"}`);
-    }
-  };
 
   return (
     <div className="bg-white rounded-lg shadow p-6">
@@ -136,10 +132,7 @@ export default function EmployeeTable({
           className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
         >
           <option value="all">All Branches</option>
-          <option value="HQ">Headquarters</option>
-          <option value="BR">Branch 1</option>
-          <option value="BR2">Branch 2</option>
-          <option value="BR3">Branch 3</option>
+          {BRANCH_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
 
         <select
@@ -148,16 +141,7 @@ export default function EmployeeTable({
           className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
         >
           <option value="all">All Roles</option>
-          <option value="EMPLOYEE">Employee</option>
-          <option value="HUMAN_RESOURCES">Human Resources</option>
-          <option value="FINANCE">Finance</option>
-          <option value="REGIONAL_MANAGER">Regional Manager</option>
-          <option value="OPTIMISATION_DEPARTMENT">Optimisation Department</option>
-          <option value="MARKETING">Marketing</option>
-          <option value="HQ_OPERATION">HQ Operation</option>
-          <option value="CEO">CEO</option>
-          <option value="ACADEMY">Academy</option>
-          <option value="INDUSTRIAL_PSYCHOLOGY">Industrial Psychology</option>
+          {ROLE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
 
         <select
@@ -195,7 +179,7 @@ export default function EmployeeTable({
                 <th className="px-2 py-3 text-left font-semibold text-gray-700 text-xs">Start Date</th>
                 <th className="px-2 py-3 text-left font-semibold text-gray-700 text-xs">Probation</th>
                 <th className="px-2 py-3 text-center font-semibold text-gray-700 text-xs">Biometrics</th>
-                <th className="px-2 py-3 text-center font-semibold text-gray-700 text-xs">Actions</th>
+                <th className="px-2 py-3 text-center font-semibold text-gray-700 text-xs">Access</th>
               </tr>
             </thead>
             <tbody>
@@ -205,7 +189,7 @@ export default function EmployeeTable({
                     {employee.employeeId}
                   </td>
                   <td className="px-2 py-3 text-gray-900 text-xs">
-                    {employee.firstName} {employee.lastName}
+                    {employee.fullName || `${employee.firstName ?? ""} ${employee.lastName ?? ""}`.trim() || "-"}
                   </td>
                   <td className="px-2 py-3 text-gray-600 text-xs">
                     {employee.gender === "MALE" ? "Male" : employee.gender === "FEMALE" ? "Female" : "-"}
@@ -219,7 +203,7 @@ export default function EmployeeTable({
                   </td>
                   <td className="px-2 py-3 text-gray-600 text-xs">{getRoleLabel(employee.role)}</td>
                   <td className="px-2 py-3 text-gray-600 text-xs">
-                    {employee.contract === "PERMANENT" ? "Permanent" : employee.contract === "CONTRACT" ? "Contract" : employee.contract === "PART_TIME" ? "Part Time" : employee.contract === "INTERN" ? "Intern" : "-"}
+                    {employee.contract || "-"}
                   </td>
                   <td className="px-2 py-3 text-gray-600 text-xs">{getBranchLabel(employee.branch)}</td>
                   <td className="px-2 py-3 text-gray-600 text-xs">{employee.startDate || "-"}</td>
@@ -231,32 +215,41 @@ export default function EmployeeTable({
                       <span className="text-red-600 font-semibold text-xs">✗</span>
                     )}
                   </td>
-                  <td className="px-2 py-3 text-center space-x-1">
-                    <button
-                      onClick={() => onBiometricEnroll?.(employee.id)}
-                      className="bg-blue-500 hover:bg-blue-600 text-white px-2 py-1 rounded text-xs font-medium"
-                      disabled={!!employee.biometricTemplate}
-                    >
-                      Bio
-                    </button>
-                    <button
-                      onClick={() =>
-                        handleAccessToggle(employee.id, employee.accessStatus)
-                      }
-                      className={`px-2 py-1 rounded text-xs font-medium text-white ${
-                        employee.accessStatus === "AUTHORIZED"
-                          ? "bg-orange-500 hover:bg-orange-600"
-                          : "bg-green-500 hover:bg-green-600"
-                      }`}
-                    >
-                      {employee.accessStatus === "AUTHORIZED" ? "Revoke" : "Grant"}
-                    </button>
-                    <button
-                      onClick={() => handleDelete(employee.id)}
-                      className="bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded text-xs font-medium"
-                    >
-                      Delete
-                    </button>
+                  <td className="px-2 py-3 text-center relative">
+                    <div ref={openDropdown === employee.id ? dropdownRef : null}>
+                      <button
+                        onClick={() => setOpenDropdown(openDropdown === employee.id ? null : employee.id)}
+                        className="px-2 py-1 border border-gray-300 rounded text-xs bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 w-full text-left"
+                      >
+                        {employee.accessStatus
+                          ? employee.accessStatus.split(",").join(", ")
+                          : "— None —"}
+                        <span className="float-right">▾</span>
+                      </button>
+                      {openDropdown === employee.id && (
+                        <div className="absolute z-50 left-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-2 min-w-[140px] text-left">
+                          {ACCESS_OPTIONS.map((o) => {
+                            const current = employee.accessStatus ? employee.accessStatus.split(",") : [];
+                            const checked = current.includes(o.value);
+                            return (
+                              <label key={o.value} className="flex items-center gap-2 px-2 py-1 hover:bg-gray-50 rounded cursor-pointer text-xs">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => {
+                                    const next = checked
+                                      ? current.filter((v) => v !== o.value)
+                                      : [...current, o.value];
+                                    handleAccessChange(employee.id, next);
+                                  }}
+                                />
+                                {o.label}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}

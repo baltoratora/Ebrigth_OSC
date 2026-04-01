@@ -12,10 +12,9 @@ export const ROLE_OPTIONS: Array<{ value: string; label: string }> = [
 ];
 
 export const CONTRACT_OPTIONS = [
-  { value: "PERMANENT", label: "Permanent" },
-  { value: "CONTRACT", label: "Contract" },
-  { value: "PART_TIME", label: "Part Time" },
-  { value: "INTERN", label: "Intern" },
+  { value: "12 MONTH", label: "12 Month" },
+  { value: "15 MONTH", label: "15 Month" },
+  { value: "18 MONTH", label: "18 Month" },
 ];
 
 export const BRANCH_OPTIONS = [
