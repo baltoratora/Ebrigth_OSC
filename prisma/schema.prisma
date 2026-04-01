@@ -33,11 +33,47 @@ model ManpowerSchedule {
 }
 
 model BranchStaff {
-  id        Int      @id @default(autoincrement())
-  name      String
-  branch    String   // e.g., 'Bandar Seri Putra' or 'Shah Alam'
-  role      String?  // e.g., 'part_time_coach', 'branch_manager', etc.
-  createdAt DateTime @default(now())
+  id                 Int       @id @default(autoincrement())
+  name               String?
+  branch             String?
+  role               String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime? @updatedAt
 
-  @@unique([name, branch]) // Prevents adding the same person twice to the same branch
+  // Imported from CSV
+  nickname           String?
+  nric               String?
+  dob                String?
+  age                String?
+  gender             String?
+  nationality        String?
+  home_address       String?
+  phone              String?
+  email              String?
+  residential        String?
+  emergency_name     String?
+  emergency_phone    String?
+  emergency_relation String?
+  signed_date        String?
+  start_date         String?
+  employment_type    String?
+  status             String?
+  bank               String?
+  bank_name          String?
+  bank_account       String?
+  university         String?
+  department         String?
+  position           String?
+  location           String?
+
+  // App-specific
+  employeeId         String?
+  accessStatus       String?   @default("AUTHORIZED")
+  biometricTemplate  String?
+  probation          String?
+  endDate            String?
+  rate               String?
+  contract           String?
+
+  @@map("BranchStaff")
 }
