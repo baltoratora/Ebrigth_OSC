@@ -111,5 +111,46 @@ export function isAdminSlot(slot: string, branchName: string) {
   return ["5:00 PM", "10:00 PM", "08:45 AM – 09:15 AM", "11:45 AM – 12:00 PM", "2:30 PM – 2:45 PM", "5:15 PM – 5:30 PM", "6:45 PM – 7:15 PM"].includes(slot);
 }
 
+// --- MANAGER ON DUTY SLOT LOGIC ---
+// Defines which slots the Manager on Duty dropdown should appear for, per branch.
+// Manager only works up to 08:30PM on weekdays, and up to a certain slot on weekends.
+const MANAGER_ON_DUTY_SLOTS: Record<string, { weekday: string[], weekend: string[] }> = {
+  // Ampang / Bandar Seri Putra / Klang layout: 3 active weekday slots, manager covers first 2
+  "Ampang": {
+    weekday: ["06.00PM - 07.15PM", "07:15PM - 08:30PM"],
+    weekend: ["09:15 AM – 10:30 AM", "10:30 AM – 11:45 AM", "12:00 PM – 1:15 PM", "1:15 PM – 2:30 PM", "2:45 PM – 4:00 PM", "4:00 PM – 5:15 PM", "5:30 PM – 6:45 PM"],
+  },
+  "Bandar Seri Putra": {
+    weekday: ["06.00PM - 07.15PM", "07:15PM - 08:30PM"],
+    weekend: ["09:15 AM – 10:30 AM", "10:30 AM – 11:45 AM", "12:00 PM – 1:15 PM", "1:15 PM – 2:30 PM", "2:45 PM – 4:00 PM", "4:00 PM – 5:15 PM", "5:30 PM – 6:45 PM"],
+  },
+  "Klang": {
+    weekday: ["06.00PM - 07.15PM", "07:15PM - 08:30PM"],
+    weekend: ["09:15 AM – 10:30 AM", "10:30 AM – 11:45 AM", "12:00 PM – 1:15 PM", "1:15 PM – 2:30 PM", "2:45 PM – 4:00 PM", "4:00 PM – 5:15 PM", "5:30 PM – 6:45 PM"],
+  },
+  // Subang Taipan: manager covers first 2 active slots (excluding admin slots)
+  "Subang Taipan": {
+    weekday: ["06.00PM - 07.15PM", "07:15PM - 08:30PM"],
+    weekend: ["09:15 AM – 10:30 AM", "10:30 AM – 11:45 AM", "12:00 PM – 1:15 PM", "1:15 PM – 2:30 PM", "2:45 PM – 4:00 PM", "4:00 PM – 5:15 PM", "5:30 PM – 6:45 PM"],
+  },
+  // Default (all other branches): weekday has 3 slots, manager covers first 2
+  "default": {
+    weekday: ["06.00PM - 07.15PM", "07:15PM - 08:30PM"],
+    weekend: ["09:15 AM – 10:30 AM", "10:30 AM – 11:45 AM", "12:00 PM – 1:15 PM", "1:15 PM – 2:30 PM", "2:45 PM – 4:00 PM", "4:00 PM – 5:15 PM", "5:30 PM – 6:45 PM"],
+  },
+};
+
+/**
+ * Returns true if the Manager on Duty should show a dropdown for this slot.
+ * Manager only works up to 08:30PM on weekdays (first 2 slots),
+ * and covers all active slots on weekends.
+ */
+export function isManagerOnDutySlot(slot: string, branchName: string, day: string): boolean {
+  const isWeekend = !WEEKDAY_DAYS.includes(day as any);
+  const config = MANAGER_ON_DUTY_SLOTS[branchName] || MANAGER_ON_DUTY_SLOTS["default"];
+  const allowedSlots = isWeekend ? config.weekend : config.weekday;
+  return allowedSlots.includes(slot);
+}
+
 export const SELECT_ARROW_WHITE = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='white' d='M6 8L1 3h10z'/%3E%3C/svg%3E";
 export const SELECT_ARROW_DARK = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%235f6368' d='M6 8L1 3h10z'/%3E%3C/svg%3E";

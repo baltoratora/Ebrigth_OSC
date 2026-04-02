@@ -13,6 +13,7 @@ import {
   COLUMNS, BRANCH_SLOTS_CONFIG,
   getTimeSlotsForDay, isAdminSlot, getEmployeeColor,
   getWorkingDaysForBranch, isOpeningClosingSlot,
+  isManagerOnDutySlot, // <-- NEW IMPORT
   SELECT_ARROW_WHITE, SELECT_ARROW_DARK
 } from "@/lib/manpowerUtils";
 
@@ -487,6 +488,7 @@ function PlanNewWeekPage() {
                                     ))}
                                   </select>
                                 )}
+                                {/* No CLEAR button for Manager — only 2 slots, easy to clear manually */}
                               </div>
                             </th>
                             {COLUMNS.map(col => (
@@ -517,28 +519,54 @@ function PlanNewWeekPage() {
                         <tbody>
                           {daySlots.map((slot, slotIndex) => {
                             const isOpenClose = isOpeningClosingSlot(slot, selectedBranch);
+                            // --- KEY CHANGE: check if manager dropdown applies to this slot ---
+                            const showManagerDropdown = isManagerOnDutySlot(slot, selectedBranch, day);
+                            const managerKey = `${day}-${slot}-MANAGER`;
+                            const managerVal = selections[managerKey] || "";
+
                             return (
                             <tr key={slot} className={`border-b transition-colors group ${isOpenClose ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
                               <td className={`p-3 font-bold border-r border-slate-200 text-xs sticky left-0 z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] transition-colors text-slate-900 ${isOpenClose ? 'bg-blue-100 group-hover:bg-blue-100' : 'bg-slate-50 group-hover:bg-slate-100'}`}>
                                   {slot}
                               </td>
-                              {slotIndex === 0 && (
-                                <td rowSpan={daySlots.length} className="p-2 border-l align-middle bg-emerald-50 w-[180px]">
-                                  <select
-                                    disabled={!isEditing}
-                                    value={notes[`${day}-MANAGER`] || ""}
-                                    onChange={(e) => setNotes(prev => ({ ...prev, [`${day}-MANAGER`]: e.target.value }))}
-                                    className="w-full p-2 rounded text-center font-bold text-xs border border-emerald-200 bg-white text-slate-700 appearance-none"
-                                  >
-                                    <option value="">-- Select --</option>
-                                    {(branchManagerData[managerReplacementBranch[day] || selectedBranch] || []).map(e => (
-                                      <option key={e} value={e}>{e}</option>
-                                    ))}
-                                  </select>
+
+                              {/* ---- MANAGER ON DUTY CELL ---- */}
+                              {!isOpenClose && (
+                                <td className="p-2 border-l align-middle bg-emerald-50 w-[180px]">
+                                  {showManagerDropdown ? (
+                                    // Show dropdown only for slots where manager is on duty
+                                    <select
+                                      disabled={!isEditing}
+                                      value={managerVal}
+                                      onChange={(e) => handleNameSelect(day, slot, "MANAGER", e.target.value)}
+                                      className={`w-full p-2 rounded text-center font-bold text-xs appearance-none transition-all ${
+                                        managerVal
+                                          ? getEmployeeColor(managerVal)
+                                          : 'border border-emerald-200 bg-white text-slate-700'
+                                      }`}
+                                      style={{
+                                        backgroundImage: `url("${managerVal ? SELECT_ARROW_WHITE : SELECT_ARROW_DARK}")`,
+                                        backgroundPosition: "right 0.3rem center",
+                                        backgroundSize: "8px",
+                                        backgroundRepeat: "no-repeat"
+                                      }}
+                                    >
+                                      <option value="">-- Select --</option>
+                                      {(branchManagerData[managerReplacementBranch[day] || selectedBranch] || []).map(e => (
+                                        <option key={e} value={e}>{e}</option>
+                                      ))}
+                                    </select>
+                                  ) : (
+                                    // Empty cell — manager not on duty for this slot (e.g. 08:30PM onwards)
+                                    <div className="w-full h-[34px] rounded bg-emerald-100/50 border border-dashed border-emerald-200 flex items-center justify-center">
+                                      <span className="text-[9px] text-emerald-300 font-bold uppercase tracking-wider">—</span>
+                                    </div>
+                                  )}
                                 </td>
                               )}
+
                               {isOpenClose ? (
-                                <td colSpan={COLUMNS.length + 1} className="p-2 border-l text-center">
+                                <td colSpan={COLUMNS.length + 2} className="p-2 border-l text-center">
                                   <span className="inline-flex items-center gap-2 bg-blue-600 text-white text-xs font-black px-4 py-1.5 rounded-full uppercase tracking-widest">
                                     All Staff — Executive ({slotIndex === 0 ? "Opening" : "Closing"})
                                   </span>
@@ -551,13 +579,13 @@ function PlanNewWeekPage() {
                                     const colStaffList = replacementBranch
                                       ? (branchStaffData[replacementBranch] || [])
                                       : activeStaffList;
-                                    const managerName = notes[`${day}-MANAGER`] || "";
                                     // Only conflict within the same type (coach vs coach, exec vs exec)
                                     const namesUsedInOtherColumns = new Set([
                                       ...COLUMNS.filter(c => c.id !== col.id && c.type === col.type)
                                         .flatMap(c => daySlots.map(s => selections[`${day}-${s}-${c.id}`]))
                                         .filter(Boolean),
-                                      ...(managerName ? [managerName] : []),
+                                      // Also block whoever is selected as manager for this slot
+                                      ...(managerVal ? [managerVal] : []),
                                     ]);
 
                                     return (
