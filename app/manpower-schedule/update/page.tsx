@@ -541,9 +541,18 @@ export default function UpdateSchedulePage() {
                                             className="w-full h-full p-1 text-[9px] font-bold text-center border border-emerald-200 rounded bg-white appearance-none outline-none"
                                           >
                                             <option value="">-- Select --</option>
-                                            {(branchManagerData[managerReplacementBranch[day] || selectedRecord.branch] || []).map(e => (
-                                              <option key={e} value={e}>{e}</option>
-                                            ))}
+                                            {(branchManagerData[managerReplacementBranch[day] || selectedRecord.branch] || []).map(e => {
+                                              const mgReplacementBranch = managerReplacementBranch[day];
+                                              const conflictBranch = mgReplacementBranch
+                                                ? Object.entries(scheduledElsewhere).find(([, names]) => names.has(e))?.[0]
+                                                : undefined;
+                                              const isConflict = !!conflictBranch;
+                                              return (
+                                                <option key={e} value={e} disabled={isConflict}>
+                                                  {isConflict ? `${e} (at ${conflictBranch})` : e}
+                                                </option>
+                                              );
+                                            })}
                                           </select>
                                         ) : (
                                           // Empty placeholder for slots after manager's shift

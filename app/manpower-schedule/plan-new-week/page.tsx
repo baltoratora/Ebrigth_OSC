@@ -552,9 +552,18 @@ function PlanNewWeekPage() {
                                       }}
                                     >
                                       <option value="">-- Select --</option>
-                                      {(branchManagerData[managerReplacementBranch[day] || selectedBranch] || []).map(e => (
-                                        <option key={e} value={e}>{e}</option>
-                                      ))}
+                                      {(branchManagerData[managerReplacementBranch[day] || selectedBranch] || []).map(e => {
+                                        const mgReplacementBranch = managerReplacementBranch[day];
+                                        const conflictBranch = mgReplacementBranch
+                                          ? Object.entries(scheduledElsewhere).find(([, names]) => names.has(e))?.[0]
+                                          : undefined;
+                                        const isConflict = !!conflictBranch;
+                                        return (
+                                          <option key={e} value={e} disabled={isConflict}>
+                                            {isConflict ? `${e} (at ${conflictBranch})` : e}
+                                          </option>
+                                        );
+                                      })}
                                     </select>
                                   ) : (
                                     // Empty cell — manager not on duty for this slot (e.g. 08:30PM onwards)
