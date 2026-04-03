@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import SubAccountSwitcher from "./SubAccountSwitcher";
 import Sidebar from "./Sidebar";
+import { jsPDF } from "jspdf";
 
 interface AppealRequest {
   id: string;
@@ -39,7 +40,6 @@ export default function AppealOptions() {
   const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [selectedType, setSelectedType] = useState<string | null>(null);
-  const [showPreview, setShowPreview] = useState(false);
   const [viewingAppeal, setViewingAppeal] = useState<AppealRequest | null>(null);
   const [formData, setFormData] = useState({
     employeeName: "",
@@ -53,6 +53,9 @@ export default function AppealOptions() {
     responseDeadline: "",
     managerName: "",
     managerTitle: "",
+    improvementGoals: "",
+    reviewDate: "",
+    supportProvided: "",
   });
   const [appeals, setAppeals] = useState<AppealRequest[]>([
     {
@@ -235,14 +238,137 @@ ${formData.managerTitle}
 Ebright Holdings SDN BHD`;
   };
 
+  const generatePIPLetterContent = () => {
+    return `EBRIGHT HOLDINGS SDN BHD
+Personal Improvement Plan (PIP)
+
+Date: ${formData.letterDate}
+
+To: ${formData.employeeName}
+Employee ID: ${formData.employeeId}
+Department: ${formData.department}
+Position: ${formData.position}
+
+RE: PERSONAL IMPROVEMENT PLAN
+
+Dear ${formData.employeeName},
+
+This Personal Improvement Plan (PIP) has been issued to address performance concerns and to provide you with a structured opportunity to meet the expectations required for your role at Ebright Holdings SDN BHD.
+
+AREAS REQUIRING IMPROVEMENT:
+${formData.offense}
+
+DETAILS / PERFORMANCE CONCERNS:
+${formData.reason}
+
+IMPROVEMENT GOALS & TARGETS:
+${formData.improvementGoals}
+
+SUPPORT PROVIDED BY MANAGEMENT:
+${formData.supportProvided}
+
+REVIEW DATE:
+Your progress will be formally reviewed on: ${formData.reviewDate}
+
+EXPECTATIONS:
+You are expected to demonstrate consistent and measurable improvement in the areas identified above by the review date. Failure to meet the targets outlined in this plan may result in further disciplinary action, up to and including termination of employment.
+
+Please acknowledge receipt of this PIP by signing a copy and returning it to your manager. Your signature indicates receipt, not necessarily agreement.
+
+Yours faithfully,
+
+${formData.managerName}
+${formData.managerTitle}
+Ebright Holdings SDN BHD`;
+  };
+
   const generateLetterContent = () => {
     if (selectedType === "warning-letter") {
       return generateWarningLetterContent();
     } else if (selectedType === "show-cause-letter") {
       return generateShowCauseLetterContent();
+    } else if (selectedType === "pip") {
+      return generatePIPLetterContent();
     }
     return "";
   };
+
+  // PDF preview URL (blob) for the inline viewer
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
+
+  // Build a jsPDF document from any letter text string
+  const buildPDF = useCallback((content: string, title: string): jsPDF => {
+    const doc = new jsPDF({ unit: "mm", format: "a4" });
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    const margin = 20;
+    const usableW = pageW - margin * 2;
+
+    // ── Header bar ──────────────────────────────────────────────────────────
+    doc.setFillColor(30, 64, 175); // blue-800
+    doc.rect(0, 0, pageW, 18, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
+    doc.setTextColor(255, 255, 255);
+    doc.text("EBRIGHT HOLDINGS SDN BHD", margin, 12);
+    doc.setFontSize(9);
+    doc.text(title, pageW - margin, 12, { align: "right" });
+
+    // ── Body text ────────────────────────────────────────────────────────────
+    doc.setTextColor(30, 30, 30);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+
+    // Strip the "EBRIGHT HOLDINGS SDN BHD" first line — already in header
+    const bodyText = content.replace(/^EBRIGHT HOLDINGS SDN BHD\n/, "").trimStart();
+    const lines = doc.splitTextToSize(bodyText, usableW);
+
+    let y = 28;
+    const lineH = 5.5;
+
+    for (const line of lines) {
+      if (y + lineH > pageH - margin) {
+        doc.addPage();
+        y = margin;
+      }
+      // Bold section headers (ALL CAPS lines ending with :)
+      if (/^[A-Z\s\/()&]+:$/.test(line.trim())) {
+        doc.setFont("helvetica", "bold");
+        doc.text(line, margin, y);
+        doc.setFont("helvetica", "normal");
+      } else {
+        doc.text(line, margin, y);
+      }
+      y += lineH;
+    }
+
+    // ── Footer ───────────────────────────────────────────────────────────────
+    doc.setFontSize(8);
+    doc.setTextColor(150, 150, 150);
+    doc.text(
+      `Generated on ${new Date().toLocaleDateString("en-MY", { day: "2-digit", month: "long", year: "numeric" })} — Ebright Holdings SDN BHD`,
+      pageW / 2,
+      pageH - 10,
+      { align: "center" }
+    );
+
+    return doc;
+  }, []);
+
+  // Download a PDF for the letter currently in the form
+  const downloadPDF = useCallback((content: string, filename: string) => {
+    const title = filename.replace(/_/g, " ").replace(".pdf", "");
+    const doc = buildPDF(content, title);
+    doc.save(filename);
+  }, [buildPDF]);
+
+  // Generate a blob URL for the inline <iframe> preview
+  const openPDFPreview = useCallback((content: string, title: string) => {
+    const doc = buildPDF(content, title);
+    const blob = doc.output("blob");
+    const url = URL.createObjectURL(blob);
+    setPdfPreviewUrl(url);
+  }, [buildPDF]);
 
   const handleAppealSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -277,6 +403,9 @@ Ebright Holdings SDN BHD`;
       responseDeadline: "",
       managerName: "",
       managerTitle: "",
+      improvementGoals: "",
+      reviewDate: "",
+      supportProvided: "",
     });
     setSelectedType(null);
     setShowPreview(false);
@@ -404,7 +533,7 @@ Ebright Holdings SDN BHD`;
                           </span>
                         </td>
                         <td className="px-6 py-4 text-sm">
-                          {(appeal.type === "Warning Letter" || appeal.type === "Show Cause Letter") && appeal.letterContent && (
+                          {(appeal.type === "Warning Letter" || appeal.type === "Show Cause Letter" || appeal.type === "PIP") && appeal.letterContent && (
                             <button
                               onClick={() => setViewingAppeal(appeal)}
                               className="text-blue-600 hover:text-blue-800 font-medium"
@@ -423,7 +552,7 @@ Ebright Holdings SDN BHD`;
 
           {/* Appeal Form */}
           <div className="lg:col-span-1">
-            {selectedType && (selectedType === "warning-letter" || selectedType === "show-cause-letter") ? (
+            {selectedType && (selectedType === "warning-letter" || selectedType === "show-cause-letter" || selectedType === "pip") ? (
               <form onSubmit={handleAppealSubmit} className="bg-white rounded-lg shadow-md p-6 sticky top-8 max-h-[90vh] overflow-y-auto">
                 <h3 className="text-lg font-bold text-gray-800 mb-4">Fill Letter Details</h3>
 
@@ -534,6 +663,48 @@ Ebright Holdings SDN BHD`;
                     </div>
                   )}
 
+                  {selectedType === "pip" && (
+                    <>
+                      <div>
+                        <label className="block font-medium text-gray-700 mb-1">
+                          Improvement Goals & Targets *
+                        </label>
+                        <textarea
+                          value={formData.improvementGoals}
+                          onChange={(e) => setFormData({ ...formData, improvementGoals: e.target.value })}
+                          placeholder="List specific, measurable goals the employee must achieve"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          rows={3}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block font-medium text-gray-700 mb-1">
+                          Support Provided by Management *
+                        </label>
+                        <textarea
+                          value={formData.supportProvided}
+                          onChange={(e) => setFormData({ ...formData, supportProvided: e.target.value })}
+                          placeholder="e.g., weekly check-ins, training sessions, mentoring"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          rows={2}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block font-medium text-gray-700 mb-1">
+                          Review Date *
+                        </label>
+                        <input
+                          type="date"
+                          value={formData.reviewDate}
+                          onChange={(e) => setFormData({ ...formData, reviewDate: e.target.value })}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                    </>
+                  )}
+
                   <div>
                     <label className="block font-medium text-gray-700 mb-1">
                       Manager/Supervisor Name
@@ -564,33 +735,39 @@ Ebright Holdings SDN BHD`;
                 <div className="flex gap-2 mt-6">
                   <button
                     type="button"
-                    onClick={() => setShowPreview(!showPreview)}
+                    onClick={() => {
+                      const title =
+                        selectedType === "warning-letter" ? "Warning Letter"
+                        : selectedType === "show-cause-letter" ? "Show Cause Letter"
+                        : "Personal Improvement Plan";
+                      openPDFPreview(generateLetterContent(), title);
+                    }}
                     className="flex-1 bg-gray-600 hover:bg-gray-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
                   >
-                    {showPreview ? "Hide Preview" : "Preview Letter"}
+                    Preview PDF
                   </button>
                   <button
+                    type="button"
+                    onClick={() => {
+                      const filename =
+                        selectedType === "warning-letter" ? "Warning_Letter.pdf"
+                        : selectedType === "show-cause-letter" ? "Show_Cause_Letter.pdf"
+                        : "PIP_Letter.pdf";
+                      downloadPDF(generateLetterContent(), filename);
+                    }}
+                    className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
+                  >
+                    Download PDF
+                  </button>
+                </div>
+                <div className="mt-3">
+                  <button
                     type="submit"
-                    className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
+                    className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
                   >
                     Submit Appeal
                   </button>
                 </div>
-
-                {showPreview && (
-                  <div className="mt-6 p-4 bg-gray-100 rounded-lg border border-gray-300 max-h-80 overflow-y-auto">
-                    <div className="bg-white p-4 rounded text-xs whitespace-pre-wrap font-mono text-gray-800">
-                      {generateLetterContent()}
-                    </div>
-                    <a
-                      href={`data:text/plain;charset=utf-8,${encodeURIComponent(generateLetterContent())}`}
-                      download={`${selectedType === "warning-letter" ? "Warning" : "Show_Cause"}_Letter.txt`}
-                      className="block mt-3 text-center bg-green-600 hover:bg-green-700 text-white py-1 rounded text-xs"
-                    >
-                      Download Letter
-                    </a>
-                  </div>
-                )}
               </form>
             ) : (
               <form onSubmit={handleAppealSubmit} className="bg-white rounded-lg shadow-md p-6 sticky top-8">
@@ -642,34 +819,59 @@ Ebright Holdings SDN BHD`;
         </div>
       </main>
 
-      {/* View Letter Modal */}
-      {viewingAppeal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-hidden">
-            <div className="p-6 border-b border-gray-200 flex justify-between items-center">
-              <h2 className="text-xl font-bold text-gray-800">
-                {viewingAppeal.type}
-              </h2>
+      {/* PDF Preview Modal (from form Preview button) */}
+      {pdfPreviewUrl && (
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl flex flex-col" style={{ height: "90vh" }}>
+            <div className="p-4 border-b border-gray-200 flex justify-between items-center shrink-0">
+              <h2 className="text-lg font-bold text-gray-800">Letter Preview</h2>
               <button
-                onClick={() => setViewingAppeal(null)}
-                className="text-gray-500 hover:text-gray-700 text-2xl font-bold"
+                onClick={() => { URL.revokeObjectURL(pdfPreviewUrl); setPdfPreviewUrl(null); }}
+                className="text-gray-500 hover:text-gray-700 text-2xl font-bold leading-none"
               >
                 ×
               </button>
             </div>
-            <div className="p-6 overflow-y-auto max-h-[60vh]">
-              <pre className="whitespace-pre-wrap font-mono text-sm text-gray-800 bg-gray-50 p-4 rounded border">
-                {viewingAppeal.letterContent}
-              </pre>
-            </div>
-            <div className="p-6 border-t border-gray-200 flex gap-3">
-              <a
-                href={`data:text/plain;charset=utf-8,${encodeURIComponent(viewingAppeal.letterContent || "")}`}
-                download={`${viewingAppeal.type.replace(/\s+/g, "_")}_${viewingAppeal.date}.txt`}
-                className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors text-center"
+            <iframe
+              src={pdfPreviewUrl}
+              className="flex-1 w-full rounded-b-lg"
+              title="Letter Preview"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* View Letter Modal (from Appeal History) */}
+      {viewingAppeal && (
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl flex flex-col" style={{ height: "90vh" }}>
+            <div className="p-4 border-b border-gray-200 flex justify-between items-center shrink-0">
+              <h2 className="text-xl font-bold text-gray-800">{viewingAppeal.type}</h2>
+              <button
+                onClick={() => setViewingAppeal(null)}
+                className="text-gray-500 hover:text-gray-700 text-2xl font-bold leading-none"
               >
-                Download Letter
-              </a>
+                ×
+              </button>
+            </div>
+            <iframe
+              src={(() => {
+                const doc = buildPDF(viewingAppeal.letterContent || "", viewingAppeal.type);
+                return doc.output("bloburl") as unknown as string;
+              })()}
+              className="flex-1 w-full"
+              title={viewingAppeal.type}
+            />
+            <div className="p-4 border-t border-gray-200 flex gap-3 shrink-0">
+              <button
+                onClick={() => downloadPDF(
+                  viewingAppeal.letterContent || "",
+                  `${viewingAppeal.type.replace(/\s+/g, "_")}_${viewingAppeal.date}.pdf`
+                )}
+                className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
+              >
+                Download PDF
+              </button>
               <button
                 onClick={() => setViewingAppeal(null)}
                 className="flex-1 bg-gray-600 hover:bg-gray-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors"

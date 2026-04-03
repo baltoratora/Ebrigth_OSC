@@ -7,26 +7,26 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// 1. Table for Login and Roles
 model User {
   id           Int      @id @default(autoincrement())
+  name         String?
   email        String   @unique
   passwordHash String
   role         String   @default("BRANCH_MANAGER")
-  branchName   String?  
+  branchName   String?
+  status       String   @default("ACTIVE")
   createdAt    DateTime @default(now())
 }
 
-// 2. Table to replace localStorage for your schedules!
 model ManpowerSchedule {
-  id                 String   @id 
+  id                 String   @id
   branch             String
   startDate          String
   endDate            String
-  selections         Json     
-  notes              Json     
-  originalSelections Json     
-  originalNotes      Json     
+  selections         Json
+  notes              Json
+  originalSelections Json
+  originalNotes      Json
   status             String   @default("Finalized")
   submittedAt        DateTime @default(now())
   originalAuthor     String
@@ -36,11 +36,8 @@ model BranchStaff {
   id                 Int       @id @default(autoincrement())
   name               String?
   branch             String?
-  role               String?
   createdAt          DateTime  @default(now())
-  updatedAt          DateTime? @updatedAt
-
-  // Imported from CSV
+  role               String?
   nickname           String?
   nric               String?
   dob                String?
@@ -65,15 +62,25 @@ model BranchStaff {
   department         String?
   position           String?
   location           String?
-
-  // App-specific
-  employeeId         String?
   accessStatus       String?   @default("AUTHORIZED")
   biometricTemplate  String?
-  probation          String?
-  endDate            String?
-  rate               String?
   contract           String?
+  employeeId         String?
+  endDate            String?
+  probation          String?
+  rate               String?
+  updatedAt          DateTime? @updatedAt
 
   @@map("BranchStaff")
+}
+
+model Employee {
+  id        Int       @id @default(autoincrement())
+  name      String
+  nickname  String?
+  branch    String
+  position  String?
+  createdAt DateTime? @default(now()) @db.Timestamp(6)
+
+  @@unique([name, branch])
 }

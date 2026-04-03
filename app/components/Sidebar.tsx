@@ -17,6 +17,7 @@ const navigationItems = [
   { name: "Inventory", href: "/dashboards/inventory", icon: "📦" },
   { name: "Academy", href: "/academy", icon: "🎓" },
   { name: "Attendance", href: "/attendance", icon: "📅" },
+  { name: "Account Management", href: "/account-management", icon: "🔐" },
 ];
 
 export default function Sidebar({ sidebarOpen, onCollapse }: SidebarProps) {
