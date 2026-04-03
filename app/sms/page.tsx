@@ -6,7 +6,7 @@ import Sidebar from "@/app/components/Sidebar";
 import UserHeader from "@/app/components/UserHeader";
 
 export default function SMSPage() {
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<"dashboard" | "students" | "attendance" | "enrollment" | "invoices" | "grades" | "freeze">("dashboard");
 
   const menuItems = [
@@ -24,7 +24,7 @@ export default function SMSPage() {
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
       <header className="bg-gradient-to-r from-indigo-600 to-indigo-800 text-white shadow-lg">
-        <div className="flex justify-between items-center px-4 py-6">
+        <div className="flex justify-between items-center pl-14 pr-4 py-6">
           <div>
             <h1 className="text-3xl font-bold">SMS (School Management)</h1>
             <p className="text-indigo-100 mt-1">Student & Academic Management</p>
@@ -34,16 +34,7 @@ export default function SMSPage() {
       </header>
 
       <div className="flex h-[calc(100vh-100px)]">
-        <Sidebar sidebarOpen={sidebarOpen} onCollapse={() => setSidebarOpen(false)} />
-
-        {!sidebarOpen && (
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="w-16 bg-white shadow-lg hover:bg-gray-50 transition-colors border-r border-gray-200 flex items-center justify-center text-indigo-600 font-bold text-2xl"
-          >
-            ☰
-          </button>
-        )}
+        <Sidebar sidebarOpen={sidebarOpen} onToggle={() => setSidebarOpen(p => !p)} />
 
         <main className="flex-1 overflow-y-auto">
           <div className="max-w-7xl mx-auto px-4 py-8">

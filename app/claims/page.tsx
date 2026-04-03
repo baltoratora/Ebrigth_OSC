@@ -130,7 +130,7 @@ const CLAIM_TYPES = [
 ];
 
 export default function ClaimsPage() {
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [selectedClaim, setSelectedClaim] = useState<typeof CLAIM_TYPES[0] | null>(null);
 
   return (
@@ -148,7 +148,7 @@ export default function ClaimsPage() {
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        <Sidebar sidebarOpen={sidebarOpen} onCollapse={() => setSidebarOpen(false)} />
+        <Sidebar sidebarOpen={sidebarOpen} onToggle={() => setSidebarOpen(p => !p)} />
 
         <main className="flex-1 overflow-y-auto px-12 py-12 bg-[#F8FAFC]">
           <div className="mx-auto w-full max-w-6xl">

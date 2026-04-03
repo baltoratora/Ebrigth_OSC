@@ -18,7 +18,7 @@ interface EmployeeClocking {
 
 export default function AttendanceSummary() {
   const router = useRouter();
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const stats = {
     present: 46,
@@ -142,7 +142,7 @@ export default function AttendanceSummary() {
 
   return (
     <div className="flex min-h-screen bg-blue-50">
-      <Sidebar sidebarOpen={sidebarOpen} onCollapse={() => setSidebarOpen(!sidebarOpen)} />
+      <Sidebar sidebarOpen={sidebarOpen} onToggle={() => setSidebarOpen(p => !p)} />
       <div className="flex-1">
       {/* Header */}
       <header className="bg-white shadow-sm">

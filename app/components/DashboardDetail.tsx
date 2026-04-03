@@ -118,10 +118,10 @@ export default function DashboardDetail({ id }: DashboardDetailProps) {
     <div className="w-full max-w-6xl mx-auto">
       
       {/* Header Box */}
-      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center mb-8">
-        <div className={`${dashboard.color} text-white px-6 py-3 rounded-xl flex items-center gap-3 shadow-md`}>
-          <span className="text-2xl">{dashboard.icon}</span>
-          <h1 className="text-2xl font-black uppercase tracking-wide m-0 leading-none">
+      <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-4 mb-8">
+        <div className={`${dashboard.color} text-white px-4 py-2 rounded-xl flex items-center gap-2 shadow-md`}>
+          <span className="text-xl">{dashboard.icon}</span>
+          <h1 className="text-lg font-black uppercase tracking-wide m-0 leading-none">
             {dashboard.title}
           </h1>
         </div>

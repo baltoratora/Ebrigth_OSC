@@ -18,7 +18,7 @@ const STORAGE_KEY = "selectedAccount";
 export default function AttendanceOptions() {
   const router = useRouter();
   const [selectedAccount, setSelectedAccount] = useState(subAccounts[0]);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     const savedAccount = localStorage.getItem(STORAGE_KEY);
@@ -41,7 +41,7 @@ export default function AttendanceOptions() {
 
   return (
     <div className="flex min-h-screen bg-blue-50">
-      <Sidebar sidebarOpen={sidebarOpen} onCollapse={() => setSidebarOpen(!sidebarOpen)} />
+      <Sidebar sidebarOpen={sidebarOpen} onToggle={() => setSidebarOpen(p => !p)} />
       <div className="flex-1">
         <header className="bg-white shadow-sm">
           <div className="max-w-7xl mx-auto px-4 py-6 flex items-center gap-4">

@@ -9,7 +9,7 @@ export default function DashboardsLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
     // 1. FIX: Changed to h-screen and overflow-hidden to lock the page frame!
@@ -19,27 +19,11 @@ export default function DashboardsLayout({
       
       <div className="flex flex-1 overflow-hidden">
         {/* The Sidebar */}
-        <Sidebar sidebarOpen={sidebarOpen} onCollapse={() => setSidebarOpen(false)} />
+        <Sidebar sidebarOpen={sidebarOpen} onToggle={() => setSidebarOpen(p => !p)} />
         
         {/* The Actual Page Content */}
         <main className="flex-1 overflow-y-auto p-4 md:p-6 relative flex flex-col">
           
-          {/* 2. FIX: Hamburger button appears when the sidebar is hidden */}
-          {!sidebarOpen && (
-            <div className="mb-6 shrink-0">
-              <button
-                onClick={() => setSidebarOpen(true)}
-                className="p-3 bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 rounded-xl shadow-sm transition-all flex items-center justify-center gap-3 font-bold text-sm uppercase tracking-widest w-fit"
-                title="Open Sidebar"
-              >
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 6h16M4 12h16M4 18h16" />
-                </svg>
-                Show Sidebar
-              </button>
-            </div>
-          )}
-
           {/* This renders your HRMS, Library, etc. */}
           {children}
         </main>

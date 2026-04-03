@@ -37,7 +37,7 @@ const appealTypes = [
 
 export default function AppealOptions() {
   const router = useRouter();
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [showPreview, setShowPreview] = useState(false);
   const [viewingAppeal, setViewingAppeal] = useState<AppealRequest | null>(null);
@@ -285,7 +285,7 @@ Ebright Holdings SDN BHD`;
 
   return (
     <div className="flex min-h-screen bg-blue-50">
-      <Sidebar sidebarOpen={sidebarOpen} onCollapse={() => setSidebarOpen(!sidebarOpen)} />
+      <Sidebar sidebarOpen={sidebarOpen} onToggle={() => setSidebarOpen(p => !p)} />
       <div className="flex-1">
         {/* Header */}
         <header className="bg-white shadow-sm">

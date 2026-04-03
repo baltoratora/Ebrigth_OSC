@@ -82,7 +82,7 @@ interface ManpowerTableProps {
 
 // --- UPDATED FUNCTION SIGNATURE ---
 export default function ManpowerTable({ week }: ManpowerTableProps) {
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [selections, setSelections] = useState<Record<string, string>>({});
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [editingDays, setEditingDays] = useState<Record<string, boolean>>({
@@ -224,16 +224,7 @@ export default function ManpowerTable({ week }: ManpowerTableProps) {
       </header>
 
       <div className="flex h-[calc(100vh-100px)]">
-        <Sidebar sidebarOpen={sidebarOpen} onCollapse={() => setSidebarOpen(false)} />
-
-        {!sidebarOpen && (
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="w-16 bg-white shadow-lg hover:bg-gray-50 transition-colors border-r border-gray-200 flex items-center justify-center text-blue-600 font-bold text-2xl"
-          >
-            ☰
-          </button>
-        )}
+        <Sidebar sidebarOpen={sidebarOpen} onToggle={() => setSidebarOpen(p => !p)} />
 
         <main className="flex-1 overflow-y-auto px-8 py-8 bg-gradient-to-br from-[#f0f4f8] to-[#d2dce9] text-[#1a1d23] [font-family:Segoe_UI,system-ui,-apple-system,sans-serif]">
           {/* Displaying the selected week at the top of the main content */}

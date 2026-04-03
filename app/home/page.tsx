@@ -16,7 +16,7 @@ export default function HomePage() {
     },
   });
 
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Show a simple loading state while checking who they are
   if (status === "loading") {
@@ -32,7 +32,7 @@ export default function HomePage() {
     <div className="min-h-screen bg-gray-50">
       {/* header */}
       <header className="bg-gradient-to-r from-blue-600 to-blue-800 text-white shadow-lg">
-        <div className="flex justify-between items-center px-4 py-6">
+        <div className="flex justify-between items-center pl-14 pr-4 py-6">
           <div>
             <h1 className="text-3xl font-bold">Ebright HR System</h1>
             <p className="text-blue-100 mt-1">Dashboard Home</p>
@@ -48,16 +48,7 @@ export default function HomePage() {
       </header>
 
       <div className="flex h-[calc(100vh-100px)]">
-        <Sidebar sidebarOpen={sidebarOpen} onCollapse={() => setSidebarOpen(false)} />
-
-        {!sidebarOpen && (
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="w-16 bg-white shadow-lg hover:bg-gray-50 transition-colors border-r border-gray-200 flex items-center justify-center text-blue-600 font-bold text-2xl"
-          >
-            ☰
-          </button>
-        )}
+        <Sidebar sidebarOpen={sidebarOpen} onToggle={() => setSidebarOpen(p => !p)} />
 
         <main className="flex-1 overflow-y-auto">
           {/* We will pass the user role into the DashboardHome component so it knows what to grey out! */}

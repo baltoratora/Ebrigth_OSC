@@ -20,7 +20,7 @@ const leaveTypes = ["Annual", "Sick", "Personal", "Casual", "Unpaid"];
 
 export default function LeaveApplication() {
   const router = useRouter();
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
 
   const [formData, setFormData] = useState({
@@ -83,7 +83,7 @@ export default function LeaveApplication() {
 
   return (
     <div className="flex min-h-screen bg-blue-50">
-      <Sidebar sidebarOpen={sidebarOpen} onCollapse={() => setSidebarOpen(!sidebarOpen)} />
+      <Sidebar sidebarOpen={sidebarOpen} onToggle={() => setSidebarOpen(p => !p)} />
       <div className="flex-1">
       {/* Header */}
       <header className="bg-white shadow-sm">

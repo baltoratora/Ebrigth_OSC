@@ -21,7 +21,7 @@ interface AttendanceRecord {
 export default function AttendanceReport() {
   const router = useRouter();
   const [selectedMonth, setSelectedMonth] = useState("April");
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const months = [
     "January",
@@ -95,7 +95,7 @@ export default function AttendanceReport() {
 
   return (
     <div className="flex min-h-screen bg-blue-50">
-      <Sidebar sidebarOpen={sidebarOpen} onCollapse={() => setSidebarOpen(!sidebarOpen)} />
+      <Sidebar sidebarOpen={sidebarOpen} onToggle={() => setSidebarOpen(p => !p)} />
       <div className="flex-1">
       {/* Header */}
       <header className="bg-white shadow-sm">
