@@ -137,6 +137,47 @@ export async function sendClockInEmail(to: string, name: string, time: string): 
   });
 }
 
+/**
+ * Daily "you're marked missing today" reminder, asking the employee to email
+ * HR to justify their absence. NOT a clock-in/out email — sent by the
+ * missing-reminder sweep once a person is 15 min past their scheduled start
+ * without having clocked in. `hrEmail` (optional) makes the HR address a
+ * clickable mailto; if absent the body just says "the HR department".
+ */
+export async function sendMissingReminderEmail(to: string, name: string, hrEmail?: string): Promise<void> {
+  const hrTarget = hrEmail
+    ? `<a href="mailto:${hrEmail}" style="color:#b45309;"><strong>${hrEmail}</strong></a>`
+    : `the <strong>HR department</strong>`;
+  await safeSend({
+    from: `"Ebright Attendance" <${process.env.SMTP_USER}>`,
+    to,
+    subject: `⚠️ Attendance Reminder — please justify today's absence`,
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px;">
+        <div style="background:#b45309;border-radius:8px;padding:16px 24px;margin-bottom:24px;">
+          <h1 style="color:white;margin:0;font-size:20px;">Ebright Attendance</h1>
+        </div>
+        <p style="font-size:16px;color:#111827;">Hi <strong>${name}</strong>,</p>
+        <p style="font-size:15px;color:#374151;">
+          Our records show you have <strong style="color:#b45309;">not clocked in</strong> today,
+          and your shift start time has already passed.
+        </p>
+        <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:16px;margin:20px 0;">
+          <p style="margin:0;font-size:14px;color:#92400e;">
+            📩 Please email ${hrTarget} to justify your absence for today.
+          </p>
+        </div>
+        <p style="font-size:13px;color:#6b7280;">
+          If you have already clocked in or are on approved leave, please ignore this message.
+        </p>
+        <p style="font-size:13px;color:#9ca3af;margin-top:24px;">
+          This is an automated message from the Ebright HR System. Please do not reply.
+        </p>
+      </div>
+    `,
+  });
+}
+
 export async function sendClockOutEmail(to: string, name: string, time: string): Promise<void> {
   await safeSend({
     from: `"Ebright Attendance" <${process.env.SMTP_USER}>`,
