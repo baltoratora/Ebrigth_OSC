@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Moon, Sun } from "lucide-react";
 import { cn } from "@/lib/crm/utils";
 import { RecruitmentSidebar } from "@/app/recruitment/_components/recruitment-sidebar";
+import { NotificationBell } from "@/components/recruitment/notification-bell";
 
 // App shell for the Recruitment module. Holds a self-contained dark-mode toggle
 // — the `.dark` class is applied to THIS subtree's root only, so Tailwind's
@@ -27,6 +28,7 @@ export function RecruitmentShell({ children }: { children: React.ReactNode }) {
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Top bar */}
         <div className="flex h-12 shrink-0 items-center justify-end gap-2 border-b border-slate-200 bg-white px-4 dark:border-slate-800 dark:bg-slate-900">
+          <NotificationBell />
           <button
             type="button"
             onClick={() => setDark((d) => !d)}

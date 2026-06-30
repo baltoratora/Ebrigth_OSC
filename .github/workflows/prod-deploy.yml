@@ -100,3 +100,7 @@ jobs:
             echo "===== cleaning up legacy department platforms ====="
             docker exec ebright-osc-worker-1 node scripts/cleanup-department-platforms.mjs \
               || echo "WARN: department platform cleanup failed (non-fatal)"
+
+            echo "===== setting up recruitment in ebright_hrfs (+ migrate from crm) ====="
+            docker exec ebright-osc-worker-1 node scripts/ensure-recruitment-schema.mjs \
+              || echo "WARN: recruitment hrfs setup failed (non-fatal)"

@@ -9,16 +9,19 @@ import {
   Bell,
   ArrowLeft,
   UserRoundCheck,
+  CalendarDays,
+  Library,
 } from 'lucide-react'
 import { cn } from '@/lib/crm/utils'
 
 // Recruitment runs its own app shell (like the CRM) but with a distinct
-// emerald "HR / people" theme so it never reads as the indigo CRM. Nav items
-// mirror the requested structure: Dashboard, Contacts, Opportunity, Notifications.
+// emerald "HR / people" theme so it never reads as the indigo CRM.
 const NAV_ITEMS = [
   { href: '/recruitment/dashboard',     label: 'Dashboard',     icon: LayoutDashboard },
   { href: '/recruitment/contacts',      label: 'Contacts',      icon: Users },
   { href: '/recruitment/opportunity',   label: 'Opportunity',   icon: Kanban },
+  { href: '/recruitment/calendar',      label: 'Calendar',      icon: CalendarDays },
+  { href: '/recruitment/library',       label: 'Library',       icon: Library },
   { href: '/recruitment/notifications', label: 'Notifications', icon: Bell },
 ]
 

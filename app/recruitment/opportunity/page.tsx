@@ -13,9 +13,10 @@ export default async function RecruitmentOpportunityPage() {
     getKanban(),
     getServerSession(authOptions),
   ]);
-  // Only SUPER_ADMIN may bulk-delete recruits (mirrors the CRM rule).
-  const canDelete =
-    normalizeRole((session?.user as { role?: string } | undefined)?.role) === ROLES.SUPER_ADMIN;
+  // Any HR-portal account may delete a candidate CARD (card only — never the
+  // applicant/contact record). The page is already gated to those roles.
+  const role = normalizeRole((session?.user as { role?: string } | undefined)?.role);
+  const canDelete = !!role && new Set<string>([ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD]).has(role);
 
   const columns = data.map((c) => ({
     id: c.id,

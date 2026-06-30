@@ -3,8 +3,10 @@
 import { revalidatePath } from "next/cache";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/nextauth";
-import { prisma } from "@/lib/prisma";
+// Recruitment lives in the ebright_hrfs database — use the HRFS client.
+import { hrfsPrisma as prisma } from "@/lib/hrfs";
 import { ROLES, normalizeRole } from "@/lib/roles";
+import { getHrfsCandidate, type HrfsCandidate } from "@/lib/recruitment/hrfs-candidate";
 
 const ALLOWED = new Set<string>([ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD]);
 
@@ -90,12 +92,14 @@ export async function bulkMoveRecruits(
   }
 }
 
-/** Soft-delete recruits — SUPER_ADMIN only (mirrors the CRM "only superadmin deletes a lead" rule). */
+/**
+ * Soft-delete recruit CARDS. Any HR-portal account may delete a card — it only
+ * sets rec_recruit.deletedAt, so the card leaves the board but the underlying
+ * applicant/contact (the HRFS record + any matched BranchStaff) is untouched.
+ */
 export async function bulkDeleteRecruits(ids: string[]): Promise<MoveResult & { deleted?: number }> {
   try {
-    const session = await getServerSession(authOptions);
-    const role = normalizeRole((session?.user as { role?: string } | undefined)?.role);
-    if (role !== ROLES.SUPER_ADMIN) return { ok: false, error: "Only Super Admin can delete recruits." };
+    await requireAccess();
     if (!ids.length) return { ok: true, deleted: 0 };
 
     const res = await prisma.recRecruit.updateMany({
@@ -110,6 +114,13 @@ export async function bulkDeleteRecruits(ids: string[]): Promise<MoveResult & { 
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Delete failed" };
   }
+}
+
+/** Soft-delete a single recruit card (per-card delete button). Card only — the
+ *  applicant/contact record is never touched. */
+export async function deleteRecruit(id: string): Promise<MoveResult> {
+  const res = await bulkDeleteRecruits([id]);
+  return { ok: res.ok, error: res.error };
 }
 
 export interface RecruitDetail {
@@ -130,6 +141,14 @@ export interface RecruitDetail {
   createdAt: string;
   updatedAt: string;
   history: { id: string; from: string | null; to: string; changedBy: string | null; note: string | null; changedAt: string }[];
+  /** Applicant detail pulled from the ebright_hrfs table (null until that table
+   *  is configured or when there's no match). The modal renders city / form
+   *  type / education / gender from here. */
+  hrfs: HrfsCandidate | null;
+  /** Scheduled interview, if this recruit has one. */
+  interview: { id: string; scheduledAt: string; location: string | null; note: string | null } | null;
+  /** Uploaded resumes (newest first) — metadata only; file streams from the API. */
+  resumes: { id: string; fileName: string; mimeType: string; sizeBytes: number; uploadedAt: string }[];
 }
 
 /** Full detail for one recruit (card / row click) including its stage history. */
@@ -143,15 +162,24 @@ export async function getRecruitDetail(
       select: {
         id: true, name: true, email: true, phone: true, source: true, position: true,
         branch: true, hired: true, branchStaffId: true, ghlOpportunityId: true,
-        ghlContactId: true, ghlCreatedAt: true, createdAt: true, updatedAt: true,
+        ghlContactId: true, ghlCreatedAt: true, applicationId: true, createdAt: true, updatedAt: true,
         stage: { select: { name: true, shortCode: true } },
         history: {
           orderBy: { changedAt: "desc" },
           select: { id: true, fromStageId: true, toStageId: true, changedBy: true, note: true, changedAt: true },
         },
+        interview: { select: { id: true, scheduledAt: true, location: true, note: true } },
+        resumes: {
+          orderBy: { uploadedAt: "desc" },
+          select: { id: true, fileName: true, mimeType: true, sizeBytes: true, uploadedAt: true },
+        },
       },
     });
     if (!r) return { ok: false, error: "Recruit not found" };
+
+    // Enrich from ebright_hrfs.career_applications — prefer the applicationId
+    // link, fall back to email/phone for older cards. Best-effort.
+    const hrfs = await getHrfsCandidate({ applicationId: r.applicationId, email: r.email, phone: r.phone });
 
     const stages = await prisma.recStage.findMany({ select: { id: true, name: true } });
     const nameById = new Map(stages.map((s) => [s.id, s.name]));
@@ -166,6 +194,22 @@ export async function getRecruitDetail(
         ghlCreatedAt: r.ghlCreatedAt?.toISOString() ?? null,
         createdAt: r.createdAt.toISOString(),
         updatedAt: r.updatedAt.toISOString(),
+        hrfs,
+        interview: r.interview
+          ? {
+              id: r.interview.id,
+              scheduledAt: r.interview.scheduledAt.toISOString(),
+              location: r.interview.location,
+              note: r.interview.note,
+            }
+          : null,
+        resumes: r.resumes.map((rs) => ({
+          id: rs.id,
+          fileName: rs.fileName,
+          mimeType: rs.mimeType,
+          sizeBytes: rs.sizeBytes,
+          uploadedAt: rs.uploadedAt.toISOString(),
+        })),
         history: r.history.map((h) => ({
           id: h.id,
           from: h.fromStageId ? nameById.get(h.fromStageId) ?? null : null,

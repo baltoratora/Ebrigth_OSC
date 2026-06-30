@@ -85,6 +85,10 @@ jobs:
             docker exec ebright-osc-worker-1 node scripts/cleanup-department-platforms.mjs \
               || echo "WARN: department platform cleanup failed (non-fatal)"
 
+            echo "===== ensuring recruitment schema (applicationId + interview/resume) ====="
+            docker exec ebright-osc-worker-1 node scripts/ensure-recruitment-schema.mjs \
+              || echo "WARN: recruitment schema ensure failed (non-fatal)"
+
             # One-shot backfill of the 2026-05-13 historical week. Script
             # checks if the week already exists and exits early — so this is
             # a no-op on every deploy after the first. Safe to keep here.
