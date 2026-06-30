@@ -8,16 +8,20 @@ import { InvitationStatusSelector } from "@fa/_components/fa/InvitationStatusSel
 import { Invitation, InvitationStatus, Session, Student, hasBacklog, resolveStudentById, countsAsAttended } from "@fa/_types";
 
 export function SessionInvitesPanel({
-  session, quota, invitations, canInvite, onOpenInvite, onStatusChange, onRemove,
+  session, quota, invitations, canInvite, isLocked, onOpenInvite, onStatusChange, onRemove,
 }: {
   session: Session;
   quota: number;
   invitations: Invitation[];
   canInvite: boolean;
+  /** When true the event is closed/ongoing/completed — ALL actions are disabled. */
+  isLocked?: boolean;
   onOpenInvite: () => void;
   onStatusChange: (id: string, status: InvitationStatus) => void;
   onRemove: (inv: Invitation) => void;
 }) {
+  // Treat missing isLocked as false (backwards-compat)
+  const locked = isLocked ?? !canInvite;
   const students = useFAStore(s => s.students);
   // `quota` from the page is marketing's confirm target. Invite cap is 3× that.
   const inviteCap = quota * 3;
@@ -49,7 +53,7 @@ export function SessionInvitesPanel({
             <strong className="text-ink-900 ml-1">{confirmed}</strong> of <strong className="text-ink-900">{quota}</strong> confirmed
           </div>
         </div>
-        {canInvite && remaining > 0 && (
+        {canInvite && !locked && remaining > 0 && (
           <button onClick={onOpenInvite} className="fa-btn-primary">
             <UserPlus className="w-4 h-4" /> Invite ({remaining} open)
           </button>
@@ -61,7 +65,7 @@ export function SessionInvitesPanel({
           icon={UserPlus}
           title="No students invited yet"
           description={`You have ${inviteCap} invite slot${inviteCap !== 1 ? "s" : ""} to fill (target: ${quota} confirmed) for this session.`}
-          action={canInvite ? (
+          action={canInvite && !locked ? (
             <button onClick={onOpenInvite} className="fa-btn-primary">
               <UserPlus className="w-4 h-4" /> Invite students
             </button>
@@ -93,8 +97,10 @@ export function SessionInvitesPanel({
                   return (
                     <tr key={inv.id} className="bg-amber-50/40">
                       <td>
-                        <div className="font-medium text-danger">Unknown student</div>
-                        <div className="text-xs text-ink-400">#{inv.studentId} · not in records</div>
+                        <div className={`font-medium ${inv.studentNameSnapshot ? "text-ink-900" : "text-danger"}`}>
+                          {inv.studentNameSnapshot || "Unknown student"}
+                        </div>
+                        <div className="text-xs text-ink-400">#{inv.studentId} · {inv.studentNameSnapshot ? "unlinked record" : "not in records"}</div>
                       </td>
                       <td>
                         <span className="font-mono text-sm">{inv.targetGrade ? `G${inv.targetGrade}` : "—"}</span>
@@ -106,15 +112,15 @@ export function SessionInvitesPanel({
                         <InvitationStatusSelector
                           value={inv.status}
                           onChange={(s) => onStatusChange(inv.id, s)}
-                          disabled={!canInvite}
+                          disabled={locked}
                         />
                       </td>
                       <td>
                         <button
-                          onClick={() => onRemove(inv)}
-                          disabled={!canInvite}
-                          className={`fa-btn-ghost p-1.5 ${canInvite ? "text-ink-400 hover:text-danger" : "text-ink-200 cursor-not-allowed"}`}
-                          title={canInvite ? "Remove stale invite" : "Event closed — locked"}
+                          onClick={() => !locked && onRemove(inv)}
+                          disabled={locked}
+                          className={`fa-btn-ghost p-1.5 ${!locked ? "text-ink-400 hover:text-danger" : "text-ink-200 cursor-not-allowed"}`}
+                          title={!locked ? "Remove stale invite" : "Event locked — read only"}
                         >
                           <X className="w-3.5 h-3.5" />
                         </button>
@@ -153,15 +159,15 @@ export function SessionInvitesPanel({
                       <InvitationStatusSelector
                         value={inv.status}
                         onChange={(s) => onStatusChange(inv.id, s)}
-                        disabled={!canInvite && inv.status !== "confirmed" && inv.status !== "invited"}
+                        disabled={locked}
                       />
                     </td>
                     <td>
                       <button
-                        onClick={() => onRemove(inv)}
-                        disabled={!canInvite}
-                        className={`fa-btn-ghost p-1.5 ${canInvite ? "text-ink-400 hover:text-danger" : "text-ink-200 cursor-not-allowed"}`}
-                        title={canInvite ? "Remove" : "Event closed — locked"}
+                        onClick={() => !locked && onRemove(inv)}
+                        disabled={locked}
+                        className={`fa-btn-ghost p-1.5 ${!locked ? "text-ink-400 hover:text-danger" : "text-ink-200 cursor-not-allowed"}`}
+                        title={!locked ? "Remove" : "Event locked — read only"}
                       >
                         <X className="w-3.5 h-3.5" />
                       </button>

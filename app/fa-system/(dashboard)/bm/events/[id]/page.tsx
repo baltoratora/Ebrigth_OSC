@@ -122,7 +122,11 @@ export default function BMEventDetailPage() {
   // sessions where their branch has a quota). Walk-ins or legacy invites
   // tied to a session whose quota was later removed would otherwise inflate
   // the "Invited" stat above what the per-session breakdown sums to.
-  const bmSessionIds = useMemo(() => new Set(bmSessions.map(s => s.id)), [bmSessions]);
+  // NOTE: plain const, NOT useMemo — this runs *after* the early returns above
+  // (`return null` for non-BM users, "Event not found", etc.). A hook here would
+  // change the hook count between renders and crash with "Rendered fewer hooks
+  // than expected" when switching from branch view to marketing view.
+  const bmSessionIds = new Set(bmSessions.map(s => s.id));
   const totalBranchInvitations = invitations.filter(
     i => i.branch === user.branch && bmSessionIds.has(i.sessionId)
   ).length;
@@ -132,6 +136,9 @@ export default function BMEventDetailPage() {
       && countsAsConfirmed(i.status)
   ).length;
 
+  // canInvite: BMs can only add/change/remove invitations while the event is open.
+  // Any other status (closed, ongoing, completed, draft) is fully locked for BMs.
+  const isLocked = event.status !== "open";
   const canInvite = event.status === "open";
 
   const dateDisplay = formatDateRange(event.startDate, event.endDate);
@@ -189,11 +196,25 @@ export default function BMEventDetailPage() {
         <BMEventStatCard label="Confirmed" value={`${totalBranchConfirmed} / ${totalBranchQuota}`} />
       </div>
 
-      {!canInvite && event.status === "closed" && (
-        <div className="fa-card p-4 mb-6 border-l-4 border-l-warning bg-warning-soft/30 flex items-start gap-3">
+      {isLocked && (
+        <div className={`fa-card p-4 mb-6 border-l-4 flex items-start gap-3 ${
+          event.status === "closed"
+            ? "border-l-warning bg-warning-soft/30"
+            : event.status === "ongoing" || event.status === "completed"
+              ? "border-l-ink-300 bg-ivory-100"
+              : "border-l-ink-200 bg-ivory-50"
+        }`}>
           <AlertCircle className="w-5 h-5 text-warning flex-shrink-0 mt-0.5" />
           <div className="text-sm text-ink-600">
-            The invitation window has closed. This event is now locked — you can view your students but can no longer invite, confirm, reject, or remove them.
+            {event.status === "closed" && (
+              <>The invitation window has <strong className="text-ink-900">closed</strong>. This event is locked — you can view your students but cannot invite, confirm, decline, or remove anyone.</>
+            )}
+            {event.status === "ongoing" && (
+              <>This event is <strong className="text-ink-900">currently ongoing</strong>. The invitation window is closed — attendance is being taken by marketing.</>
+            )}
+            {event.status === "completed" && (
+              <>This event has <strong className="text-ink-900">completed</strong>. All records are read-only.</>
+            )}
           </div>
         </div>
       )}
@@ -294,6 +315,7 @@ export default function BMEventDetailPage() {
                 quota={selectedQuota!.quota}
                 invitations={sessionInvitations}
                 canInvite={canInvite}
+                isLocked={isLocked}
                 onOpenInvite={() => setInviteModalOpen(true)}
                 onStatusChange={(id, status) => updateInvitationStatus(id, status, user.id)}
                 onRemove={(inv) => setInvitationToRemove(inv)}
@@ -303,7 +325,8 @@ export default function BMEventDetailPage() {
         </div>
       )}
 
-      {inviteModalOpen && selectedSession && (
+      {/* Only open invite modal if not locked — belt-and-suspenders guard */}
+      {!isLocked && inviteModalOpen && selectedSession && (
         <InviteStudentsModal
           open={inviteModalOpen}
           onClose={() => setInviteModalOpen(false)}
@@ -330,18 +353,21 @@ export default function BMEventDetailPage() {
         />
       )}
 
-      <ConfirmDialog
-        open={!!invitationToRemove}
-        onClose={() => setInvitationToRemove(null)}
-        onConfirm={() => {
-          if (invitationToRemove) removeInvitation(invitationToRemove.id);
-          setInvitationToRemove(null);
-        }}
-        title="Remove this invitation?"
-        description="The student will no longer be invited to this session. You can re-invite them later if needed."
-        confirmLabel="Remove"
-        danger
-      />
+      {/* Remove dialog — only reachable when not locked, but guard anyway */}
+      {!isLocked && (
+        <ConfirmDialog
+          open={!!invitationToRemove}
+          onClose={() => setInvitationToRemove(null)}
+          onConfirm={() => {
+            if (invitationToRemove) removeInvitation(invitationToRemove.id);
+            setInvitationToRemove(null);
+          }}
+          title="Remove this invitation?"
+          description="The student will no longer be invited to this session. You can re-invite them later if needed."
+          confirmLabel="Remove"
+          danger
+        />
+      )}
     </AppShell>
   );
 }

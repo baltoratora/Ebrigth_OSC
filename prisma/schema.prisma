@@ -1764,12 +1764,18 @@ model RecRecruit {
   ghlOpportunityId String?   @unique
   ghlContactId     String?
   ghlCreatedAt     DateTime?
+  // Link to ebright_hrfs.career_applications.id — set when a candidate card is
+  // ingested from a "Join the Team" form submission. Unique so the reconcile
+  // never creates a second card for the same application.
+  applicationId    Int?      @unique
   deletedAt        DateTime?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
-  stage   RecStage          @relation(fields: [stageId], references: [id])
-  history RecStageHistory[]
+  stage     RecStage          @relation(fields: [stageId], references: [id])
+  history   RecStageHistory[]
+  interview RecInterview?
+  resumes   RecResume[]
 
   @@index([stageId])
   @@index([hired])
@@ -1792,4 +1798,40 @@ model RecStageHistory {
 
   @@index([recruitId])
   @@map("rec_stage_history")
+}
+
+model RecInterview {
+  id          String   @id @default(uuid())
+  recruitId   String   @unique
+  // Stored naive-KL-as-UTC (the HR picks 03:00 PM and we persist UTC hour 15),
+  // matching the trial-appointment convention elsewhere in the portal so the
+  // Calendar grid reads back via getUTC* without a double timezone shift.
+  scheduledAt DateTime
+  location    String?
+  note        String?
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  recruit RecRecruit @relation(fields: [recruitId], references: [id], onDelete: Cascade)
+
+  @@index([scheduledAt])
+  @@map("rec_interview")
+}
+
+model RecResume {
+  id         String   @id @default(uuid())
+  recruitId  String
+  fileName   String
+  mimeType   String   @default("application/octet-stream")
+  sizeBytes  Int      @default(0)
+  data       Bytes
+  uploadedBy String?
+  uploadedAt DateTime @default(now())
+
+  recruit RecRecruit @relation(fields: [recruitId], references: [id], onDelete: Cascade)
+
+  @@index([recruitId])
+  @@index([uploadedAt])
+  @@map("rec_resume")
 }

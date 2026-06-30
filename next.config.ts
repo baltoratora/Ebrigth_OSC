@@ -12,6 +12,13 @@ const nextConfig: NextConfig = {
   // which serverExternalPackages does NOT reach in Next.js 15.
   serverExternalPackages: ['urllib', 'nodemailer'],
 
+  // Raise the server-action body cap (default 1 MB) so resume uploads in the
+  // Recruitment module (up to 15 MB) aren't rejected before they reach the
+  // uploadResume action.
+  experimental: {
+    serverActions: { bodySizeLimit: '16mb' },
+  },
+
   webpack(config, { isServer }) {
     if (isServer) {
       // Externalize packages that use Node built-ins (fs, stream, zlib, etc.)

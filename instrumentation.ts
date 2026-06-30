@@ -56,4 +56,21 @@ export async function register() {
   } else {
     console.log('[hikvision-email] Disabled (set HIKVISION_EMAIL_SYNC=on to enable).');
   }
+
+  // ── Missing-today reminder emails (HQ) ────────────────────────────────────
+  // Once an HQ employee is 15 min past their scheduled start without clocking
+  // in, email them a reminder to justify the absence to HR. Separate from the
+  // clock-in/out emails. Gated by MISSING_REMINDER_EMAIL=on. Optional
+  // HR_JUSTIFY_EMAIL env makes the HR address a clickable mailto in the email.
+  if (process.env.MISSING_REMINDER_EMAIL === 'on') {
+    const { sendMissingReminders } = await import('@/lib/missing-reminder');
+    const MISSING_INTERVAL_MS = 5 * 60_000; // every 5 min — catches each start+15m window
+    console.log(`[missing-reminder] ON — checking every ${MISSING_INTERVAL_MS / 60000}min (HQ)`);
+    sendMissingReminders().catch(err => console.error('[missing-reminder] Initial run error:', err));
+    setInterval(() => {
+      sendMissingReminders().catch(err => console.error('[missing-reminder] Run error:', err));
+    }, MISSING_INTERVAL_MS);
+  } else {
+    console.log('[missing-reminder] Disabled (set MISSING_REMINDER_EMAIL=on to enable).');
+  }
 }
