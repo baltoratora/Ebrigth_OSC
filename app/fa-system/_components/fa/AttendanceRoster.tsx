@@ -1,6 +1,43 @@
 ﻿"use client";
 
 import { Clock, CheckCircle2, XCircle, GripVertical } from "lucide-react";
+
+// ── Grade colour system ──────────────────────────────────────────────────────
+// Each grade (1–8) gets a unique colour. Grade 5 uses bold amber/gold to
+// visually reinforce its priority (top-of-list) position.
+const GRADE_STYLES: Record<number, { row: string; badge: string; label: string }> = {
+  1: { row: "bg-violet-100 hover:bg-violet-200",  badge: "bg-violet-300  text-violet-900  ring-1 ring-violet-400",  label: "Grade 1" },
+  2: { row: "bg-blue-100   hover:bg-blue-200",    badge: "bg-blue-300    text-blue-900    ring-1 ring-blue-400",    label: "Grade 2" },
+  3: { row: "bg-cyan-100   hover:bg-cyan-200",    badge: "bg-cyan-300    text-cyan-900    ring-1 ring-cyan-400",    label: "Grade 3" },
+  4: { row: "bg-teal-100   hover:bg-teal-200",    badge: "bg-teal-300    text-teal-900    ring-1 ring-teal-400",    label: "Grade 4" },
+  5: { row: "bg-amber-200  hover:bg-amber-300",   badge: "bg-amber-500   text-amber-950   ring-1 ring-amber-600 font-bold", label: "Grade 5 ★" },
+  6: { row: "bg-orange-100 hover:bg-orange-200",  badge: "bg-orange-300  text-orange-900  ring-1 ring-orange-400",  label: "Grade 6" },
+  7: { row: "bg-rose-100   hover:bg-rose-200",    badge: "bg-rose-300    text-rose-900    ring-1 ring-rose-400",    label: "Grade 7" },
+  8: { row: "bg-fuchsia-100 hover:bg-fuchsia-200", badge: "bg-fuchsia-300 text-fuchsia-900 ring-1 ring-fuchsia-400", label: "Grade 8" },
+};
+
+function gradeStyle(grade: number) {
+  return GRADE_STYLES[grade] ?? {
+    row:   "bg-ivory-100 hover:bg-ivory-200",
+    badge: "bg-ivory-300 text-ink-800 ring-1 ring-ivory-400",
+    label: `Grade ${grade}`,
+  };
+}
+
+/** Colour-key pills shown above the roster table. */
+function GradeLegend({ grades }: { grades: number[] }) {
+  if (grades.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 mb-3">
+      <span className="text-xs text-ink-400 mr-1">Grade key:</span>
+      {grades.map(g => (
+        <span key={g} className={`text-xs px-2 py-0.5 rounded-full font-medium ${gradeStyle(g).badge}`}>
+          {gradeStyle(g).label}
+        </span>
+      ))}
+    </div>
+  );
+}
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useFAStore } from "@fa/_lib/store";
@@ -37,6 +74,11 @@ export function AttendanceRoster({
 
   const sortableIds = orderedInvitations.map(i => i.id);
 
+  // Unique grades present in this session — Grade 5 first, rest ascending.
+  const legendGrades = Array.from(
+    new Set(orderedInvitations.map(i => i.targetGrade ?? 0).filter(g => g > 0))
+  ).sort((a, b) => (a === 5 ? -1 : b === 5 ? 1 : a - b));
+
   return (
     <div>
       {/* Header */}
@@ -70,6 +112,9 @@ export function AttendanceRoster({
           </div>
         </div>
       </div>
+
+      {/* Grade colour legend */}
+      <GradeLegend grades={legendGrades} />
 
       {/* Unconfirmed warning */}
       {pendingConfirmationsCount > 0 && (
@@ -108,7 +153,9 @@ export function AttendanceRoster({
                   // count matches the visible rows and it stays actionable.
                   const student: Student = looked ?? {
                     id: inv.studentId,
-                    name: `#${inv.studentId} (not in records)`,
+                    name: inv.studentNameSnapshot
+                      ? `${inv.studentNameSnapshot} (unlinked)`
+                      : `#${inv.studentId} (not in records)`,
                     branch: inv.branch,
                     grade: inv.targetGrade ?? 0,
                     ageCategory: "Junior",
@@ -160,6 +207,9 @@ function SortableInvitationRow({
     id: inv.id,
     disabled: !canDrag,
   });
+  const grade = inv.targetGrade ?? student.grade;
+  const gs    = gradeStyle(grade);
+
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -169,7 +219,12 @@ function SortableInvitationRow({
   const branchInfo = BRANCHES.find(b => b.code === inv.branch);
 
   return (
-    <tr ref={setNodeRef} style={style} {...attributes}>
+    <tr
+      ref={setNodeRef}
+      style={style}
+      className={!isDragging ? gs.row : undefined}
+      {...attributes}
+    >
       <td className="text-right fa-mono text-ink-500">{position}</td>
       {canDrag && (
         <td>
@@ -193,11 +248,18 @@ function SortableInvitationRow({
           {inv.branch}
         </span>
       </td>
-      <td className="font-mono text-sm">
-        <div className="flex items-center gap-1.5">
-          <span>G{inv.targetGrade ?? student.grade}</span>
-          <ModuleBadge category={student.ageCategory} />
-        </div>
+      <td>
+        {(() => {
+          const g = inv.targetGrade ?? student.grade;
+          return (
+            <div className="flex items-center gap-1.5">
+              <span className={`text-xs px-2 py-0.5 rounded-full font-medium font-mono ${gradeStyle(g).badge}`}>
+                G{g}
+              </span>
+              <ModuleBadge category={student.ageCategory} />
+            </div>
+          );
+        })()}
       </td>
       <td>
         <div className="text-sm text-ink-900">{student.parentName}</div>

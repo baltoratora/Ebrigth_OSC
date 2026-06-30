@@ -76,6 +76,7 @@ interface InvitationRow {
   attendance_marked_at: Date | string | null;
   attendance_marked_by: string | null;
   notes: string | null;
+  student_name_snapshot?: string | null;
 }
 
 interface EventBranchOverrideRow {
@@ -170,6 +171,7 @@ function rowToInvitation(r: InvitationRow): Invitation {
     attendanceMarkedAt: isoTimestamp(r.attendance_marked_at),
     attendanceMarkedBy: r.attendance_marked_by ?? undefined,
     notes: r.notes ?? undefined,
+    studentNameSnapshot: r.student_name_snapshot ?? undefined,
   };
 }
 
@@ -207,7 +209,8 @@ export async function fetchAllEventData(): Promise<{
     ),
     pool.query<InvitationRow>(
       `SELECT id, event_id, session_id, student_id, branch, target_grade, status, invited_by,
-              invited_at, confirmed_at, attendance_marked_at, attendance_marked_by, notes
+              invited_at, confirmed_at, attendance_marked_at, attendance_marked_by, notes,
+              student_name_snapshot
          FROM fa_invitations
         WHERE tenant_id = $1`,
       [TENANT]
@@ -627,10 +630,20 @@ export async function createInvitationRow(args: {
   try {
     const { rows } = await pool.query<InvitationRow>(
       `INSERT INTO fa_invitations
-         (tenant_id, event_id, session_id, student_id, branch, target_grade, status, invited_by, invited_at, confirmed_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), CASE WHEN $7 IN ('confirmed', 'walk_in') THEN now() ELSE NULL END)
+         (tenant_id, event_id, session_id, student_id, branch, target_grade, status, invited_by, invited_at, confirmed_at, student_name_snapshot)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), CASE WHEN $7 IN ('confirmed', 'walk_in') THEN now() ELSE NULL END,
+               -- Snapshot the student's name at invite time so the roster can
+               -- still show who this is even if the student id later breaks
+               -- (archive/restore/delete). Mirrors pcm_invitations.
+               COALESCE(
+                 (SELECT name FROM studentrecords WHERE id::text = $4),
+                 (SELECT name FROM archived_students
+                   WHERE student_id = $4 OR student_id = 'arch-' || $4 OR no::text = $4
+                   LIMIT 1)
+               ))
        RETURNING id, event_id, session_id, student_id, branch, target_grade, status, invited_by,
-                 invited_at, confirmed_at, attendance_marked_at, attendance_marked_by, notes`,
+                 invited_at, confirmed_at, attendance_marked_at, attendance_marked_by, notes,
+                 student_name_snapshot`,
       [TENANT, args.eventId, args.sessionId, args.studentId, args.branch, args.targetGrade, args.status, args.invitedBy]
     );
     return rowToInvitation(rows[0]);

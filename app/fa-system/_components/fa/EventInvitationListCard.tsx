@@ -232,7 +232,7 @@ export function EventInvitationListCard({ event }: EventInvitationListCardProps)
                     </span>
                   </td>
                   <td>
-                    <div className="text-sm text-ink-900 font-medium">{student?.name ?? "(unknown)"}</div>
+                    <div className="text-sm text-ink-900 font-medium">{student?.name ?? invitation.studentNameSnapshot ?? "(unknown)"}</div>
                     <div className="text-[11px] text-ink-400 font-mono">
                       G{student?.grade ?? "?"}·C{student?.credit ?? "?"}
                     </div>

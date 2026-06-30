@@ -66,8 +66,8 @@ export default function FaReportsListPage() {
       const student = studentsById.get(inv.studentId);
       const report  = reportByInvId.get(inv.id);
       // Prefer the live student record; fall back to anything snapshotted
-      // on the report (if one exists); finally use the bare ID.
-      const name  = student?.name  ?? report?.studentName ?? `#${inv.studentId}`;
+      // on the report, then the invitation's name snapshot; finally the bare ID.
+      const name  = student?.name  ?? report?.studentName ?? inv.studentNameSnapshot ?? `#${inv.studentId}`;
       const grade = inv.targetGrade || student?.grade || report?.grade || 0;
       return {
         invitationId: inv.id,

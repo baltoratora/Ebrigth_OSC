@@ -381,6 +381,10 @@ export interface Invitation {
   attendanceMarkedAt?: string;
   attendanceMarkedBy?: string;
   notes?: string;
+  /** Student's name captured at invite time. Display fallback so the roster
+   *  still shows who this is if the student id later can't be resolved
+   *  (archived/restored/deleted). Mirrors PCM's student_name_snapshot. */
+  studentNameSnapshot?: string;
 }
 
 // ----------------------------------------------------------------------------
