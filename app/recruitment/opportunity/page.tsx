@@ -24,7 +24,8 @@ export default async function RecruitmentOpportunityPage() {
     shortCode: c.shortCode,
     color: c.color,
     recruits: c.recruits.map((r) => ({
-      id: r.id, name: r.name, source: r.source, position: r.position, branch: r.branch, hired: r.hired,
+      id: r.id, name: r.name, source: r.source, position: r.position, positions: r.positions ?? [],
+      branch: r.branch, hired: r.hired,
       createdAt: r.createdAt.toISOString(),
       ghlCreatedAt: r.ghlCreatedAt ? r.ghlCreatedAt.toISOString() : null,
     })),

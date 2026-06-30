@@ -2,8 +2,10 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { FileText, Download, Search, Trash2, Loader2 } from "lucide-react";
+import { FileText, Download, Search, Trash2, Loader2, Upload } from "lucide-react";
 import { deleteResume } from "@/app/recruitment/_resume-actions";
+import { LibraryUploadModal } from "@/components/recruitment/library-upload-modal";
+import { type RecruitOpt } from "@/components/recruitment/recruit-picker";
 
 interface ResumeItem {
   id: string;
@@ -23,10 +25,11 @@ function fmt(iso: string) {
   });
 }
 
-export function LibraryTable({ resumes, canDelete }: { resumes: ResumeItem[]; canDelete: boolean }) {
+export function LibraryTable({ resumes, canDelete, recruits }: { resumes: ResumeItem[]; canDelete: boolean; recruits: RecruitOpt[] }) {
   const router = useRouter();
   const [q, setQ] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [uploadOpen, setUploadOpen] = useState(false);
 
   const shown = useMemo(() => {
     const s = q.trim().toLowerCase();
@@ -44,14 +47,22 @@ export function LibraryTable({ resumes, canDelete }: { resumes: ResumeItem[]; ca
 
   return (
     <div className="space-y-3">
-      <div className="relative w-64">
-        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search resumes…"
-          className="w-full rounded-lg border border-slate-300 bg-white py-1.5 pl-8 pr-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-800 dark:text-white"
-        />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="relative w-64">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search resumes…"
+            className="w-full rounded-lg border border-slate-300 bg-white py-1.5 pl-8 pr-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-800 dark:text-white"
+          />
+        </div>
+        <button
+          onClick={() => setUploadOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700"
+        >
+          <Upload className="h-4 w-4" /> Upload resume
+        </button>
       </div>
 
       {shown.length === 0 ? (
@@ -99,6 +110,14 @@ export function LibraryTable({ resumes, canDelete }: { resumes: ResumeItem[]; ca
             </tbody>
           </table>
         </div>
+      )}
+
+      {uploadOpen && (
+        <LibraryUploadModal
+          recruits={recruits}
+          onClose={() => setUploadOpen(false)}
+          onUploaded={() => { setUploadOpen(false); router.refresh(); }}
+        />
       )}
     </div>
   );

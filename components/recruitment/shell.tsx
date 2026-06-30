@@ -23,7 +23,7 @@ export function RecruitmentShell({ children }: { children: React.ReactNode }) {
   }, [dark, ready]);
 
   return (
-    <div className={cn("flex h-screen overflow-hidden bg-slate-50 dark:bg-slate-950", dark && "dark")}>
+    <div className={cn("flex h-screen overflow-hidden bg-slate-100 dark:bg-slate-950", dark && "dark")}>
       <RecruitmentSidebar />
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Top bar */}

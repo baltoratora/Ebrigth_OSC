@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/nextauth";
 import { ROLES, normalizeRole } from "@/lib/roles";
-import { getResumes } from "@/lib/recruitment/data";
+import { getResumes, getRecruitOptions } from "@/lib/recruitment/data";
 import { LibraryTable } from "@/components/recruitment/library-table";
 import { PageHeader } from "../_components/placeholders";
 
@@ -9,7 +9,7 @@ import { PageHeader } from "../_components/placeholders";
 export const dynamic = "force-dynamic";
 
 export default async function RecruitmentLibraryPage() {
-  const [resumes, session] = await Promise.all([getResumes(), getServerSession(authOptions)]);
+  const [resumes, recruits, session] = await Promise.all([getResumes(), getRecruitOptions(), getServerSession(authOptions)]);
   const role = normalizeRole((session?.user as { role?: string } | undefined)?.role);
   const canDelete = !!role && new Set<string>([ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD]).has(role);
 
@@ -22,7 +22,7 @@ export default async function RecruitmentLibraryPage() {
         </span>
       </div>
       <div className="flex-1 overflow-y-auto p-6 pt-4">
-        <LibraryTable resumes={resumes} canDelete={canDelete} />
+        <LibraryTable resumes={resumes} canDelete={canDelete} recruits={recruits} />
       </div>
     </div>
   );

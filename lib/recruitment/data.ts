@@ -2,6 +2,7 @@ import "server-only";
 // Recruitment lives in the ebright_hrfs database — use the HRFS client.
 import { hrfsPrisma as prisma } from "@/lib/hrfs";
 import { syncCareerApplications } from "@/lib/recruitment/career-sync";
+import { groupPeople } from "@/lib/recruitment/dedupe";
 
 // Shared server-side data access for the Recruitment module. All reads are
 // scoped to non-deleted recruits and ordered by the canonical stage order.
@@ -18,6 +19,13 @@ export interface RecCard {
   branchStaffId: number | null;
   ghlCreatedAt: Date | null;
   createdAt: Date;
+  /** Every distinct position this person applied for (merged duplicate cards). */
+  positions?: string[];
+}
+
+/** ghlCreatedAt (submission time) if present, else createdAt — for sorting. */
+function cardMs(r: { ghlCreatedAt: Date | null; createdAt: Date }): number {
+  return (r.ghlCreatedAt ?? r.createdAt).getTime();
 }
 
 export interface RecColumn {
@@ -34,7 +42,9 @@ const CARD_SELECT = {
   branch: true, hired: true, branchStaffId: true, ghlCreatedAt: true, createdAt: true,
 } as const;
 
-/** Stages (ordered) each with their non-deleted recruits — the kanban payload. */
+/** Stages (ordered) each with their non-deleted recruits — the kanban payload.
+ *  Duplicate cards for the same person are merged: the person appears once, in
+ *  their most-advanced stage, with every position they applied for listed. */
 export async function getKanban(): Promise<RecColumn[]> {
   // Pull in any new "Join the Team" form submissions before rendering the board,
   // so a freshly-filled application shows as a candidate card. Best-effort.
@@ -50,18 +60,60 @@ export async function getKanban(): Promise<RecColumn[]> {
       },
     },
   });
-  return stages;
+
+  // Flatten across stages with each card's stage context, then collapse by person.
+  type Flat = RecCard & { stageId: string; stageOrder: number; sortKey: number };
+  const flat: Flat[] = [];
+  for (const s of stages) {
+    for (const r of s.recruits) {
+      flat.push({ ...r, stageId: s.id, stageOrder: s.order, sortKey: cardMs(r) });
+    }
+  }
+  const groups = groupPeople(flat);
+
+  // Each person becomes one card (the rep), placed in the rep's stage, carrying
+  // the merged position list + a hired flag true if any duplicate was hired.
+  const byStage = new Map<string, (RecCard & { positions: string[] })[]>();
+  for (const g of groups) {
+    const card: RecCard & { positions: string[] } = {
+      ...g.rep,
+      hired: g.hired,
+      position: g.positions[0] ?? g.rep.position,
+      positions: g.positions,
+    };
+    const list = byStage.get(g.rep.stageId) ?? [];
+    list.push(card);
+    byStage.set(g.rep.stageId, list);
+  }
+
+  return stages.map((s) => ({
+    id: s.id, name: s.name, shortCode: s.shortCode, order: s.order, color: s.color,
+    recruits: (byStage.get(s.id) ?? []).sort((a, b) => cardMs(b) - cardMs(a)),
+  }));
 }
 
-/** Flat recruit list for the Contacts table. */
+/** Flat recruit list for the Contacts table (deduplicated by person). */
 export async function getRecruitsList(): Promise<(RecCard & { stageName: string; stageShort: string })[]> {
   await syncCareerApplications();
   const rows = await prisma.recRecruit.findMany({
     where: { deletedAt: null },
     orderBy: [{ ghlCreatedAt: "desc" }, { createdAt: "desc" }],
-    select: { ...CARD_SELECT, stage: { select: { name: true, shortCode: true } } },
+    select: { ...CARD_SELECT, stage: { select: { name: true, shortCode: true, order: true } } },
   });
-  return rows.map((r) => ({ ...r, stageName: r.stage.name, stageShort: r.stage.shortCode }));
+  const groups = groupPeople(
+    rows.map((r) => ({ ...r, stageOrder: r.stage.order, sortKey: cardMs(r) })),
+  );
+  return groups
+    .map((g) => ({
+      ...g.rep,
+      hired: g.hired,
+      // Show every applied position in the single Contacts row.
+      position: g.positions.join(", ") || g.rep.position,
+      positions: g.positions,
+      stageName: g.rep.stage.name,
+      stageShort: g.rep.stage.shortCode,
+    }))
+    .sort((a, b) => cardMs(b) - cardMs(a));
 }
 
 export interface RecMetrics {
@@ -71,16 +123,27 @@ export interface RecMetrics {
   stages: { name: string; shortCode: string; color: string; order: number; count: number }[];
 }
 
-/** Headline metrics + per-stage funnel for the dashboard. */
+/** Headline metrics + per-stage funnel for the dashboard. Counts are by PERSON
+ *  (duplicate cards collapsed) so the numbers match the deduplicated board. */
 export async function getDashboardMetrics(): Promise<RecMetrics> {
   await syncCareerApplications();
-  const [total, hired, stages, grouped] = await Promise.all([
-    prisma.recRecruit.count({ where: { deletedAt: null } }),
-    prisma.recRecruit.count({ where: { deletedAt: null, hired: true } }),
+  const [stages, recruits] = await Promise.all([
     prisma.recStage.findMany({ orderBy: { order: "asc" }, select: { id: true, name: true, shortCode: true, color: true, order: true } }),
-    prisma.recRecruit.groupBy({ by: ["stageId"], where: { deletedAt: null }, _count: { _all: true } }),
+    prisma.recRecruit.findMany({
+      where: { deletedAt: null },
+      select: { id: true, phone: true, email: true, position: true, hired: true, stageId: true, ghlCreatedAt: true, createdAt: true },
+    }),
   ]);
-  const countByStage = new Map(grouped.map((g) => [g.stageId, g._count._all]));
+  const orderById = new Map(stages.map((s) => [s.id, s.order]));
+  const groups = groupPeople(
+    recruits.map((r) => ({ ...r, stageOrder: orderById.get(r.stageId) ?? 0, sortKey: cardMs(r) })),
+  );
+  const total = groups.length;
+  const hired = groups.filter((g) => g.hired).length;
+  const countByStage = new Map<string, number>();
+  for (const g of groups) {
+    countByStage.set(g.rep.stageId, (countByStage.get(g.rep.stageId) ?? 0) + 1);
+  }
   return {
     total,
     hired,
@@ -90,6 +153,34 @@ export async function getDashboardMetrics(): Promise<RecMetrics> {
       count: countByStage.get(s.id) ?? 0,
     })),
   };
+}
+
+export interface RecruitOption {
+  id: string;
+  name: string;
+  stageShort: string;
+  position: string | null;
+}
+
+/** Lightweight {id, name} list (deduped by person) for the calendar / library
+ *  recruit pickers. The most-advanced card represents each person. */
+export async function getRecruitOptions(): Promise<RecruitOption[]> {
+  const rows = await prisma.recRecruit.findMany({
+    where: { deletedAt: null },
+    orderBy: { name: "asc" },
+    select: { id: true, name: true, phone: true, email: true, position: true, hired: true, stageId: true, ghlCreatedAt: true, createdAt: true, stage: { select: { shortCode: true, order: true } } },
+  });
+  const groups = groupPeople(
+    rows.map((r) => ({ ...r, stageOrder: r.stage.order, sortKey: cardMs(r) })),
+  );
+  return groups
+    .map((g) => ({
+      id: g.rep.id,
+      name: g.rep.name,
+      stageShort: g.rep.stage.shortCode,
+      position: g.positions.join(", ") || g.rep.position,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Most recently-submitted recruits — drives the Notifications feed. */
