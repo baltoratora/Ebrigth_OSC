@@ -164,7 +164,7 @@ export async function sendMissingReminderEmail(to: string, name: string, hrEmail
         </p>
         <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:16px;margin:20px 0;">
           <p style="margin:0;font-size:14px;color:#92400e;">
-            📩 Please email ${hrTarget} to justify your absence for today.
+            📩 Please email ${hrTarget} to justify why you did not use the scanner or were late today.
           </p>
         </div>
         <p style="font-size:13px;color:#6b7280;">

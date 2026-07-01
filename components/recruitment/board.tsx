@@ -10,6 +10,7 @@ import {
 } from "@hello-pangea/dnd";
 import { UserRoundCheck, Search, X, Trash2, ArrowRightLeft, CheckSquare } from "lucide-react";
 import { moveRecruit, bulkMoveRecruits, bulkDeleteRecruits, deleteRecruit } from "@/app/recruitment/_actions";
+import { sourceLabel } from "@/lib/recruitment/labels";
 import { RecruitDetailModal } from "@/components/recruitment/recruit-detail-modal";
 import { InterviewScheduleModal } from "@/components/recruitment/interview-schedule-modal";
 import { ResumeUploadModal } from "@/components/recruitment/resume-upload-modal";
@@ -32,6 +33,7 @@ interface Card {
   name: string;
   source: string | null;
   position: string | null;
+  positions: string[];
   branch: string | null;
   hired: boolean;
   createdAt: string;
@@ -124,7 +126,8 @@ export function RecruitmentBoard({
     }
     if (q) {
       const s = q.toLowerCase();
-      if (![r.name, r.position, r.branch, r.source].some((v) => (v ?? "").toLowerCase().includes(s))) return false;
+      const hay = [r.name, r.branch, r.source, sourceLabel(r.source), ...(r.positions ?? []), r.position];
+      if (!hay.some((v) => (v ?? "").toLowerCase().includes(s))) return false;
     }
     return true;
   };
@@ -308,7 +311,7 @@ export function RecruitmentBoard({
         </select>
         <select value={source} onChange={(e) => setSource(e.target.value)} className={SELECT_CLS} title="Filter by source">
           <option value="">All sources</option>
-          {sourceOpts.map((s) => <option key={s} value={s}>{s}</option>)}
+          {sourceOpts.map((s) => <option key={s} value={s}>{sourceLabel(s)}</option>)}
         </select>
         <label className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
           <input type="checkbox" checked={hiredOnly} onChange={(e) => setHiredOnly(e.target.checked)} className="h-3.5 w-3.5 accent-emerald-600" />
@@ -451,12 +454,25 @@ export function RecruitmentBoard({
                                         )}
                                       </div>
                                     </div>
-                                    {(r.position || r.source) && (
-                                      <p className="mt-1 truncate text-[11px] text-slate-500 dark:text-slate-400">{r.position || r.source}</p>
+                                    {/* Positions applied for — one chip each (a person who
+                                        applied for several roles shows all of them). */}
+                                    {(r.positions?.length ? r.positions : r.position ? [r.position] : []).length > 0 && (
+                                      <div className="mt-1.5 flex flex-wrap gap-1">
+                                        {(r.positions?.length ? r.positions : [r.position!]).map((p) => (
+                                          <span key={p} className="inline-block max-w-full truncate rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300" title={p}>
+                                            {p}
+                                          </span>
+                                        ))}
+                                      </div>
                                     )}
-                                    {r.branch && (
-                                      <span className="mt-1 inline-block rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-slate-500 dark:bg-slate-700 dark:text-slate-300">{r.branch}</span>
-                                    )}
+                                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                                      {r.branch && (
+                                        <span className="inline-block rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-slate-500 dark:bg-slate-700 dark:text-slate-300">{r.branch}</span>
+                                      )}
+                                      {r.source && (
+                                        <span className="truncate text-[10px] text-slate-400" title={sourceLabel(r.source) ?? undefined}>{sourceLabel(r.source)}</span>
+                                      )}
+                                    </div>
                                   </div>
                                 </div>
                               </div>

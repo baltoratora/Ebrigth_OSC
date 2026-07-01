@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { FileText, Loader2, Upload, X } from "lucide-react";
 import { uploadResume } from "@/app/recruitment/_resume-actions";
 import { getRecruitDetail, type RecruitDetail } from "@/app/recruitment/_actions";
+import { formTypeLabel } from "@/lib/recruitment/labels";
 
 /**
  * Drag-to-"Resume Submission (RS)" popup: shows the candidate's details and
@@ -53,7 +54,7 @@ export function ResumeUploadModal({
     ["Email", hrfs?.email ?? detail?.email],
     ["Phone", hrfs?.phone ?? detail?.phone],
     ["City", hrfs?.city],
-    ["Type of form", hrfs?.formType],
+    ["Type of form", formTypeLabel(hrfs?.formType)],
     ["Education level", hrfs?.educationLevel],
     ["Gender", hrfs?.gender],
   ];

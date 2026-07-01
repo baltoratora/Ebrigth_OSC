@@ -130,6 +130,8 @@ export interface RecruitDetail {
   phone: string | null;
   source: string | null;
   position: string | null;
+  /** Every distinct position this person applied for (merged duplicate cards). */
+  positions: string[];
   branch: string | null;
   hired: boolean;
   branchStaffId: number | null;
@@ -181,6 +183,28 @@ export async function getRecruitDetail(
     // link, fall back to email/phone for older cards. Best-effort.
     const hrfs = await getHrfsCandidate({ applicationId: r.applicationId, email: r.email, phone: r.phone });
 
+    // Aggregate every position this person applied for across their (possibly
+    // duplicate) cards — matched by exact phone or email.
+    const positions: string[] = [];
+    {
+      const seen = new Set<string>();
+      const add = (p: string | null | undefined) => {
+        const v = p?.trim();
+        if (v && !seen.has(v.toLowerCase())) { seen.add(v.toLowerCase()); positions.push(v); }
+      };
+      add(r.position);
+      const orFilters: { phone?: string; email?: string }[] = [];
+      if (r.phone) orFilters.push({ phone: r.phone });
+      if (r.email) orFilters.push({ email: r.email });
+      if (orFilters.length) {
+        const siblings = await prisma.recRecruit.findMany({
+          where: { deletedAt: null, id: { not: r.id }, OR: orFilters },
+          select: { position: true },
+        });
+        for (const s of siblings) add(s.position);
+      }
+    }
+
     const stages = await prisma.recStage.findMany({ select: { id: true, name: true } });
     const nameById = new Map(stages.map((s) => [s.id, s.name]));
 
@@ -188,7 +212,7 @@ export async function getRecruitDetail(
       ok: true,
       detail: {
         id: r.id, name: r.name, email: r.email, phone: r.phone, source: r.source,
-        position: r.position, branch: r.branch, hired: r.hired, branchStaffId: r.branchStaffId,
+        position: positions[0] ?? r.position, positions, branch: r.branch, hired: r.hired, branchStaffId: r.branchStaffId,
         ghlOpportunityId: r.ghlOpportunityId, ghlContactId: r.ghlContactId,
         stageName: r.stage.name, stageShort: r.stage.shortCode,
         ghlCreatedAt: r.ghlCreatedAt?.toISOString() ?? null,

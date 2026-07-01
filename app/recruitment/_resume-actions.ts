@@ -42,14 +42,18 @@ export async function uploadResume(formData: FormData): Promise<ResumeResult> {
       return { ok: false, error: "Unsupported file type (PDF, Word, PNG, JPG only)" };
     }
 
+    // When uploaded from the Library (noMove), just attach the file — don't drag
+    // the candidate back into the Resume Submission stage.
+    const noMove = String(formData.get("noMove") ?? "") === "1";
+
     const recruit = await prisma.recRecruit.findFirst({
       where: { id: recruitId, deletedAt: null },
       select: { id: true, stageId: true },
     });
     if (!recruit) return { ok: false, error: "Recruit not found" };
 
-    const rsStageId = await stageIdByShortCode("RS");
-    if (!rsStageId) return { ok: false, error: 'Stage "Resume Submission (RS)" not found' };
+    const rsStageId = noMove ? null : await stageIdByShortCode("RS");
+    if (!noMove && !rsStageId) return { ok: false, error: 'Stage "Resume Submission (RS)" not found' };
 
     const buf = Buffer.from(await file.arrayBuffer());
 
@@ -65,7 +69,7 @@ export async function uploadResume(formData: FormData): Promise<ResumeResult> {
         },
         select: { id: true },
       });
-      if (recruit.stageId !== rsStageId) {
+      if (rsStageId && recruit.stageId !== rsStageId) {
         await tx.recRecruit.update({ where: { id: recruitId }, data: { stageId: rsStageId } });
         await tx.recStageHistory.create({
           data: { recruitId, fromStageId: recruit.stageId, toStageId: rsStageId, changedBy: userId, note: "Resume submitted" },
