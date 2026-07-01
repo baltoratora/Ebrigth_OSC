@@ -31,7 +31,7 @@ const BRANCHES = [
   '20 Ebright (Kajang TTDI Grove)',
   '21 Ebright (Tropicana Sungai Buloh)',
   '22 Ebright (Puncak Jalil)',
-  '23 Ebright (Dataran Puchong Utama)',
+  '23 Ebright (Puchong Utama)',
 ]
 
 interface Child {
