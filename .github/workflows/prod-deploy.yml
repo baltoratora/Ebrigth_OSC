@@ -63,6 +63,8 @@ jobs:
             export SMTP_USER='${{ secrets.SMTP_USER }}'
             export SMTP_PASS='${{ secrets.SMTP_PASS }}'
             export HIKVISION_EMAIL_SYNC='on'
+            export MISSING_REMINDER_EMAIL='on'
+            export HR_JUSTIFY_EMAIL='hr@ebright.my'
             /home/staff1/deploy-prod.sh osc
 
             # ── Health check ──────────────────────────────────────────────
