@@ -126,6 +126,7 @@ async function fetchUnifiedRows(
        FROM public.master_leads_unified
       WHERE source_table = $1
         AND (source_id = $2 OR source_id LIKE $2 || '#%')
+        AND source_table <> 'cns_leads'
       ORDER BY sibling_index ASC NULLS FIRST`,
     [sourceTable, sourceId],
   )
@@ -210,6 +211,7 @@ async function runBackstop(pg: PgClient): Promise<void> {
             campaign_name
        FROM public.master_leads_unified
       WHERE submitted_at > $1
+        AND source_table <> 'cns_leads'
       ORDER BY submitted_at ASC, sibling_index ASC NULLS FIRST`,
     [watermark],
   )
