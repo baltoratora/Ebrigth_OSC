@@ -253,9 +253,9 @@ export default function ArchiveSchedulePage() {
     return new Set([...SHARED_EMPLOYEES, ...Object.values(branchStaffData).flat()]);
   }, [branchStaffData]);
 
-  const validData = useMemo(() => {
+  const validData = useMemo<Record<string, string>>(() => {
     if (!selectedRecord) return {};
-    const raw = selectedRecord.selections && Object.keys(selectedRecord.selections).length > 0
+    const raw: Record<string, string> = selectedRecord.selections && Object.keys(selectedRecord.selections).length > 0
       ? selectedRecord.selections
       : selectedRecord.originalSelections || {};
     // Strip stale names (e.g. "ISHINI" saved before a nickname change) so they
