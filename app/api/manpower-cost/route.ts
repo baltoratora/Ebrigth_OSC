@@ -12,6 +12,7 @@ import {
   STAR_COACH_RATE,
   POOJA_EMPLOYEE_ID,
   AMIN_EMPLOYEE_ID,
+  getWeekendDailyTarget,
 } from "@/lib/manpowerUtils";
 import { isEmployee, isBranchManager, isAcademy } from "@/lib/roles";
 import { normalizeLocation } from "@/lib/constants";
@@ -130,7 +131,7 @@ function managerOnDutyEntries(
       // When the override has specific dates, skip days not in that list.
       if (override?.dates && !override.dates.includes(date)) continue;
       const isWeekend = day === "Saturday" || day === "Sunday";
-      const dailyTarget = isWeekend ? 10.5 : 5.0;
+      const dailyTarget = isWeekend ? getWeekendDailyTarget(branch, date) : 5.0;
       const managerExecHrs = Math.min(slots * 1.25, dailyTarget);
       out.push({ name, day, date, execHrs: dailyTarget, managerExecHrs, modRate: override?.modRate });
     }
@@ -153,6 +154,7 @@ type StaffRecord = {
   endDate: string | null;
   contract: string | null;
   status: string | null;
+  workingHours: unknown;
 };
 
 // Basic employment info a Branch Manager sees for each coach in their branch.
@@ -191,7 +193,8 @@ function branchesMatch(a: string | null | undefined, b: string | null | undefine
 
 function calculateHoursFromSelections(
   selections: Record<string, string>,
-  branch: string
+  branch: string,
+  startDate: string
 ): Record<string, { coachHrs: number; execHrs: number; trainingHrs: number; totalHrs: number; classCount: number; starCoachClasses: number; starCoachHrs: number; dailyBreakdown: DailyHour[] }> {
   const allNames = new Set<string>();
   Object.values(selections).forEach((val) => {
@@ -203,9 +206,21 @@ function calculateHoursFromSelections(
     staffStats[name] = { coachHrs: 0, execHrs: 0, trainingHrs: 0, totalHrs: 0, classCount: 0, starCoachClasses: 0, starCoachHrs: 0, dailyBreakdown: [] };
   });
 
+  const DOW: Record<string, number> = { Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Friday: 5, Saturday: 6 };
+  const [sy, sm, sd] = startDate.split("-").map(Number);
+  const weekStart = new Date(sy, sm - 1, sd);
+  const startDow = weekStart.getDay();
+  function dayDate(dayName: string): string {
+    let diff = (DOW[dayName] ?? 0) - startDow;
+    if (diff < 0) diff += 7;
+    const d = new Date(sy, sm - 1, sd + diff);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+
   getWorkingDaysForBranch(branch).forEach((day) => {
     const isWeekend = day === "Saturday" || day === "Sunday";
-    const dailyTarget = isWeekend ? 10.5 : 5.0;
+    const actualDate = dayDate(day);
+    const dailyTarget = isWeekend ? getWeekendDailyTarget(branch, actualDate) : 5.0;
 
     allNames.forEach((emp) => {
       let coachingHoursForDay = 0;
@@ -216,7 +231,7 @@ function calculateHoursFromSelections(
       let workedThatDay = false;
       let inTrainingThatDay = false;
 
-      getTimeSlotsForDay(day, branch).forEach((slot) => {
+      getTimeSlotsForDay(day, branch, actualDate).forEach((slot) => {
         if (isOpeningClosingSlot(slot, branch)) return;
         ALL_COLUMNS.forEach((col) => {
           if (selections[`${day}-${slot}-${col.id}`] !== emp) return;
@@ -480,6 +495,7 @@ export async function GET(request: Request) {
         endDate: true,
         contract: true,
         status: true,
+        workingHours: true,
       },
     });
 
@@ -498,6 +514,9 @@ export async function GET(request: Request) {
       );
       loggedInStaffId = me?.id ?? null;
     }
+    const employeeWorkingHours = isEmployeeView && loggedInStaffId !== null
+      ? (allStaff.find(s => s.id === loggedInStaffId)?.workingHours ?? null)
+      : null;
 
     const dayNameToDate = (dayName: string, startDate: string): string => {
       const dayMap: Record<string, number> = {
@@ -523,7 +542,7 @@ export async function GET(request: Request) {
       const selections = (schedule.selections || schedule.originalSelections || {}) as Record<string, string>;
       if (!selections || Object.keys(selections).length === 0) return;
 
-      const stats = calculateHoursFromSelections(selections, schedule.branch);
+      const stats = calculateHoursFromSelections(selections, schedule.branch, schedule.startDate);
 
       Object.entries(stats).forEach(([name, hours]) => {
         if (hours.totalHrs === 0) return;
@@ -706,6 +725,32 @@ export async function GET(request: Request) {
 
     Object.values(aggregated).forEach((emp) => {
       emp.days.sort((a, b) => a.date.localeCompare(b.date));
+
+      // Merge multiple entries for the same date. This happens when two
+      // slot-name variants for the same BranchStaff (e.g. "RITHU" / "ISHINI")
+      // both appear on the same schedule day. Each name is processed separately
+      // in calculateHoursFromSelections, producing two daily entries that both
+      // end up in this bucket. Sum coach hours and classes; re-derive exec as
+      // dailyTarget − coachHrs to prevent exec from being double-counted.
+      const merged: DailyEntry[] = [];
+      for (const d of emp.days) {
+        const prev = merged[merged.length - 1];
+        if (prev && prev.date === d.date) {
+          prev.coachHrs += d.coachHrs;
+          prev.classCount = (prev.classCount || 0) + (d.classCount || 0);
+          prev.starCoachClasses = (prev.starCoachClasses || 0) + (d.starCoachClasses || 0);
+          prev.starCoachHrs = (prev.starCoachHrs || 0) + (d.starCoachHrs || 0);
+          prev.trainingHrs = (prev.trainingHrs || 0) + (d.trainingHrs || 0);
+          prev.managerExecHrs = (prev.managerExecHrs || 0) + (d.managerExecHrs || 0);
+          const isWeekend = prev.day === "Saturday" || prev.day === "Sunday";
+          const dailyTarget = (prev.trainingHrs || 0) > 0 ? TRAINING_DAY_HOURS : isWeekend ? getWeekendDailyTarget(emp.branch, prev.date) : 5.0;
+          prev.execHrs = Math.max(0, dailyTarget - prev.coachHrs);
+          prev.totalHrs = prev.coachHrs + prev.execHrs + (prev.trainingHrs || 0);
+        } else {
+          merged.push({ ...d });
+        }
+      }
+      emp.days = merged;
     });
 
     const results = Object.values(aggregated)
@@ -783,6 +828,7 @@ export async function GET(request: Request) {
           days,
           isPT,
           isTraining,
+          staffRole: staff?.role ?? null,
           coachPay,
           starCoachPay,
           execPay,
@@ -895,6 +941,7 @@ export async function GET(request: Request) {
       isBranchManagerView: isBranchManager(userRole),
       branchRoster,
       availableWeeks,
+      employeeWorkingHours,
     });
   } catch (error) {
     console.error("Manpower cost calculation error:", error);

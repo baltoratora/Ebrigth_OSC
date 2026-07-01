@@ -44,6 +44,7 @@ interface StaffEntry {
   employmentType: string | null;
   position: string | null;
   isPT: boolean;
+  staffRole: string | null;
   isTraining?: boolean;
   coachHrs: number;
   execHrs: number;
