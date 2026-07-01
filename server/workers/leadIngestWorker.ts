@@ -202,7 +202,7 @@ async function runBackstop(pg: PgClient): Promise<void> {
 
   // No prior ingest → don't pull every historical row. Either run the seed
   // first, or set the watermark to "now" so only fresh inserts get picked up.
-  const watermark = since?.createdAt ?? new Date()
+  const watermark = since ? new Date(since.createdAt.getTime() + 1) : new Date()
 
   const res = await pg.query<UnifiedLeadRow>(
     `SELECT source_table, source_id, lead_source, full_name, phone, email,
