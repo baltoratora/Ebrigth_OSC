@@ -622,6 +622,7 @@ export async function GET(request: Request) {
     const aggregated: Record<string, {
       key: string;
       staffId: number | null;
+      employeeId: string | null;
       name: string;
       branch: string;
       rate: number | null;
@@ -666,6 +667,7 @@ export async function GET(request: Request) {
         aggregated[key] = {
           key,
           staffId: staff?.id ?? null,
+          employeeId: staff?.employeeId ?? null,
           name: displayName,
           branch: homeBranch,
           rate,

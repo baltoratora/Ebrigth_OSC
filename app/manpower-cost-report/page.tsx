@@ -642,6 +642,26 @@ export default function ManpowerCostReportPage() {
     fetchData();
   }, [fetchData]);
 
+  // Part-time self-download gate: a PT employee viewing their own report cannot
+  // download a month while they have any UNEXPLAINED "No Record" day that month
+  // (scheduled working day with no complete scan, not on leave, not justified).
+  // The count clears once they justify / are on leave. Server does the same
+  // scoping, so this only ever reflects the caller's own attendance.
+  const [noRecordCount, setNoRecordCount] = useState(0);
+  const [showLockPopup, setShowLockPopup] = useState(false);
+  useEffect(() => {
+    const empNo = isEmployeePT ? (data?.staff?.[0]?.employeeId ?? null) : null;
+    if (!empNo || !selectedMonth) { setNoRecordCount(0); return; }
+    const [yr, mn] = selectedMonth.split("-").map(Number);
+    let cancelled = false;
+    fetch(`/api/attendance-no-record?empNo=${encodeURIComponent(empNo)}&month=${mn}&year=${yr}`)
+      .then((r) => (r.ok ? r.json() : { count: 0 }))
+      .then((d) => { if (!cancelled) setNoRecordCount(Number(d?.count) || 0); })
+      .catch(() => { if (!cancelled) setNoRecordCount(0); });
+    return () => { cancelled = true; };
+  }, [isEmployeePT, data, selectedMonth]);
+  const downloadLocked = isEmployeePT && noRecordCount > 0;
+
   // Parse week filter dates
   const weekStart = weekFilter ? weekFilter.split(":::")[0] : "";
   const weekEnd = weekFilter ? weekFilter.split(":::")[1] : "";
@@ -1002,9 +1022,13 @@ export default function ManpowerCostReportPage() {
                           />
                         )}
                         <button
-                          onClick={() => generatePDF()}
-                          className="px-3 py-2.5 bg-red-600 border border-red-600 text-white rounded-xl hover:bg-red-700 transition-all"
-                          title="Download PDF"
+                          onClick={() => { if (downloadLocked) setShowLockPopup(true); else generatePDF(); }}
+                          className={`px-3 py-2.5 rounded-xl border transition-all cursor-pointer ${
+                            downloadLocked
+                              ? "bg-red-100 border-red-300 text-red-500 hover:bg-red-200"
+                              : "bg-red-600 border-red-600 text-white hover:bg-red-700"
+                          }`}
+                          title={downloadLocked ? "Download locked — click to see why" : "Download PDF"}
                         >
                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -1013,6 +1037,17 @@ export default function ManpowerCostReportPage() {
                       </div>
                     </div>
                   </div>
+
+                  {downloadLocked && (
+                    <div className="mb-6 rounded-xl border border-red-300 bg-red-50 px-4 py-3 flex items-start gap-2">
+                      <svg className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                      </svg>
+                      <p className="text-sm text-red-800">
+                        <strong>Download locked.</strong> You have <strong>{noRecordCount}</strong> unresolved day{noRecordCount !== 1 ? "s" : ""} with no attendance record this month. Please email <strong>hr@ebright.my</strong> to justify — once justified (or if you're on leave), the download unlocks. Very recent days are given a few days' grace before they count.
+                      </p>
+                    </div>
+                  )}
 
                   {/* Summary Cards */}
                   <div className={`grid grid-cols-2 ${isEmployeePT ? "md:grid-cols-4" : "md:grid-cols-3"} gap-4 mb-6`}>
@@ -1488,6 +1523,44 @@ export default function ManpowerCostReportPage() {
           onClose={() => setViewCoach(null)}
           onDownloadPdf={() => generatePDF(viewCoach)}
         />
+      )}
+
+      {/* Download-locked warning popup — shown when a PT employee with unresolved
+          No-Record days clicks the (locked) download button. */}
+      {showLockPopup && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => setShowLockPopup(false)}>
+          <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0">
+                <svg className="w-5 h-5 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-slate-900">Download locked</h3>
+                <p className="text-sm text-slate-600 mt-1.5 leading-relaxed">
+                  You have <strong className="text-red-600">{noRecordCount}</strong> unresolved day{noRecordCount !== 1 ? "s" : ""} with no attendance record this month.
+                  Please email <strong>hr@ebright.my</strong> to justify why you did not use the scanner or were late.
+                  Once justified (or if you were on approved leave), your report will unlock automatically.
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <a
+                href="mailto:hr@ebright.my?subject=Attendance%20justification"
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-red-600 text-white hover:bg-red-700 transition-all"
+              >
+                Email HR
+              </a>
+              <button
+                onClick={() => setShowLockPopup(false)}
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 transition-all"
+              >
+                Got it
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

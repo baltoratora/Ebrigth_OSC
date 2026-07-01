@@ -190,16 +190,46 @@ function SignedDetailView({ title, color, records, onBack }: any) {
   );
 }
 
-function DetailView({ title, color, lightColor, records, dateField, datesField, dateLabel, typeField, typeLabel, alertNames, onBack }: any) {
+// HR escalation tier for a flagged employee, by their flagged leave-day count.
+// 2 days → verbal warning (green); 3 → send email (yellow); 4+ → show-cause (red).
+function flagAction(cnt: number): { tier: string; label: string; bg: string; fg: string } {
+  if (cnt >= 4) return { tier: "show_cause", label: "Show cause letter", bg: C.redLight, fg: C.red };
+  if (cnt === 3) return { tier: "email", label: "Send email", bg: C.warningLight, fg: C.warning };
+  return { tier: "verbal", label: "Verbal warning", bg: C.successLight, fg: C.success };
+}
+
+function DetailView({ title, color, lightColor, records, dateField, datesField, dateLabel, typeField, typeLabel, alertNames, showAction, actionMonth, onBack }: any) {
+  // Local completion overlay: keyed `${empCode}|${tier}`. Seeded by the API's
+  // r.actionDone; flipped true when HR marks an action complete in the popup.
+  const [completed, setCompleted] = useState<Record<string, boolean>>({});
+  const [popup, setPopup] = useState<any>(null);
+  const [saving, setSaving] = useState(false);
+
+  async function markComplete() {
+    if (!popup) return;
+    setSaving(true);
+    try {
+      const res = await fetch("/api/hr-dashboard/flag-action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: popup.code, month: actionMonth, tier: popup.tier }),
+      });
+      if (res.ok) {
+        setCompleted(prev => ({ ...prev, [`${popup.code}|${popup.tier}`]: true }));
+        setPopup(null);
+      }
+    } finally { setSaving(false); }
+  }
+
   return (
     <div>
       <DetailHeader title={title} color={color} subtitle={`${records.length} staff · Highlighted = within 2 weeks`} onBack={onBack} />
       <div style={{ ...cardStyle, overflowX: "auto", padding: 0 }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr><th style={th}>#</th><th style={th}>Name</th><th style={th}>Position</th><th style={th}>Dept / Branch</th>{typeField && <th style={th}>{typeLabel || "Leave Type"}</th>}<th style={th}>{dateLabel}</th><th style={th}></th></tr></thead>
+          <thead><tr><th style={th}>#</th><th style={th}>Name</th><th style={th}>Position</th><th style={th}>Dept / Branch</th>{typeField && <th style={th}>{typeLabel || "Leave Type"}</th>}<th style={th}>{dateLabel}</th>{showAction && <th style={th}>HR Action</th>}<th style={th}></th></tr></thead>
           <tbody>
             {records.length === 0 ? (
-              <tr><td style={{ ...td, textAlign: "center", color: C.muted, padding: 32 }} colSpan={typeField ? 7 : 6}>No records</td></tr>
+              <tr><td style={{ ...td, textAlign: "center", color: C.muted, padding: 32 }} colSpan={(typeField ? 7 : 6) + (showAction ? 1 : 0)}>No records</td></tr>
             ) : records.map((r: any, i: number) => {
               const within2w = isInRange(r[dateField], 0, 14);
               const highlight = alertNames || within2w;
@@ -219,6 +249,27 @@ function DetailView({ title, color, lightColor, records, dateField, datesField, 
                       ? <span style={{ color }}>{fmtDateList(r[datesField])}</span>
                       : <span style={{ whiteSpace: "nowrap" }}>{fmtDate(r[dateField])}</span>}
                   </td>
+                  {showAction && (() => {
+                    const a = flagAction(Number(r.cnt) || 0);
+                    const isDone = r.actionDone || completed[`${r.code}|${a.tier}`];
+                    return (
+                      <td style={td}>
+                        {isDone ? (
+                          <span title="Action completed" style={{ display: "inline-block", fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 999, background: C.successLight, color: C.success, whiteSpace: "nowrap" }}>
+                            ✓ Completed
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => setPopup({ code: r.code, name: r.name, tier: a.tier, label: a.label })}
+                            title="Click to mark this HR action complete"
+                            style={{ fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 999, background: a.bg, color: a.fg, whiteSpace: "nowrap", border: "none", cursor: "pointer" }}
+                          >
+                            {a.label}
+                          </button>
+                        )}
+                      </td>
+                    );
+                  })()}
                   <td style={td}><DaysLabel days={days} /></td>
                 </tr>
               );
@@ -226,6 +277,28 @@ function DetailView({ title, color, lightColor, records, dateField, datesField, 
           </tbody>
         </table>
       </div>
+
+      {popup && (
+        <div onClick={() => setPopup(null)} style={{ position: "fixed", inset: 0, zIndex: 50, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, boxShadow: "0 10px 40px rgba(0,0,0,0.25)", maxWidth: 420, width: "100%", padding: 24 }}>
+            <div style={{ fontSize: 18, fontWeight: 700, color: C.text }}>Mark action complete?</div>
+            <p style={{ fontSize: 14, color: "#475569", marginTop: 10, lineHeight: 1.5 }}>
+              Confirm you have done the <strong style={{ color: C.text }}>{popup.label}</strong> for <strong style={{ color: C.text }}>{popup.name}</strong>.
+              Once marked complete, it will show as <strong>✓ Completed</strong>.
+            </p>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 20 }}>
+              <button onClick={() => setPopup(null)} disabled={saving}
+                style={{ padding: "8px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600, background: "#f1f5f9", color: "#334155", border: "none", cursor: "pointer" }}>
+                Not yet
+              </button>
+              <button onClick={markComplete} disabled={saving}
+                style={{ padding: "8px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700, background: C.success, color: "#fff", border: "none", cursor: saving ? "wait" : "pointer", opacity: saving ? 0.7 : 1 }}>
+                {saving ? "Saving…" : "Mark complete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -249,18 +322,20 @@ function formatMonthLabel(ym: string) {
 export default function HRDashboardPage() {
   const [detailView, setDetailView] = useState<string | null>(null);
   const [signedMonth, setSignedMonth] = useState(currentYearMonth());
+  const [miaMonth, setMiaMonth] = useState(currentYearMonth());
+  const [flaggedMonth, setFlaggedMonth] = useState(currentYearMonth());
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   const load = useCallback(() => {
     setLoading(true);
-    fetch(`/api/hr-dashboard?month=${signedMonth}`)
+    fetch(`/api/hr-dashboard?month=${signedMonth}&miaMonth=${miaMonth}&flaggedMonth=${flaggedMonth}`)
       .then(r => r.ok ? r.json() : r.json().then((j: any) => Promise.reject(new Error(j.error || `HTTP ${r.status}`))))
       .then(d => { setData(d); setError(""); })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
-  }, [signedMonth]);
+  }, [signedMonth, miaMonth, flaggedMonth]);
   useEffect(() => { load(); }, [load]);
 
   const onboarding = data?.onboarding || [];
@@ -323,9 +398,9 @@ export default function HRDashboardPage() {
         ) : detailView === "annual_leave" ? (
           <DetailView title="Annual Leave" color={C.purple} lightColor={C.purpleLight} records={annualLeave} dateField="al_date" dateLabel="AL Date" onBack={() => setDetailView(null)} />
         ) : detailView === "flagged" ? (
-          <DetailView title="Flagged — ≥2 SL or ≥2 UL days this month" color={C.orange} lightColor={C.orangeLight} records={flagged} dateField="last_date" datesField="dates" dateLabel="Leave dates" typeField="flag_label" typeLabel="Flag" alertNames onBack={() => setDetailView(null)} />
+          <DetailView title={`Flagged — ≥2 SL or ≥2 UL days (${formatMonthLabel(flaggedMonth)})`} color={C.orange} lightColor={C.orangeLight} records={flagged} dateField="last_date" datesField="dates" dateLabel="Leave dates" typeField="flag_label" typeLabel="Flag" alertNames showAction actionMonth={flaggedMonth} onBack={() => setDetailView(null)} />
         ) : detailView === "mia" ? (
-          <DetailView title="MIA — Unpaid Leave (-2 weeks → today) + Missing Today" color={C.red} lightColor={C.redLight} records={miaCombined} dateField="last_date" dateLabel="Last UL / Today" typeField="flag_label" typeLabel="Type" alertNames onBack={() => setDetailView(null)} />
+          <DetailView title={`MIA — Unpaid Leave (${formatMonthLabel(miaMonth)})${miaMissingToday.length ? " + Missing Today" : ""}`} color={C.red} lightColor={C.redLight} records={miaCombined} dateField="last_date" dateLabel="Last UL / Today" typeField="flag_label" typeLabel="Type" alertNames onBack={() => setDetailView(null)} />
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
             <DashCard title="ONBOARDING" subtitle="-1 week → +6 months" color={C.success} lightColor={C.successLight}
@@ -346,11 +421,13 @@ export default function HRDashboardPage() {
             <DashCard title="MC" subtitle="-1 month → today" color={C.warning} lightColor={C.warningLight}
               records={mc} dateField="mc_date" mainCount={mc.length} mainLabel="Total" typeField="leave_type" extraField="reason"
               onViewAll={() => setDetailView("mc")} />
-            <DashCard title="FLAGGED" subtitle="SL or UL ≥ 2 · this month" color={C.orange} lightColor={C.orangeLight}
+            <DashCard title="FLAGGED" subtitle="SL or UL ≥ 2 · by month" color={C.orange} lightColor={C.orangeLight}
               records={flagged} dateField="last_date" datesField="dates" mainCount={flagged.length} mainLabel="Flagged" typeField="flag_label" extraField="reason" alertNames
+              monthSelector={{ label: formatMonthLabel(flaggedMonth), onPrev: () => setFlaggedMonth(shiftMonth(flaggedMonth, -1)), onNext: () => setFlaggedMonth(shiftMonth(flaggedMonth, +1)) }}
               onViewAll={() => setDetailView("flagged")} />
-            <DashCard title="MIA" subtitle="Unpaid leave · -2 wks → today · + missing today" color={C.red} lightColor={C.redLight}
+            <DashCard title="MIA" subtitle="Unpaid leave · by month · + missing today" color={C.red} lightColor={C.redLight}
               records={miaCombined} dateField="last_date" mainCount={mia.length} mainLabel="UL" smallCount={miaMissingToday.length} smallLabel="Missing" typeField="flag_label" extraField="reason" alertNames
+              monthSelector={{ label: formatMonthLabel(miaMonth), onPrev: () => setMiaMonth(shiftMonth(miaMonth, -1)), onNext: () => setMiaMonth(shiftMonth(miaMonth, +1)) }}
               onViewAll={() => setDetailView("mia")} />
           </div>
         )}
