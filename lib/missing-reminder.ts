@@ -96,9 +96,20 @@ async function unclaim(empNo: string, date: string): Promise<void> {
   );
 }
 
-/** One pass: email HQ staff who are 15 min past their start and still missing. */
-export async function sendMissingReminders(): Promise<void> {
-  await ensureLogTable();
+export interface MissingCandidate {
+  code: string;
+  name: string;
+  email: string;
+  start: string; // scheduled start time today, HH:MM
+}
+
+/**
+ * Who is currently eligible for a reminder: active HQ staff, 15 min past their
+ * scheduled start, not scanned / on leave / justified, not hidden, with an
+ * email on file. Pure read — no send, no log write — so it's safe to call from
+ * a preview endpoint.
+ */
+export async function computeMissingCandidates(): Promise<MissingCandidate[]> {
   const date = todayKL();
   const dow = dowKL();
   const now = nowSecondsKL();
@@ -142,7 +153,7 @@ export async function sendMissingReminders(): Promise<void> {
   const justifiedSet = new Set(justRows.map(r => r.code));
 
   const todayDate = new Date(date + 'T00:00:00');
-  const hrEmail = process.env.HR_JUSTIFY_EMAIL || undefined;
+  const out: MissingCandidate[] = [];
 
   for (const s of staff) {
     // Hidden from attendance → never remind
@@ -162,13 +173,35 @@ export async function sendMissingReminders(): Promise<void> {
     // Need an address to notify
     if (!s.email) continue;
 
-    if (await claim(s.code, date)) {
+    out.push({ code: s.code, name: s.name || s.code, email: s.email, start: day.start ?? '' });
+  }
+  return out;
+}
+
+/**
+ * One pass: email every currently-eligible HQ employee, once per KL day
+ * (claim-before-send dedup). Returns how many were sent vs already-sent.
+ */
+export async function sendMissingReminders(): Promise<{ sent: number; alreadySent: number }> {
+  await ensureLogTable();
+  const date = todayKL();
+  const hrEmail = process.env.HR_JUSTIFY_EMAIL || undefined;
+  const candidates = await computeMissingCandidates();
+
+  let sent = 0;
+  let alreadySent = 0;
+  for (const c of candidates) {
+    if (await claim(c.code, date)) {
       try {
-        await sendMissingReminderEmail(s.email, s.name || s.code, hrEmail);
+        await sendMissingReminderEmail(c.email, c.name, hrEmail);
+        sent++;
       } catch (e) {
-        await unclaim(s.code, date);
-        console.error(`[missing-reminder] send failed (${s.name || s.code}):`, (e as Error).message);
+        await unclaim(c.code, date);
+        console.error(`[missing-reminder] send failed (${c.name}):`, (e as Error).message);
       }
+    } else {
+      alreadySent++;
     }
   }
+  return { sent, alreadySent };
 }
