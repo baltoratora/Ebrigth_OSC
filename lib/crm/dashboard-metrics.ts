@@ -62,7 +62,7 @@ export const BRANCH_CODES: Record<string, string> = {
   '20 Ebright (Kajang TTDI Grove)':        'KTG',
   '21 Ebright (Tropicana Sungai Buloh)':   'TSB',
   '22 Ebright (Puncak Jalil)':             'PJL',
-  '23 Ebright (Dataran Puchong Utama)':    'DPU',
+  '23 Ebright (Puchong Utama)':            'PU',
 }
 
 export const REGIONS: Record<'A' | 'B' | 'C', string[]> = {
@@ -84,7 +84,7 @@ export const REGIONS: Record<'A' | 'B' | 'C', string[]> = {
     '14 Ebright (Bandar Tun Hussein Onn)',
     '20 Ebright (Kajang TTDI Grove)',
     '18 Ebright (Taman Sri Gombak)',
-    '23 Ebright (Dataran Puchong Utama)',
+    '22 Ebright (Puncak Jalil)',
   ],
   C: [
     '06 Ebright (Putrajaya)',
@@ -93,7 +93,7 @@ export const REGIONS: Record<'A' | 'B' | 'C', string[]> = {
     '08 Ebright (Cyberjaya)',
     '16 Ebright (Bandar Seri Putra)',
     '01 Ebright (Online)',
-    '22 Ebright (Puncak Jalil)',
+    '23 Ebright (Puchong Utama)',
   ],
 }
 
