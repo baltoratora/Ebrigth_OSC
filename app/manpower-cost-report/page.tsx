@@ -649,8 +649,12 @@ export default function ManpowerCostReportPage() {
   // scoping, so this only ever reflects the caller's own attendance.
   const [noRecordCount, setNoRecordCount] = useState(0);
   const [showLockPopup, setShowLockPopup] = useState(false);
+  // The lock applies ONLY to Subang Taipan (ST) part-timers — other branches'
+  // PT can always download. ST is the branch whose PT staff scan on the shared
+  // ST device, so it's the one HR wants no-record days justified for.
+  const isStPartTime = isEmployeePT && branchesMatch(data?.staff?.[0]?.branch, "Subang Taipan");
   useEffect(() => {
-    const empNo = isEmployeePT ? (data?.staff?.[0]?.employeeId ?? null) : null;
+    const empNo = isStPartTime ? (data?.staff?.[0]?.employeeId ?? null) : null;
     if (!empNo || !selectedMonth) { setNoRecordCount(0); return; }
     const [yr, mn] = selectedMonth.split("-").map(Number);
     let cancelled = false;
@@ -659,8 +663,8 @@ export default function ManpowerCostReportPage() {
       .then((d) => { if (!cancelled) setNoRecordCount(Number(d?.count) || 0); })
       .catch(() => { if (!cancelled) setNoRecordCount(0); });
     return () => { cancelled = true; };
-  }, [isEmployeePT, data, selectedMonth]);
-  const downloadLocked = isEmployeePT && noRecordCount > 0;
+  }, [isStPartTime, data, selectedMonth]);
+  const downloadLocked = isStPartTime && noRecordCount > 0;
 
   // Parse week filter dates
   const weekStart = weekFilter ? weekFilter.split(":::")[0] : "";

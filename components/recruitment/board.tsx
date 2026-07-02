@@ -8,8 +8,12 @@ import {
   Draggable,
   type DropResult,
 } from "@hello-pangea/dnd";
-import { UserRoundCheck, Search, X, Trash2, ArrowRightLeft, CheckSquare } from "lucide-react";
-import { moveRecruit, bulkMoveRecruits, bulkDeleteRecruits, deleteRecruit } from "@/app/recruitment/_actions";
+import { UserRoundCheck, Search, X, Trash2, ArrowRightLeft, CheckSquare, Archive, ArchiveRestore } from "lucide-react";
+import {
+  moveRecruit, bulkMoveRecruits, bulkDeleteRecruits, deleteRecruit,
+  archiveRecruits, unarchiveRecruits, archiveOrphanRecruits, getArchivedRecruits,
+  type ArchivedCard,
+} from "@/app/recruitment/_actions";
 import { sourceLabel } from "@/lib/recruitment/labels";
 import { RecruitDetailModal } from "@/components/recruitment/recruit-detail-modal";
 import { InterviewScheduleModal } from "@/components/recruitment/interview-schedule-modal";
@@ -64,7 +68,26 @@ export function RecruitmentBoard({
   const router = useRouter();
   const [columns, setColumns] = useState(initial);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   useEffect(() => setColumns(initial), [initial]);
+
+  // ── Archived leads (hidden from the active board; toggled on-demand) ────────
+  const [showArchived, setShowArchived] = useState(false);
+  const [archivedCards, setArchivedCards] = useState<ArchivedCard[] | null>(null);
+  useEffect(() => {
+    if (showArchived && archivedCards === null) {
+      getArchivedRecruits().then((res) => setArchivedCards(res.ok ? res.cards : []));
+    }
+  }, [showArchived, archivedCards]);
+  const archivedByStage = useMemo(() => {
+    const m = new Map<string, ArchivedCard[]>();
+    for (const c of archivedCards ?? []) {
+      const list = m.get(c.stageId) ?? [];
+      list.push(c);
+      m.set(c.stageId, list);
+    }
+    return m;
+  }, [archivedCards]);
 
   // Stage-id ↔ shortCode maps (for the special-stage drop popups).
   const codeById = useMemo(() => new Map(columns.map((c) => [c.id, c.shortCode.toUpperCase()])), [columns]);
@@ -145,6 +168,38 @@ export function RecruitmentBoard({
   function flash(msg: string) {
     setError(msg);
     setTimeout(() => setError(null), 4000);
+  }
+  function flashOk(msg: string) {
+    setNotice(msg);
+    setTimeout(() => setNotice(null), 4000);
+  }
+
+  // ── Archive / restore ──────────────────────────────────────────────────────
+  async function doArchive(archiveIds: string[]) {
+    if (!archiveIds.length) return;
+    const prev = columns;
+    setColumns((cols) => cols.map((c) => ({ ...c, recruits: c.recruits.filter((r) => !archiveIds.includes(r.id)) })));
+    setSelected(new Set());
+    const res = await archiveRecruits(archiveIds);
+    if (!res.ok) { setColumns(prev); flash(res.error ?? "Archive failed"); return; }
+    setArchivedCards(null); // reload the archived list if it's shown
+    router.refresh();
+  }
+  async function doRestore(id: string) {
+    const res = await unarchiveRecruits([id]);
+    if (!res.ok) { flash(res.error ?? "Restore failed"); return; }
+    setArchivedCards((prev) => (prev ? prev.filter((c) => c.id !== id) : prev));
+    router.refresh();
+  }
+  async function doArchiveOrphans() {
+    if (!window.confirm('Archive all leads that aren’t in the applications database? They stay viewable under “Show archived” and can be restored.')) return;
+    setBusy(true);
+    const res = await archiveOrphanRecruits();
+    setBusy(false);
+    if (!res.ok) { flash(res.error ?? "Archive failed"); return; }
+    flashOk(`Archived ${res.count ?? 0} lead(s) not in the database.`);
+    setArchivedCards(null);
+    router.refresh();
   }
 
   // ── Drag → move (single) ─────────────────────────────────────────────────────
@@ -317,6 +372,10 @@ export function RecruitmentBoard({
           <input type="checkbox" checked={hiredOnly} onChange={(e) => setHiredOnly(e.target.checked)} className="h-3.5 w-3.5 accent-emerald-600" />
           Hired only
         </label>
+        <label className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
+          <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} className="h-3.5 w-3.5 accent-slate-500" />
+          Show archived
+        </label>
         {/* Date filter — by submission date */}
         <div className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-sm text-slate-600 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
           <span className="text-xs text-slate-400">Submitted</span>
@@ -331,7 +390,19 @@ export function RecruitmentBoard({
             <X className="h-3.5 w-3.5" /> Clear
           </button>
         )}
-        <span className="ml-auto text-xs text-slate-400">{shownTotal} shown</span>
+        <div className="ml-auto flex items-center gap-2">
+          {canDelete && (
+            <button
+              onClick={doArchiveOrphans}
+              disabled={busy}
+              title="Archive leads not backed by a record in the applications database"
+              className="inline-flex items-center gap-1 rounded-lg border border-amber-300 px-2.5 py-1.5 text-sm font-medium text-amber-700 transition hover:bg-amber-50 disabled:opacity-50 dark:border-amber-900 dark:text-amber-400 dark:hover:bg-amber-950/40"
+            >
+              <Archive className="h-3.5 w-3.5" /> Archive not-in-DB
+            </button>
+          )}
+          <span className="text-xs text-slate-400">{shownTotal} shown</span>
+        </div>
       </div>
 
       {/* Bulk action bar — appears when ≥1 selected */}
@@ -354,6 +425,15 @@ export function RecruitmentBoard({
           </button>
           {canDelete && (
             <button
+              onClick={() => doArchive(ids)}
+              disabled={busy}
+              className="inline-flex items-center gap-1 rounded-lg border border-amber-300 px-3 py-1.5 text-sm font-medium text-amber-700 transition hover:bg-amber-50 disabled:opacity-50 dark:border-amber-900 dark:text-amber-400 dark:hover:bg-amber-950/40"
+            >
+              <Archive className="h-3.5 w-3.5" /> Archive
+            </button>
+          )}
+          {canDelete && (
+            <button
               onClick={doBulkDelete}
               disabled={busy}
               className="inline-flex items-center gap-1 rounded-lg border border-rose-300 px-3 py-1.5 text-sm font-medium text-rose-600 transition hover:bg-rose-50 disabled:opacity-50 dark:border-rose-900 dark:text-rose-400 dark:hover:bg-rose-950/40"
@@ -369,6 +449,9 @@ export function RecruitmentBoard({
 
       {error && (
         <div className="mx-6 mt-1 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">{error}</div>
+      )}
+      {notice && (
+        <div className="mx-6 mt-1 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">{notice}</div>
       )}
 
       <DragDropContext onDragEnd={onDragEnd}>
@@ -443,6 +526,18 @@ export function RecruitmentBoard({
                                         {canDelete && (
                                           <button
                                             type="button"
+                                            title="Archive card"
+                                            aria-label={`Archive ${r.name}`}
+                                            onClick={(e) => { e.stopPropagation(); doArchive([r.id]); }}
+                                            onMouseDown={(e) => e.stopPropagation()}
+                                            className="rounded p-0.5 text-slate-300 transition hover:bg-amber-50 hover:text-amber-600 dark:text-slate-600 dark:hover:bg-amber-950/40 dark:hover:text-amber-400"
+                                          >
+                                            <Archive className="h-3.5 w-3.5" />
+                                          </button>
+                                        )}
+                                        {canDelete && (
+                                          <button
+                                            type="button"
                                             title="Delete card (applicant record is not affected)"
                                             aria-label={`Delete ${r.name}`}
                                             onClick={(e) => { e.stopPropagation(); doDeleteCard(r.id); }}
@@ -481,6 +576,36 @@ export function RecruitmentBoard({
                         );
                       })}
                       {provided.placeholder}
+
+                      {/* Archived leads for this stage (view-only + Restore). */}
+                      {showArchived && (archivedByStage.get(stage.id)?.length ?? 0) > 0 && (
+                        <div className="mt-2 space-y-1.5 border-t border-dashed border-slate-300 pt-2 dark:border-slate-600">
+                          <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                            Archived · {archivedByStage.get(stage.id)!.length}
+                          </p>
+                          {archivedByStage.get(stage.id)!.map((a) => (
+                            <div key={a.id} className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 opacity-75 dark:border-slate-700 dark:bg-slate-800/40">
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-medium text-slate-600 line-through dark:text-slate-400">{a.name}</p>
+                                  {(a.position || a.source) && (
+                                    <p className="truncate text-[11px] text-slate-400">{a.position || sourceLabel(a.source)}</p>
+                                  )}
+                                </div>
+                                {canDelete && (
+                                  <button
+                                    onClick={() => doRestore(a.id)}
+                                    title="Restore to board"
+                                    className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-emerald-300 px-2 py-1 text-[11px] font-medium text-emerald-700 transition hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-950/40"
+                                  >
+                                    <ArchiveRestore className="h-3 w-3" /> Restore
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}

@@ -73,4 +73,18 @@ export async function register() {
   } else {
     console.log('[missing-reminder] Disabled (set MISSING_REMINDER_EMAIL=on to enable).');
   }
+
+  // ── Recruitment training reschedule auto-return ───────────────────────────
+  // When a training no-show's picked reschedule date arrives, move the lead back
+  // to its training day (restarting the 3-day attendance clock) — even if nobody
+  // has the Recruitment module open. Best-effort; errors are swallowed inside.
+  {
+    const { runTrainingReconcile } = await import('@/lib/recruitment/training');
+    const REC_INTERVAL_MS = 15 * 60_000; // every 15 min
+    console.log(`[rec-training] Reschedule reconcile ON — every ${REC_INTERVAL_MS / 60000}min`);
+    runTrainingReconcile().catch(err => console.error('[rec-training] Initial run error:', err));
+    setInterval(() => {
+      runTrainingReconcile().catch(err => console.error('[rec-training] Run error:', err));
+    }, REC_INTERVAL_MS);
+  }
 }

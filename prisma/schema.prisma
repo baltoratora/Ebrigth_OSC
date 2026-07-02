@@ -1771,6 +1771,22 @@ model RecRecruit {
   // ingested from a "Join the Team" form submission. Unique so the reconcile
   // never creates a second card for the same application.
   applicationId    Int?      @unique
+  // ── Training-day attendance workflow ──────────────────────────────────────
+  // When a card enters a training stage (TR1/TR2/TR3) we stamp trainingEnteredAt
+  // and null trainingConfirmedAt. Once 3 days pass without a confirmation, HR is
+  // prompted (dashboard popup) to confirm attendance; confirming stamps
+  // trainingConfirmedAt and (for TR1/TR2) advances to the next training day.
+  trainingEnteredAt   DateTime?
+  trainingConfirmedAt DateTime?
+  // Set when a training no-show is parked in Reschedule: rescheduleReturnCode is
+  // the training stage to send them back to, rescheduleAt the date to do it on.
+  // A background reconcile moves them back when rescheduleAt arrives.
+  rescheduleAt         DateTime?
+  rescheduleReturnCode String?
+  // Archived cards are hidden from the active board but still viewable via the
+  // "Show archived" toggle (and restorable). Distinct from deletedAt: archiving
+  // is for parking leads that aren't backed by a real applications record.
+  archivedAt       DateTime?
   deletedAt        DateTime?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt

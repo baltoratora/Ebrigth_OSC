@@ -377,6 +377,12 @@ export interface Invitation {
    *  still shows who this is if the student id later can't be resolved
    *  (archived/restored/deleted). Mirrors PCM's student_name_snapshot. */
   studentNameSnapshot?: string;
+  /** Captured when the BM confirms the invitation: a link to the student's
+   *  practice/testing video, and a Google Drive link to the uploaded proof
+   *  image showing the student completed the testing BEFORE joining the event.
+   *  Both are surfaced to Marketing. */
+  videoLink?: string;
+  proofUrl?: string;
 }
 
 // ----------------------------------------------------------------------------

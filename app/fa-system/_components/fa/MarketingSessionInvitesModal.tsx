@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { useMemo, useState } from "react";
-import { ArrowRightLeft } from "lucide-react";
+import { ArrowRightLeft, Video, Image as ImageIcon } from "lucide-react";
 import { Modal } from "@fa/_components/shared/Modal";
 import { useFAStore } from "@fa/_lib/store";
 import { StatusPill } from "@fa/_components/fa/StatusPill";
@@ -11,6 +11,7 @@ import {
   InvitationStatus,
   Session,
   countsAsAttended,
+  countsAsConfirmed,
 } from "@fa/_types";
 
 const STATUS_TONE: Record<InvitationStatus, "neutral" | "info" | "success" | "warning" | "danger"> = {
@@ -189,6 +190,10 @@ export function MarketingSessionInvitesModal({
                           <div className="text-[11px] text-ink-400 mt-0.5">
                             Invited by {inviterName(inv.invitedBy)}
                           </div>
+                          {/* Proof progress — shown for EVERY student so Marketing
+                              can track who has/hasn't submitted the testing video +
+                              proof, not just those already done. */}
+                          <ProofProgress inv={inv} />
                         </div>
                         <StatusPill tone={STATUS_TONE[inv.status]} showDot={false}>
                           {STATUS_LABEL[inv.status]}
@@ -231,5 +236,55 @@ export function MarketingSessionInvitesModal({
         <button onClick={onClose} className="fa-btn-secondary">Close</button>
       </div>
     </Modal>
+  );
+}
+
+/**
+ * Per-student proof progress for Marketing. Shown on EVERY invitation so
+ * Marketing can track submission status at a glance:
+ *   - confirmed + video & proof present → green "Proof submitted" + links
+ *   - confirmed + still missing         → red "Proof pending" (+ any partial link)
+ *   - not confirmed yet                 → grey "Awaiting confirmation"
+ */
+function ProofProgress({ inv }: { inv: Invitation }) {
+  const hasVideo = !!inv.videoLink;
+  const hasProof = !!inv.proofUrl;
+  const complete = hasVideo && hasProof;
+  const confirmed = countsAsConfirmed(inv.status);
+
+  const badge = complete
+    ? { cls: "bg-success-soft text-success", label: "Proof submitted" }
+    : confirmed
+      ? { cls: "bg-danger-soft text-danger", label: "Proof pending" }
+      : { cls: "bg-ivory-200 text-ink-500", label: "Awaiting confirmation" };
+
+  return (
+    <div className="flex items-center gap-2 mt-1 flex-wrap">
+      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${badge.cls}`}>
+        {badge.label}
+      </span>
+      {hasVideo && (
+        <a
+          href={inv.videoLink}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 text-[11px] text-brand-700 hover:underline"
+          title="Testing video"
+        >
+          <Video className="w-3 h-3" /> Video
+        </a>
+      )}
+      {hasProof && (
+        <a
+          href={inv.proofUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 text-[11px] text-brand-700 hover:underline"
+          title="Proof the student completed testing before the event"
+        >
+          <ImageIcon className="w-3 h-3" /> Proof
+        </a>
+      )}
+    </div>
   );
 }

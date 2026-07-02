@@ -193,9 +193,9 @@ function SignedDetailView({ title, color, records, onBack }: any) {
 // HR escalation tier for a flagged employee, by their flagged leave-day count.
 // 2 days → verbal warning (green); 3 → send email (yellow); 4+ → show-cause (red).
 function flagAction(cnt: number): { tier: string; label: string; bg: string; fg: string } {
-  if (cnt >= 4) return { tier: "show_cause", label: "Show cause letter", bg: C.redLight, fg: C.red };
-  if (cnt === 3) return { tier: "email", label: "Send email", bg: C.warningLight, fg: C.warning };
-  return { tier: "verbal", label: "Verbal warning", bg: C.successLight, fg: C.success };
+  if (cnt >= 4) return { tier: "show_cause", label: "Last warning", bg: C.redLight, fg: C.red };
+  if (cnt === 3) return { tier: "email", label: "Show cause letter", bg: C.warningLight, fg: C.warning };
+  return { tier: "verbal", label: "First letter", bg: C.successLight, fg: C.success };
 }
 
 function DetailView({ title, color, lightColor, records, dateField, datesField, dateLabel, typeField, typeLabel, alertNames, showAction, actionMonth, onBack }: any) {
@@ -319,6 +319,134 @@ function formatMonthLabel(ym: string) {
   return new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
 }
 
+/* ─── Trial & Probation tracker ─── driven by career_applications.stage.
+   Trial: write feedback1 → Complete → moves to Probation.
+   Probation: write feedback2 → Accept (→ Hired) or Reject (→ Rejected).
+   Completed / accepted / rejected people leave the card. */
+const TP_STAGES = {
+  trial:     { label: "Trial",     color: "#4f46e5", light: "rgba(79,70,229,0.10)" },
+  probation: { label: "Probation", color: "#0d9488", light: "rgba(13,148,136,0.10)" },
+} as const;
+type TPStage = keyof typeof TP_STAGES;
+
+async function tpPatch(body: any) {
+  const res = await fetch("/api/hr-dashboard/trial-probation", {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Update failed");
+  return res.json();
+}
+
+function TPEntry({ entry, stage, onChanged }: { entry: any; stage: TPStage; onChanged: () => void }) {
+  const s = TP_STAGES[stage];
+  const isTrial = stage === "trial";
+  const fbKey = isTrial ? "feedback1" : "feedback2";
+  const savedText: string = entry[fbKey] ?? "";
+  const [text, setText] = useState<string>(savedText);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const dirty = text !== savedText;
+  const hasSaved = savedText.trim().length > 0;
+
+  async function run(fn: () => Promise<any>) {
+    setBusy(true); setErr("");
+    try { await fn(); onChanged(); }
+    catch (e: any) { setErr(e.message || "Failed"); setBusy(false); }
+  }
+
+  return (
+    <div style={{ padding: "10px 16px", borderBottom: `1px solid ${C.border}` }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{entry.name || "—"}</div>
+      {entry.position && <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>{entry.position}</div>}
+      <label style={{ fontSize: 10, fontWeight: 600, color: s.color, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+        {isTrial ? "Feedback 1 (trial)" : "Feedback 2 (probation)"}
+      </label>
+      <textarea value={text} onChange={e => setText(e.target.value)} rows={2}
+        placeholder="Write feedback…"
+        style={{ width: "100%", marginTop: 3, fontSize: 12, padding: "6px 8px", border: `1px solid ${C.border}`, borderRadius: 8, resize: "vertical", boxSizing: "border-box" }} />
+      {err && <div style={{ fontSize: 11, color: C.brand, marginTop: 4 }}>{err}</div>}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+        <button disabled={busy || !dirty} onClick={() => run(() => tpPatch({ id: entry.id, [fbKey]: text }))}
+          style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 8, border: `1px solid ${C.border}`, background: "#fff", color: dirty ? s.color : C.muted, cursor: dirty ? "pointer" : "default", opacity: busy ? 0.5 : 1 }}>
+          Save feedback
+        </button>
+
+        {isTrial ? (
+          <button disabled={busy || !hasSaved || dirty}
+            title={!hasSaved ? "Save feedback 1 first" : dirty ? "Save your changes first" : "Complete trial → move to Probation"}
+            onClick={() => run(() => tpPatch({ id: entry.id, action: "complete_trial" }))}
+            style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 8, border: `1px solid ${C.success}`, background: (!hasSaved || dirty) ? "#fff" : C.successLight, color: (!hasSaved || dirty) ? C.muted : C.success, cursor: (!hasSaved || dirty) ? "default" : "pointer", opacity: busy ? 0.5 : 1 }}>
+            ✓ Complete → Probation
+          </button>
+        ) : hasSaved && !dirty ? (
+          <>
+            <button disabled={busy} onClick={() => run(() => tpPatch({ id: entry.id, action: "accept" }))}
+              style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 8, border: `1px solid ${C.success}`, background: C.successLight, color: C.success, cursor: "pointer", opacity: busy ? 0.5 : 1 }}>
+              ✓ Accept → Hired
+            </button>
+            <button disabled={busy} onClick={() => run(() => tpPatch({ id: entry.id, action: "reject" }))}
+              style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 8, border: `1px solid ${C.red}`, background: C.redLight, color: C.red, cursor: "pointer", opacity: busy ? 0.5 : 1 }}>
+              ✕ Reject
+            </button>
+          </>
+        ) : (
+          <span style={{ fontSize: 10, color: C.muted }}>Save feedback 2 to accept / reject</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TrialProbationCard() {
+  const [entries, setEntries] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    fetch("/api/hr-dashboard/trial-probation")
+      .then(r => (r.ok ? r.json() : { entries: [] }))
+      .then(d => setEntries(d.entries || []))
+      .catch(() => setEntries([]))
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <div style={{ ...cardStyle, gridColumn: "1 / -1", padding: 0, overflow: "hidden" }}>
+      <div style={{ padding: "14px 18px", borderBottom: `1px solid ${C.border}` }}>
+        <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.04em", color: C.text }}>TRIAL &amp; PROBATION</div>
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>From career applications · feedback drives each stage</div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr" }}>
+        {(Object.keys(TP_STAGES) as TPStage[]).map((stage, idx) => {
+          const s = TP_STAGES[stage];
+          const list = entries.filter(e => String(e.stage).toLowerCase() === stage);
+          return (
+            <div key={stage} style={{ borderLeft: idx === 1 ? `1px solid ${C.border}` : "none", minHeight: 160 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 16px", background: s.light }}>
+                <span style={{ width: 10, height: 10, borderRadius: 999, background: s.color, display: "inline-block" }} />
+                <span style={{ fontSize: 13, fontWeight: 700, color: s.color }}>{s.label}</span>
+                <span style={{ fontSize: 11, color: C.muted }}>({list.length})</span>
+              </div>
+              <div style={{ maxHeight: 360, overflowY: "auto" }}>
+                {loading ? (
+                  <div style={{ padding: 20, textAlign: "center", fontSize: 12, color: C.muted }}>Loading…</div>
+                ) : list.length === 0 ? (
+                  <div style={{ padding: 24, textAlign: "center", fontSize: 12, color: C.muted }}>No one in {s.label.toLowerCase()} yet.</div>
+                ) : (
+                  list.map(e => <TPEntry key={e.id} entry={e} stage={stage} onChanged={load} />)
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
 export default function HRDashboardPage() {
   const [detailView, setDetailView] = useState<string | null>(null);
   const [signedMonth, setSignedMonth] = useState(currentYearMonth());
@@ -375,7 +503,7 @@ export default function HRDashboardPage() {
           </Link>
           <div style={{ marginTop: 16 }}>
             <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-0.03em", margin: "0 0 6px", color: C.text }}>HR Overview Dashboard</h1>
-            <p style={{ fontSize: 14, color: "#475569", margin: 0 }}>Onboarding · Offboarding · Annual Leave · MC · Flagged · MIA</p>
+            <p style={{ fontSize: 14, color: "#475569", margin: 0 }}>Onboarding · Offboarding · Annual Leave · MC · Flagged · MIA · Trial &amp; Probation</p>
           </div>
         </div>
 
@@ -429,6 +557,7 @@ export default function HRDashboardPage() {
               records={miaCombined} dateField="last_date" mainCount={mia.length} mainLabel="UL" smallCount={miaMissingToday.length} smallLabel="Missing" typeField="flag_label" extraField="reason" alertNames
               monthSelector={{ label: formatMonthLabel(miaMonth), onPrev: () => setMiaMonth(shiftMonth(miaMonth, -1)), onNext: () => setMiaMonth(shiftMonth(miaMonth, +1)) }}
               onViewAll={() => setDetailView("mia")} />
+            <TrialProbationCard />
           </div>
         )}
       </div>
