@@ -27,6 +27,26 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
   }
 }
 
+export async function DELETE(_req: NextRequest, ctx: Ctx) {
+  const { error } = await requireSession();
+  if (error) return error;
+
+  const { id, participantId } = await ctx.params;
+  try {
+    const existing = await prisma.showcaseParticipant.findFirst({
+      where: { id: participantId, editionId: id },
+      select: { id: true },
+    });
+    if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+    await prisma.showcaseParticipant.delete({ where: { id: participantId } });
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE participant error:", err);
+    return NextResponse.json({ error: "Failed" }, { status: 500 });
+  }
+}
+
 export async function PATCH(req: NextRequest, ctx: Ctx) {
   const { error } = await requireSession();
   if (error) return error;

@@ -118,12 +118,9 @@ function LayoutInner({
           </button>
 
           {/* Title */}
-          <Link
-            href="/annual-showcase"
-            className="text-white font-bold text-lg shrink-0 hover:opacity-90 transition-opacity"
-          >
+          <span className="text-white font-bold text-lg shrink-0">
             🎪 Annual Showcase
-          </Link>
+          </span>
 
           {/* Edition details — only when loaded */}
           {!isLoading && edition && (

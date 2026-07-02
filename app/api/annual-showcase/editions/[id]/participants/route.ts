@@ -10,7 +10,7 @@ export async function GET(req: NextRequest, ctx: Ctx) {
 
   const { id } = await ctx.params;
   const page  = Math.max(1, Number(req.nextUrl.searchParams.get("page")  ?? 1));
-  const limit = Math.min(100, Math.max(1, Number(req.nextUrl.searchParams.get("limit") ?? 20)));
+  const limit = Math.min(500, Math.max(1, Number(req.nextUrl.searchParams.get("limit") ?? 20)));
   const skip  = (page - 1) * limit;
 
   try {

@@ -59,7 +59,7 @@ const ROLE_RULES: Array<{ prefix: string; allowed: readonly Role[] }> = [
   { prefix: "/recruitment",                   allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD] },
   { prefix: "/onboarding",                    allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD] },
   { prefix: "/offboarding",                   allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD] },
-  { prefix: "/annual-showcase",               allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.ACADEMY, ROLES.HOD] },
+  { prefix: "/annual-showcase",               allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.ACADEMY, ROLES.HOD, ROLES.EXECUTIVE, ROLES.HR, ROLES.MARKETING] },
 ];
 
 // FT/PT users see the same home/HRMS chrome as everyone else, with the
@@ -237,7 +237,7 @@ export const config = {
   //   - Static assets (_next/static, _next/image, favicon)
   //   - /login, /signup and /forgot-password (public auth pages)
   matcher: [
-    "/((?!api|_next/static|_next/image|favicon.ico|login|signup|forgot-password).*)",
+    "/((?!api|_next/static|_next/image|favicon.ico|login|signup|forgot-password|showcase-register|showcase-checkin).*)",
     // Also run on /api/crm so the read-only viewer write-block can backstop API
     // mutations. The fast-path in middleware() returns immediately for API reads,
     // so this adds no cost to the hot path.

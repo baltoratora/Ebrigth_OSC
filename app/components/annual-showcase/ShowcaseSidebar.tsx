@@ -14,6 +14,7 @@ type NavItem = {
   activeText: string;
   dot: string;
   unit?: string;
+  exact?: boolean;
 };
 
 const EDITION_ITEMS: NavItem[] = [
@@ -36,6 +37,8 @@ const DEPT_ITEMS: NavItem[] = [
   { href: "/annual-showcase/logistics",   label: "Logistics",              icon: "🚛", activeBg: "bg-cyan-50",   activeText: "text-cyan-700",   dot: "bg-cyan-600",   unit: "LOGISTICS"    },
   { href: "/annual-showcase/youthpreneur",label: "Youthpreneur",           icon: "💡", activeBg: "bg-orange-50", activeText: "text-orange-700", dot: "bg-orange-500", unit: "YOUTHPRENEUR" },
   { href: "/annual-showcase/ceo",          label: "CEO Unit",              icon: "👔", activeBg: "bg-red-50",    activeText: "text-red-700",    dot: "bg-red-600",    unit: "CEO"          },
+  { href: "/annual-showcase/registration", label: "Registration",          icon: "📋", activeBg: "bg-indigo-50", activeText: "text-indigo-700", dot: "bg-indigo-600", exact: true            },
+  { href: "/annual-showcase/registration/area", label: "Registration Area", icon: "🚪", activeBg: "bg-indigo-50", activeText: "text-indigo-700", dot: "bg-indigo-600"                               },
 ];
 
 // ─── NavLink ───────────────────────────────────────────────────────────────────
@@ -49,7 +52,9 @@ function NavLink({
   pathname: string;
   expanded: boolean;
 }) {
-  const isActive = pathname === item.href || pathname.startsWith(item.href + "/");
+  const isActive = item.exact
+    ? pathname === item.href
+    : pathname === item.href || pathname.startsWith(item.href + "/");
 
   return (
     <Link

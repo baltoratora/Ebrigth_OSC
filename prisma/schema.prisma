@@ -1448,6 +1448,9 @@ model ShowcaseParticipant {
   parentPhone   String?
   orderNo       Int?
   paymentLog    Json?
+  faStudentId   String?
+  emailSentAt   DateTime?
+  checkpoints   Json      @default("[]")
   registeredAt  DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 

@@ -6,7 +6,7 @@ import type { Prisma } from "@prisma/client";
 
 // These roles always get full Annual Showcase access ("ALL" units), regardless
 // of any ShowcaseMember / ShowcaseManpower assignment.
-const ALWAYS_VISIBLE_ROLES: readonly Role[] = [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.MARKETING];
+const ALWAYS_VISIBLE_ROLES: readonly Role[] = [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.MARKETING, ROLES.EXECUTIVE, ROLES.HR];
 
 export async function GET() {
   const { session, error } = await requireSession();
