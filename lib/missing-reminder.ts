@@ -20,11 +20,43 @@
  * (see instrumentation.ts).
  */
 
+import { Pool } from 'pg';
 import { hrfsPrisma } from '@/lib/hrfs';
 import { sendMissingReminderEmail } from '@/lib/mailer';
 import { remapStScan } from '@/lib/scan-identity';
 
 const GRACE_SECONDS = 15 * 60; // email 15 min after the scheduled start time
+
+// LeaveTransaction identifies people by HR payroll code (EBRIGHT021 …), a
+// different namespace from the numeric scanner id (BranchStaff.employeeId) this
+// reminder keys on. Matching on lt.EmployeeName fails because that column is
+// NULL on most rows, so on-leave staff were wrongly nagged. autocount_employee_map
+// (ebrightleads_db) bridges payroll code → BranchStaff.employeeId — the reliable
+// key. Same bridge as /api/leave-status and the HR dashboard.
+let _leadsPool: Pool | null = null;
+function leadsPool(): Pool | null {
+  const url = process.env.FA_DATABASE_URL || process.env.LEADS_DB_URL;
+  if (!url) return null;
+  if (!_leadsPool) _leadsPool = new Pool({ connectionString: url, max: 3 });
+  return _leadsPool;
+}
+async function loadCodeToEmployeeId(): Promise<Map<string, string>> {
+  const m = new Map<string, string>();
+  const pool = leadsPool();
+  if (!pool) return m;
+  try {
+    const r = await pool.query<{ code: string; emp: string }>(
+      `SELECT m.autocount_code AS code, bs."employeeId" AS emp
+         FROM public.autocount_employee_map m
+         JOIN hrfs."BranchStaff" bs ON bs.id = m.branchstaff_id
+        WHERE bs."employeeId" IS NOT NULL AND TRIM(bs."employeeId") <> ''`,
+    );
+    for (const row of r.rows) m.set(String(row.code).trim().toUpperCase(), row.emp);
+  } catch (e) {
+    console.warn('[missing-reminder] autocount map load failed:', (e as Error).message);
+  }
+  return m;
+}
 
 // Staff intentionally hidden from attendance tracking — must NOT be nagged.
 // Mirrors ATTENDANCE_HIDDEN_EMPLOYEE_IDS in app/api/branch-locations/route.ts
@@ -136,15 +168,24 @@ export async function computeMissingCandidates(): Promise<MissingCandidate[]> {
   );
   const scannedSet = new Set(scanRows.map(r => remapStScan(r.device_id, r.person_id, null).personId));
 
-  const leaveRows = await hrfsPrisma.$queryRawUnsafe<{ code: string }[]>(
-    `SELECT DISTINCT bs."employeeId" AS code
-       FROM "LeaveTransaction" lt
-       JOIN "BranchStaff" bs ON UPPER(TRIM(bs.name)) = UPPER(TRIM(lt."EmployeeName"))
-      WHERE lt."ApplyStatus" = 'A' AND lt."LeaveDate"::date = $1::date
-        AND bs."employeeId" IS NOT NULL`,
-    date,
+  // Approved leave today → resolve each HR payroll code to the numeric scanner
+  // employeeId via the autocount bridge (NOT lt.EmployeeName, which is mostly
+  // NULL). Anyone on approved leave must never be nagged as "missing".
+  const [leaveCodeRows, codeMap] = await Promise.all([
+    hrfsPrisma.$queryRawUnsafe<{ code: string }[]>(
+      `SELECT DISTINCT lt."EmployeeCode" AS code
+         FROM "LeaveTransaction" lt
+        WHERE lt."ApplyStatus" = 'A' AND lt."LeaveDate"::date = $1::date
+          AND lt."EmployeeCode" IS NOT NULL`,
+      date,
+    ),
+    loadCodeToEmployeeId(),
+  ]);
+  const onLeaveSet = new Set(
+    leaveCodeRows
+      .map(r => codeMap.get(String(r.code).trim().toUpperCase()))
+      .filter((e): e is string => !!e),
   );
-  const onLeaveSet = new Set(leaveRows.map(r => r.code));
 
   const justRows = await hrfsPrisma.$queryRawUnsafe<{ code: string }[]>(
     `SELECT emp_no AS code FROM public.attendance_justification WHERE just_date = $1::date`,

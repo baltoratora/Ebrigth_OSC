@@ -446,58 +446,35 @@ export async function importLead(
   const phone = row.phone ? normalizePhone(row.phone) : null
   const submittedAt = row.submitted_at ?? new Date()
 
-  // Sibling-index inference: when the unified view doesn't supply
-  // sibling_index (non-Wix sources mostly) but children_details has more
-  // than one child, we infer which child this row represents by counting
-  // contacts already in the CRM that share this row's phone or email.
-  // First row in for this parent → child[0], second → child[1], etc.
-  // Without this fallback the contact's firstName would be saved as the
-  // parent's full name and every subsequent sibling card would look
-  // identical, which is exactly the "two Shuzana cards" bug from prod.
-  let effectiveSiblingIndex = row.sibling_index
-  if (effectiveSiblingIndex == null) {
-    const parsed = parseChildrenDetails(row.children_details)
-    if (parsed && parsed.length >= 1) {
-      const orClauses: Array<Record<string, unknown>> = []
-      if (phone) orClauses.push({ phone })
-      if (row.email && row.email.trim()) orClauses.push({ email: row.email })
-      if (orClauses.length > 0) {
-        const existing = await prisma.crm_contact.count({
-          where: { tenantId: ctx.tenantId, deletedAt: null, OR: orClauses },
-        })
-        const inferred = existing + 1
-        // Only adopt the inference when there's actually a corresponding
-        // child entry — otherwise we'd just rewrite a parent contact with
-        // garbage. Falls through to the parent-name branch in that case.
-        if (inferred <= parsed.length) {
-          effectiveSiblingIndex = inferred
-        }
-      }
-    }
-  }
+  const { firstName, lastName, childAge, parentFullName } = pickContactName(row)
 
-  const rowForName: UnifiedLeadRow =
-    effectiveSiblingIndex !== row.sibling_index
-      ? { ...row, sibling_index: effectiveSiblingIndex }
-      : row
-  const { firstName, lastName, childAge, parentFullName } = pickContactName(rowForName)
-
-  // Disambiguated externalSourceId. Historical seeds used `<base_id>#<sibling>`
-  // (e.g. "16391#1"), but master_leads_base.id is NOT unique over time —
-  // ids get reused for new submissions. That meant two contacts with the
-  // same source_id pointing at different real rows, and the per-day
-  // dashboard counts drifted because the worker can't tell them apart.
+  // ── Idempotency key ────────────────────────────────────────────────────────
+  // This MUST be a pure function of the source ROW so the unique constraint
+  // (tenantId, externalSourceTable, externalSourceId) actually catches a
+  // re-import. If any part of the key varies between runs, the LISTEN/NOTIFY
+  // worker and the polling backstop each mint a BRAND-NEW contact+opportunity
+  // on every pass — the "duplicate leads that keep re-appearing even after they
+  // were moved to another stage or deleted" bug. (A stable key hits P2002 →
+  // soft-skip/backfill instead, and a soft-deleted row still holds its key so
+  // it is never resurrected.)
   //
-  // Format `<base_id>-<submitted_unix>-<sibling>` adds the submission's
-  // epoch seconds so each contact's source_id is unique even when the
-  // base_id gets reused. The "#"-style legacy ids still in CRM stay
-  // valid; they just can't conflict with the new ones (different
-  // delimiter, different shape).
+  //   <base_id>-<submitted_unix>-<sibling>
+  //
+  // Two former sources of drift, now removed:
+  //   1. `submitted_at ?? new Date()` — a NULL submitted_at fell back to the
+  //      current wall-clock, so the key changed every second. We now derive the
+  //      epoch ONLY from the row (0 when the view has no submitted_at).
+  //   2. sibling index inferred from a live COUNT of existing contacts sharing
+  //      the phone/email — that count grew with each duplicate, so the key
+  //      changed on every pass and the duplication compounded. We now use the
+  //      view's own sibling_index only (1 when absent).
+  // Rows that were already imported correctly keep the exact same key (their
+  // submitted_at and sibling_index are unchanged), so this does not re-import
+  // them.
   const baseId = row.source_id.includes('#') ? row.source_id.split('#')[0] : row.source_id
-  // Use the inferred sibling index so two non-Wix children of the same parent
-  // get distinct externalSourceIds ("-1", "-2") instead of colliding on "-1".
-  const siblingIdx = effectiveSiblingIndex ?? 1
-  const externalSourceId = `${baseId}-${Math.floor(submittedAt.getTime() / 1000)}-${siblingIdx}`
+  const keyEpoch = row.submitted_at ? Math.floor(row.submitted_at.getTime() / 1000) : 0
+  const siblingIdx = row.sibling_index ?? 1
+  const externalSourceId = `${baseId}-${keyEpoch}-${siblingIdx}`
 
   try {
     const result = await prisma.$transaction(async (tx) => {

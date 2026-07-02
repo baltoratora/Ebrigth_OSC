@@ -249,13 +249,21 @@ export default function ArchiveSchedulePage() {
   }, [history, filterBranch, userRole, userBranch]);
 
   // --- BULLETPROOF DATA SYNC ---
-  const validData = useMemo(() => {
+  const allKnownNames = useMemo(() => {
+    return new Set([...SHARED_EMPLOYEES, ...Object.values(branchStaffData).flat()]);
+  }, [branchStaffData]);
+
+  const validData = useMemo<Record<string, string>>(() => {
     if (!selectedRecord) return {};
-    if (selectedRecord.selections && Object.keys(selectedRecord.selections).length > 0) {
-        return selectedRecord.selections;
-    }
-    return selectedRecord.originalSelections || {};
-  }, [selectedRecord]);
+    const raw: Record<string, string> = selectedRecord.selections && Object.keys(selectedRecord.selections).length > 0
+      ? selectedRecord.selections
+      : selectedRecord.originalSelections || {};
+    // Strip stale names (e.g. "ISHINI" saved before a nickname change) so they
+    // don't appear in the grid or the hours summary.
+    return Object.fromEntries(
+      Object.entries(raw).filter(([, v]) => !v || v === "None" || allKnownNames.has(v as string))
+    );
+  }, [selectedRecord, allKnownNames]);
 
 
   const calculateHoursForData = () => {
@@ -263,7 +271,8 @@ export default function ArchiveSchedulePage() {
     
     const managerNames = new Set(Object.values(branchManagerData).flat());
     const allBranchStaff = (branchStaffData[selectedRecord.branch] || []).filter(n => !managerNames.has(n));
-    const selectedInTable = (Object.values(validData).filter(val => val !== "" && val !== "None") as string[]).filter(n => !managerNames.has(n));
+    const selectedInTable = (Object.values(validData).filter(val => val !== "" && val !== "None") as string[])
+      .filter(n => !managerNames.has(n));
     const uniqueEmployeesToTrack: string[] = Array.from(new Set([...allBranchStaff, ...selectedInTable]));
 
     const staffStats: Record<string, { coachHrs: number; modHrs: number; execHrs: number; total: number }> = {};

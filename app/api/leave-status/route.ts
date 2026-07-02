@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { Pool } from 'pg';
 import { prisma } from '@/lib/prisma';
 import { hrfsPrisma } from '@/lib/hrfs';
 import { requireSession, canSeeAllBranches } from '@/lib/auth';
@@ -8,9 +9,10 @@ import { isEmployee } from '@/lib/roles';
 //   ?date=2026-05-29            → leave active on a single day
 //   ?month=5&year=2026          → all leave days in a month
 //
-// Returns { leaves: [{ empNo, date, type }] } where `empNo` matches
-// AttendanceLog.empNo / BranchStaff.employeeId, `date` is YYYY-MM-DD, and
-// `type` is the leave code (AL, MC, EL, …). Sick leave (SL) is normalised to MC.
+// Returns { leaves: [{ empNo, date, type }] } where `empNo` is the numeric
+// BranchStaff.employeeId (scanner id) — resolved from the HR payroll code via
+// autocount_employee_map so it lines up with the attendance views. `date` is
+// YYYY-MM-DD and `type` is the leave code (AL, MC, EL, …); SL normalises to MC.
 //
 // Sources: LeaveTransaction (any LeaveTypeCode) + MedicalLeave (always MC).
 // Records explicitly rejected/cancelled are excluded; everything else counts.
@@ -35,6 +37,38 @@ function normaliseType(code: string | null | undefined): string {
   if (!c) return 'LEAVE';
   if (c === 'SL') return 'MC'; // sick leave → medical cert label
   return c;
+}
+
+// LeaveTransaction / MedicalLeave carry an HR payroll code (EBRIGHT021, INT020,
+// EBPT167 …) in EmployeeCode — a completely different namespace from the numeric
+// scanner id (BranchStaff.employeeId, e.g. 33080012) that the attendance views
+// key on. Without a bridge the two never match, so the "On Leave" box is always
+// empty and nobody is held out of "Missing". autocount_employee_map (in
+// ebrightleads_db) maps the payroll code → BranchStaff, giving us the numeric
+// employeeId. Same bridge the HR dashboard uses. Cached per lambda instance.
+let _leadsPool: Pool | null = null;
+function leadsPool(): Pool | null {
+  const url = process.env.FA_DATABASE_URL || process.env.LEADS_DB_URL;
+  if (!url) return null;
+  if (!_leadsPool) _leadsPool = new Pool({ connectionString: url, max: 3 });
+  return _leadsPool;
+}
+async function loadCodeToEmployeeId(): Promise<Map<string, string>> {
+  const m = new Map<string, string>();
+  const pool = leadsPool();
+  if (!pool) return m;
+  try {
+    const r = await pool.query<{ code: string; emp: string }>(
+      `SELECT m.autocount_code AS code, bs."employeeId" AS emp
+         FROM public.autocount_employee_map m
+         JOIN hrfs."BranchStaff" bs ON bs.id = m.branchstaff_id
+        WHERE bs."employeeId" IS NOT NULL AND TRIM(bs."employeeId") <> ''`,
+    );
+    for (const row of r.rows) m.set(String(row.code).trim().toUpperCase(), row.emp);
+  } catch (e) {
+    console.warn('[leave-status] autocount map load failed:', (e as Error).message);
+  }
+  return m;
 }
 
 export async function GET(req: NextRequest) {
@@ -94,22 +128,29 @@ export async function GET(req: NextRequest) {
       if (allowedEmpNos.length === 0) return NextResponse.json({ leaves: [] });
     }
 
-    const [transactions, medical] = await Promise.all([
+    // Fetch WITHOUT filtering by EmployeeCode: the previous `EmployeeCode in
+    // allowedEmpNos` compared HR payroll codes against numeric scanner ids and
+    // so matched nothing. We resolve each row to its numeric employeeId below,
+    // then scope by that.
+    const [transactions, medical, codeMap] = await Promise.all([
       prisma.leaveTransaction.findMany({
-        where: {
-          LeaveDate: { gte: start, lt: end },
-          ...(allowedEmpNos !== null && { EmployeeCode: { in: allowedEmpNos } }),
-        },
+        where: { LeaveDate: { gte: start, lt: end } },
         select: { EmployeeCode: true, LeaveTypeCode: true, LeaveDate: true, ApplyStatus: true },
       }),
       prisma.medicalLeave.findMany({
-        where: {
-          leaveDate: { gte: start, lt: end },
-          ...(allowedEmpNos !== null && { employeeCode: { in: allowedEmpNos } }),
-        },
+        where: { leaveDate: { gte: start, lt: end } },
         select: { employeeCode: true, leaveDate: true, status: true },
       }),
+      loadCodeToEmployeeId(),
     ]);
+
+    // Resolve an HR payroll code → numeric scanner employeeId (what the
+    // attendance views key on). Unresolved codes (not in the autocount map —
+    // typically staff not yet mapped) are dropped: we can't tie them to anyone.
+    const resolve = (code: string | null | undefined): string | undefined =>
+      code ? codeMap.get(code.trim().toUpperCase()) : undefined;
+
+    const allowedSet = allowedEmpNos === null ? null : new Set(allowedEmpNos);
 
     // Merge into one entry per (empNo, date). MedicalLeave (MC) wins over a
     // matching SL transaction so the same sick day isn't shown twice.
@@ -117,18 +158,22 @@ export async function GET(req: NextRequest) {
 
     for (const t of transactions) {
       if (!t.EmployeeCode || !t.LeaveDate || isRejected(t.ApplyStatus)) continue;
+      const empNo = resolve(t.EmployeeCode);
+      if (!empNo || (allowedSet && !allowedSet.has(empNo))) continue;
       const dateStr = toDateStr(t.LeaveDate);
-      byKey.set(`${t.EmployeeCode}|${dateStr}`, {
-        empNo: t.EmployeeCode,
+      byKey.set(`${empNo}|${dateStr}`, {
+        empNo,
         date: dateStr,
         type: normaliseType(t.LeaveTypeCode),
       });
     }
     for (const m of medical) {
       if (!m.employeeCode || !m.leaveDate || isRejected(m.status)) continue;
+      const empNo = resolve(m.employeeCode);
+      if (!empNo || (allowedSet && !allowedSet.has(empNo))) continue;
       const dateStr = toDateStr(m.leaveDate);
-      byKey.set(`${m.employeeCode}|${dateStr}`, {
-        empNo: m.employeeCode,
+      byKey.set(`${empNo}|${dateStr}`, {
+        empNo,
         date: dateStr,
         type: 'MC',
       });

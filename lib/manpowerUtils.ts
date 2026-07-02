@@ -133,6 +133,20 @@ export const STAR_COACH_RATE = 50;
 // report pays the full day at the flat training rate.
 export const TRAINING_DAY_HOURS = 10.5;
 
+// Branch-specific Saturday daily target (in hours). Defaults to 10.5h.
+// Subang Taipan runs until 8:15 PM (vs the standard 6:45 PM) → +1.5h,
+// but only from TAIPAN_EXTENDED_SATURDAY_START onwards.
+const BRANCH_WEEKEND_DAILY_TARGET: Record<string, number> = {
+  "Subang Taipan": 12.0,
+};
+export function getWeekendDailyTarget(branch: string, date?: string): number {
+  if (branch === "Subang Taipan") {
+    if (!date || date >= TAIPAN_EXTENDED_SATURDAY_START) return 12.0;
+    return 10.5;
+  }
+  return BRANCH_WEEKEND_DAILY_TARGET[branch] ?? 10.5;
+}
+
 // The training column sits after the exec columns and before Notes/Remarks.
 // It records who is shadowing/being trained in a slot (max one trainee per
 // branch, hence a single column). A trainee's day is a flat
@@ -189,9 +203,10 @@ const DEFAULT_WEEKEND_TIME_SLOTS = ["09:15 AM – 10:30 AM", "10:30 AM – 11:45
 const TAIPAN_WEEKDAY_TIME_SLOTS = ["4:15 PM", "04.30PM - 05.45PM", "06.00PM - 07.15PM", "07:15PM - 08:30PM", "08.30PM - 09:45PM", "10:00 PM"] as const;
 const AMPANG_WEEKDAY_TIME_SLOTS = ["5:00 PM - 6:00 PM", "06.00PM - 07.15PM", "07:15PM - 08:30PM", "08.30PM - 09:45PM", "9:45 PM - 10:00 PM"] as const;
 const AMPANG_WEEKEND_TIME_SLOTS = ["8:45 AM - 9:15 AM", "09:15 AM – 10:30 AM", "10:30 AM – 11:45 AM", "12:00 PM – 1:15 PM", "1:15 PM – 2:30 PM", "2:45 PM – 4:00 PM", "4:00 PM – 5:15 PM", "5:30 PM – 6:45 PM", "6:45 PM - 7:15 PM"] as const;
+const TAIPAN_WEEKEND_TIME_SLOTS = [...DEFAULT_WEEKEND_TIME_SLOTS, "6:45 PM – 8:00 PM", "8:00 PM – 8:15 PM"] as const;
 
 export const BRANCH_SLOTS_CONFIG: Record<string, { weekday: readonly string[], weekend: readonly string[] }> = {
-  "Subang Taipan": { weekday: TAIPAN_WEEKDAY_TIME_SLOTS, weekend: DEFAULT_WEEKEND_TIME_SLOTS },
+  "Subang Taipan": { weekday: TAIPAN_WEEKDAY_TIME_SLOTS, weekend: TAIPAN_WEEKEND_TIME_SLOTS },
   "Ampang": { weekday: AMPANG_WEEKDAY_TIME_SLOTS, weekend: AMPANG_WEEKEND_TIME_SLOTS },
   "Bandar Seri Putra": { weekday: AMPANG_WEEKDAY_TIME_SLOTS, weekend: AMPANG_WEEKEND_TIME_SLOTS },
   "Klang": { weekday: AMPANG_WEEKDAY_TIME_SLOTS, weekend: AMPANG_WEEKEND_TIME_SLOTS },
@@ -206,19 +221,29 @@ const OPENING_CLOSING_SLOTS: Record<string, string[]> = {
   "Klang": ["5:00 PM - 6:00 PM", "9:45 PM - 10:00 PM", "8:45 AM - 9:15 AM", "6:45 PM - 7:15 PM"],
   "Setia Alam": ["5:00 PM - 6:00 PM", "9:45 PM - 10:00 PM", "8:45 AM - 9:15 AM", "6:45 PM - 7:15 PM"],
   "Kota Warisan": ["5:00 PM - 6:00 PM", "9:45 PM - 10:00 PM", "8:45 AM - 9:15 AM", "6:45 PM - 7:15 PM"],
+  "Subang Taipan": ["8:00 PM – 8:15 PM"],
 };
 
 export function isOpeningClosingSlot(slot: string, branchName: string): boolean {
   return (OPENING_CLOSING_SLOTS[branchName] ?? []).includes(slot);
 }
 
-export function getTimeSlotsForDay(day: string, branchName: string): readonly string[] {
+// The extended Saturday slots (6:45 PM – 8:00 PM + 8:00 PM – 8:15 PM closing)
+// are only active for Subang Taipan from this date onwards.
+const TAIPAN_EXTENDED_SATURDAY_START = "2026-06-22";
+
+export function getTimeSlotsForDay(day: string, branchName: string, date?: string): readonly string[] {
   const config = BRANCH_SLOTS_CONFIG[branchName] || BRANCH_SLOTS_CONFIG["default"];
-  return WEEKDAY_DAYS.includes(day as any) ? config.weekday : config.weekend;
+  const slots = WEEKDAY_DAYS.includes(day as any) ? config.weekday : config.weekend;
+  // For ST, revert to the standard weekend slots for any date before the cutoff.
+  if (branchName === "Subang Taipan" && !WEEKDAY_DAYS.includes(day as any) && date && date < TAIPAN_EXTENDED_SATURDAY_START) {
+    return DEFAULT_WEEKEND_TIME_SLOTS;
+  }
+  return slots;
 }
 
 export function isAdminSlot(slot: string, branchName: string) {
-  if (branchName === "Subang Taipan") return ["4:15 PM", "10:00 PM"].includes(slot);
+  if (branchName === "Subang Taipan") return ["4:15 PM", "10:00 PM", "8:00 PM – 8:15 PM"].includes(slot);
   return ["5:00 PM", "10:00 PM", "08:45 AM – 09:15 AM", "11:45 AM – 12:00 PM", "2:30 PM – 2:45 PM", "5:15 PM – 5:30 PM", "6:45 PM – 7:15 PM"].includes(slot);
 }
 
@@ -241,7 +266,7 @@ const MANAGER_ON_DUTY_SLOTS: Record<string, { weekday: string[], weekend: string
   },
   "Subang Taipan": {
     weekday: ["06.00PM - 07.15PM", "07:15PM - 08:30PM", "08.30PM - 09:45PM"],
-    weekend: ["09:15 AM – 10:30 AM", "10:30 AM – 11:45 AM", "12:00 PM – 1:15 PM", "1:15 PM – 2:30 PM", "2:45 PM – 4:00 PM", "4:00 PM – 5:15 PM", "5:30 PM – 6:45 PM"],
+    weekend: ["09:15 AM – 10:30 AM", "10:30 AM – 11:45 AM", "12:00 PM – 1:15 PM", "1:15 PM – 2:30 PM", "2:45 PM – 4:00 PM", "4:00 PM – 5:15 PM", "5:30 PM – 6:45 PM", "6:45 PM – 8:00 PM"],
   },
   "default": {
     weekday: ["06.00PM - 07.15PM", "07:15PM - 08:30PM", "08.30PM - 09:45PM"],

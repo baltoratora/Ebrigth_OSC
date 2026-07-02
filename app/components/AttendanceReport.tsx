@@ -50,7 +50,7 @@ interface DayRow {
   clockIn: string | null;
   clockOut: string | null;
   hoursWorked: number | null;
-  attendance: "Present" | "Rest Day" | "No Data";
+  attendance: "Present" | "Rest Day" | "Off Day" | "No Data";
   inStatus: CheckInStatus | null;
   outStatus: CheckOutStatus | null;
   leaveType: string | null; // AL / MC / etc when on leave that day
@@ -253,7 +253,7 @@ export default function AttendanceReport() {
       clockIn: log?.clockInTime ?? null,
       clockOut: log?.clockOutTime ?? null,
       hoursWorked,
-      attendance: hasBothScans ? "Present" : restDay ? "Rest Day" : "No Data",
+      attendance: hasBothScans ? "Present" : restDay && hasSchedule(activeSchedule) ? "Off Day" : restDay ? "Rest Day" : "No Data",
       inStatus,
       outStatus,
       leaveType: leaveByDate.get(dateStr) ?? null,
@@ -504,7 +504,7 @@ export default function AttendanceReport() {
                         </tr>
                       ) : (
                         rows.map(row => {
-                          const isRestDayRow = row.attendance === "Rest Day";
+                          const isRestDayRow = row.attendance === "Rest Day" || row.attendance === "Off Day";
                           const isNoData     = row.attendance === "No Data";
                           const isToday      = row.date === todayStr;
                           return (
@@ -543,8 +543,12 @@ export default function AttendanceReport() {
                                     {row.hoursWorked !== null ? minutesToHours(row.hoursWorked) : <span className="text-gray-300">—</span>}
                                   </td>
                                   <td className="px-3 py-3 text-center">
-                                    {isRestDayRow ? (
+                                    {row.attendance === "Rest Day" ? (
                                       <span className="text-gray-300">—</span>
+                                    ) : row.attendance === "Off Day" ? (
+                                      <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-500 ring-1 ring-slate-200">
+                                        Off Day
+                                      </span>
                                     ) : row.attendance === "Present" ? (
                                       <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-green-50 text-green-700 ring-1 ring-green-200">
                                         <CheckCircle2 className="w-3 h-3" /> Present
@@ -578,11 +582,13 @@ export default function AttendanceReport() {
                                     <span className={`font-semibold ${
                                       row.attendance === "Present"  ? "text-green-700" :
                                       row.attendance === "Rest Day" ? "text-gray-400" :
+                                      row.attendance === "Off Day"  ? "text-slate-500" :
                                       row.leaveType                  ? "text-violet-700" :
                                                                        "text-rose-700"
                                     }`}>{
                                       row.attendance === "Present"  ? "Present" :
                                       row.attendance === "Rest Day" ? "—" :
+                                      row.attendance === "Off Day"  ? "Off Day" :
                                       row.leaveType                  ? `On leave (${row.leaveType})` :
                                                                        "No Record"
                                     }</span>

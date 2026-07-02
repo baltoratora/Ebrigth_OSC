@@ -187,6 +187,15 @@ export async function GET(req: NextRequest) {
   const monthExpr = useMonth ? "$1::date" : "CURRENT_DATE";
   const monthArgs = useMonth ? [`${monthParam}-01`] : [];
 
+  // MIA card follows its own selectable month (defaults to the current month).
+  // Regex-validated so it can be safely interpolated into the leave-date filter.
+  const miaMonthParam = String(req.nextUrl.searchParams.get("miaMonth") || "").trim();
+  const useMiaMonth = /^\d{4}-(0[1-9]|1[0-2])$/.test(miaMonthParam);
+
+  // Flagged card follows its own selectable month too (defaults to current).
+  const flaggedMonthParam = String(req.nextUrl.searchParams.get("flaggedMonth") || "").trim();
+  const useFlaggedMonth = /^\d{4}-(0[1-9]|1[0-2])$/.test(flaggedMonthParam);
+
   try {
     // Autocount code → name bridge (matches the internal dashboard). Applied to
     // every leave card below so part-timers whose LeaveTransaction.EmployeeName
@@ -299,13 +308,20 @@ export async function GET(req: NextRequest) {
          AND ${dateCond}
          AND (bs.status IS NULL OR bs.status <> 'Inactive')`;
     const THIS_MONTH = `date_trunc('month', lt."LeaveDate"::date) = date_trunc('month', CURRENT_DATE)`;
-    const LAST_2_WEEKS = `lt."LeaveDate"::date >= CURRENT_DATE - INTERVAL '14 days' AND lt."LeaveDate"::date <= CURRENT_DATE`;
+    // MIA UL window = the selected month (defaults to the current month).
+    const MIA_MONTH = useMiaMonth
+      ? `date_trunc('month', lt."LeaveDate"::date) = '${miaMonthParam}-01'::date`
+      : THIS_MONTH;
+    // Flagged window = its own selected month (defaults to the current month).
+    const FLAGGED_MONTH = useFlaggedMonth
+      ? `date_trunc('month', lt."LeaveDate"::date) = '${flaggedMonthParam}-01'::date`
+      : THIS_MONTH;
 
-    let slRows = await hrfsPrisma.$queryRawUnsafe<AlertLeaveRow[]>(alertRowsSql("SL", THIS_MONTH));
-    let ulRows = await hrfsPrisma.$queryRawUnsafe<AlertLeaveRow[]>(alertRowsSql("UL", LAST_2_WEEKS));
-    // UL this month feeds the Flagged card (≥2 UL days), separate from the MIA
-    // card's last-2-weeks UL window above.
-    let ulMonthRows = await hrfsPrisma.$queryRawUnsafe<AlertLeaveRow[]>(alertRowsSql("UL", THIS_MONTH));
+    let slRows = await hrfsPrisma.$queryRawUnsafe<AlertLeaveRow[]>(alertRowsSql("SL", FLAGGED_MONTH));
+    let ulRows = await hrfsPrisma.$queryRawUnsafe<AlertLeaveRow[]>(alertRowsSql("UL", MIA_MONTH));
+    // UL in the flagged month feeds the Flagged card (≥2 UL days), separate from
+    // the MIA card's own selected-month UL window above.
+    let ulMonthRows = await hrfsPrisma.$queryRawUnsafe<AlertLeaveRow[]>(alertRowsSql("UL", FLAGGED_MONTH));
     // Exclude staff the autocount map ties to an Inactive BranchStaff — the
     // internal dashboard drops these via its autocount JOIN + status filter, but
     // our SQL can't JOIN that cross-DB table, so we apply the same exclusion in
@@ -326,6 +342,28 @@ export async function GET(req: NextRequest) {
       buildLeaveAlert(ulMonthRows, 2, "UL"),
     );
     const mia = buildLeaveAlert(ulRows, 1, "UL");
+
+    // Mark whether HR has already completed the escalation action for each
+    // flagged person this month (verbal @2 / email @3 / show-cause @4+). The
+    // tier is derived from their flagged-day count, matching the UI.
+    const flaggedTier = (cnt: number) => (cnt >= 4 ? "show_cause" : cnt === 3 ? "email" : "verbal");
+    const klMonth = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kuala_Lumpur" }).slice(0, 7);
+    const flaggedMonthKey = useFlaggedMonth ? flaggedMonthParam : klMonth;
+    try {
+      await hrfsPrisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS public.flagged_action_log (
+          emp_code text NOT NULL, action_month text NOT NULL, tier text NOT NULL,
+          completed_by text, completed_at timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (emp_code, action_month, tier))`);
+      const done = await hrfsPrisma.$queryRawUnsafe<{ emp_code: string; tier: string }[]>(
+        `SELECT emp_code, tier FROM public.flagged_action_log WHERE action_month = $1`,
+        flaggedMonthKey,
+      );
+      const doneSet = new Set(done.map(r => `${r.emp_code}|${r.tier}`));
+      flagged.forEach((f: any) => { f.actionDone = doneSet.has(`${f.code}|${flaggedTier(f.cnt)}`); });
+    } catch (e) {
+      console.error("[hr-dashboard] flag-action enrich failed:", (e as Error).message);
+    }
 
     // ── Missing today: scheduled staff who haven't scanned (changes each day) ──
     // Appended to the MIA card. "Expected" = active + a working slot today (per
@@ -403,10 +441,18 @@ export async function GET(req: NextRequest) {
       code: s.code, name: s.name, position: s.position, department_branch: s.department_branch,
     }));
 
+    // "Missing today" only makes sense for the current month — when the MIA card
+    // is viewing a past/other month, there's no "today" inside it.
+    const currentYM = todayKL.slice(0, 7);
+    const miaMonth = useMiaMonth ? miaMonthParam : currentYM;
+    const miaMissingTodayOut = miaMonth === currentYM ? miaMissingToday : [];
+
     return NextResponse.json({
       onboarding, offboarding, signedCounts, signedStaff,
       signedMonth: useMonth ? monthParam : new Date().toISOString().slice(0, 7),
-      annualLeave, mc, flagged, mia, miaMissingToday, miaMissingDate: todayKL,
+      annualLeave, mc, flagged, flaggedMonth: useFlaggedMonth ? flaggedMonthParam : currentYM,
+      mia, miaMonth,
+      miaMissingToday: miaMissingTodayOut, miaMissingDate: todayKL,
     });
   } catch (err: any) {
     console.error("HR Dashboard API error:", err);
