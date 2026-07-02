@@ -487,7 +487,7 @@ export default function ArchiveSchedulePage() {
                                   ) : (
                                     <>
                                       {dayColumns.map(col => {
-                                        const name = validData[`${day}-${slot}-${col.id}`];
+                                        const name = validData[`${day}-${slot}-${col.id}`] as string | undefined;
                                         const displayValue = name && name !== "None" ? name : "-";
                                         const bgColor = name && name !== "None" ? getStaffColorByIndex(name, branchStaff) : (col.type === 'exec' ? 'bg-slate-50 text-slate-300' : col.type === 'training' ? 'bg-yellow-50 text-slate-300' : 'bg-white text-slate-300');
                                         return (

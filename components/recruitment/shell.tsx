@@ -5,6 +5,7 @@ import { Moon, Sun } from "lucide-react";
 import { cn } from "@/lib/crm/utils";
 import { RecruitmentSidebar } from "@/app/recruitment/_components/recruitment-sidebar";
 import { NotificationBell } from "@/components/recruitment/notification-bell";
+import { TrainingPopup } from "@/components/recruitment/training-popup";
 
 // App shell for the Recruitment module. Holds a self-contained dark-mode toggle
 // — the `.dark` class is applied to THIS subtree's root only, so Tailwind's
@@ -41,6 +42,9 @@ export function RecruitmentShell({ children }: { children: React.ReactNode }) {
         </div>
         <main className="flex-1 overflow-y-auto">{children}</main>
       </div>
+      {/* Fires when HR opens Recruitment: training attendance to confirm +
+          reschedule dates to pick. */}
+      <TrainingPopup />
     </div>
   );
 }

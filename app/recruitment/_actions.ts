@@ -7,6 +7,7 @@ import { authOptions } from "@/lib/nextauth";
 import { hrfsPrisma as prisma } from "@/lib/hrfs";
 import { ROLES, normalizeRole } from "@/lib/roles";
 import { getHrfsCandidate, type HrfsCandidate } from "@/lib/recruitment/hrfs-candidate";
+import { isTrainingCode } from "@/lib/recruitment/training";
 
 const ALLOWED = new Set<string>([ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD]);
 
@@ -37,11 +38,23 @@ export async function moveRecruit(recruitId: string, toStageId: string): Promise
     if (!recruit) return { ok: false, error: "Recruit not found" };
     if (recruit.stageId === toStageId) return { ok: true };
 
-    const toStage = await prisma.recStage.findUnique({ where: { id: toStageId }, select: { id: true } });
+    const toStage = await prisma.recStage.findUnique({ where: { id: toStageId }, select: { id: true, shortCode: true } });
     if (!toStage) return { ok: false, error: "Stage not found" };
 
+    // Dragging into a training stage (re)starts its 3-day attendance clock; any
+    // manual move also cancels a pending reschedule auto-return.
+    const enteringTraining = isTrainingCode(toStage.shortCode);
     await prisma.$transaction([
-      prisma.recRecruit.update({ where: { id: recruitId }, data: { stageId: toStageId } }),
+      prisma.recRecruit.update({
+        where: { id: recruitId },
+        data: {
+          stageId: toStageId,
+          trainingEnteredAt: enteringTraining ? new Date() : undefined,
+          trainingConfirmedAt: enteringTraining ? null : undefined,
+          rescheduleAt: null,
+          rescheduleReturnCode: null,
+        },
+      }),
       prisma.recStageHistory.create({
         data: { recruitId, fromStageId: recruit.stageId, toStageId, changedBy: userId },
       }),
@@ -64,7 +77,7 @@ export async function bulkMoveRecruits(
     const { userId } = await requireAccess();
     if (!ids.length) return { ok: true, moved: 0 };
 
-    const toStage = await prisma.recStage.findUnique({ where: { id: toStageId }, select: { id: true } });
+    const toStage = await prisma.recStage.findUnique({ where: { id: toStageId }, select: { id: true, shortCode: true } });
     if (!toStage) return { ok: false, error: "Stage not found" };
 
     const recruits = await prisma.recRecruit.findMany({
@@ -74,10 +87,17 @@ export async function bulkMoveRecruits(
     const toMove = recruits.filter((r) => r.stageId !== toStageId);
     if (!toMove.length) return { ok: true, moved: 0 };
 
+    const enteringTraining = isTrainingCode(toStage.shortCode);
     await prisma.$transaction([
       prisma.recRecruit.updateMany({
         where: { id: { in: toMove.map((r) => r.id) } },
-        data: { stageId: toStageId },
+        data: {
+          stageId: toStageId,
+          trainingEnteredAt: enteringTraining ? new Date() : undefined,
+          trainingConfirmedAt: enteringTraining ? null : undefined,
+          rescheduleAt: null,
+          rescheduleReturnCode: null,
+        },
       }),
       prisma.recStageHistory.createMany({
         data: toMove.map((r) => ({ recruitId: r.id, fromStageId: r.stageId, toStageId, changedBy: userId })),

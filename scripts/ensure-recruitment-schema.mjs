@@ -127,6 +127,11 @@ const ALTERS = [
   `ALTER TABLE ${S}.rec_recruit ADD COLUMN IF NOT EXISTS "ghlCreatedAt" timestamp(3)`,
   `ALTER TABLE ${S}.rec_recruit ADD COLUMN IF NOT EXISTS "ghlContactId" text`,
   `ALTER TABLE ${S}.rec_recruit ADD COLUMN IF NOT EXISTS "branchStaffId" integer`,
+  // Training-day attendance workflow columns.
+  `ALTER TABLE ${S}.rec_recruit ADD COLUMN IF NOT EXISTS "trainingEnteredAt" timestamp(3)`,
+  `ALTER TABLE ${S}.rec_recruit ADD COLUMN IF NOT EXISTS "trainingConfirmedAt" timestamp(3)`,
+  `ALTER TABLE ${S}.rec_recruit ADD COLUMN IF NOT EXISTS "rescheduleAt" timestamp(3)`,
+  `ALTER TABLE ${S}.rec_recruit ADD COLUMN IF NOT EXISTS "rescheduleReturnCode" text`,
 ];
 
 // Constraints / indexes created separately so they apply to pre-existing tables
@@ -174,6 +179,52 @@ async function copy(table) {
   console.log(`[rec-hrfs] ${table}: copied ${copied} new row(s) (of ${rows.length})`);
 }
 
+/**
+ * Pipeline changes for the training workflow — idempotent, safe every run:
+ *  - Merge "1st/2nd/3rd Day Trial" (DT1/DT2/DT3) into one "Trial" (TRL) stage,
+ *    repointing recruits + stage history so nothing is orphaned, then drop the
+ *    old three.
+ *  - Add a "Probation" (PRB) stage immediately after "3rd Training Day" (TR3).
+ */
+async function restructureStages() {
+  // 1. Ensure the single "Trial" stage exists (takes DT1's slot, order 17).
+  await dest.query(
+    `INSERT INTO ${S}.rec_stage (id, name, "shortCode", "order", color)
+       SELECT gen_random_uuid()::text, 'Trial', 'TRL', 17, 'teal'
+        WHERE NOT EXISTS (SELECT 1 FROM ${S}.rec_stage WHERE "shortCode" = 'TRL')`,
+  );
+  // 2. Repoint cards + history off DT1/DT2/DT3 onto TRL, then delete the three.
+  await dest.query(
+    `DO $$
+     DECLARE trl text;
+     BEGIN
+       SELECT id INTO trl FROM ${S}.rec_stage WHERE "shortCode" = 'TRL';
+       IF trl IS NOT NULL THEN
+         UPDATE ${S}.rec_recruit SET "stageId" = trl
+           WHERE "stageId" IN (SELECT id FROM ${S}.rec_stage WHERE "shortCode" IN ('DT1','DT2','DT3'));
+         UPDATE ${S}.rec_stage_history SET "toStageId" = trl
+           WHERE "toStageId" IN (SELECT id FROM ${S}.rec_stage WHERE "shortCode" IN ('DT1','DT2','DT3'));
+         UPDATE ${S}.rec_stage_history SET "fromStageId" = trl
+           WHERE "fromStageId" IN (SELECT id FROM ${S}.rec_stage WHERE "shortCode" IN ('DT1','DT2','DT3'));
+         DELETE FROM ${S}.rec_stage WHERE "shortCode" IN ('DT1','DT2','DT3');
+       END IF;
+     END $$;`,
+  );
+  // 3. Add Probation right after 3rd Training Day (TR3 = order 24). Guarded so
+  //    the order-shift only happens once (not on every deploy).
+  await dest.query(
+    `DO $$
+     BEGIN
+       IF NOT EXISTS (SELECT 1 FROM ${S}.rec_stage WHERE "shortCode" = 'PRB') THEN
+         UPDATE ${S}.rec_stage SET "order" = "order" + 1 WHERE "order" >= 25;
+         INSERT INTO ${S}.rec_stage (id, name, "shortCode", "order", color)
+           VALUES (gen_random_uuid()::text, 'Probation', 'PRB', 25, 'lime');
+       END IF;
+     END $$;`,
+  );
+  console.log("[rec-hrfs] stages restructured (Trial merge + Probation)");
+}
+
 async function main() {
   console.log(
     `[rec-hrfs] destination = ${hrfsUrl ? "HRFS_DATABASE_URL" : "DATABASE_URL (fallback)"} schema "${destSchema}"; copy from crm = ${doCopy}`,
@@ -193,6 +244,9 @@ async function main() {
   } else {
     console.log("[rec-hrfs] destination is the crm DB itself — skipping copy (tables already in place)");
   }
+
+  // Run AFTER copy so any freshly-copied DT1/DT2/DT3 cards get merged too.
+  await restructureStages();
 }
 
 main()
