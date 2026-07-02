@@ -68,9 +68,6 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     if (!body.fullName || typeof body.fullName !== "string") {
       return NextResponse.json({ error: "fullName is required" }, { status: 400 });
     }
-    if (!body.parentEmail || typeof body.parentEmail !== "string") {
-      return NextResponse.json({ error: "parentEmail is required" }, { status: 400 });
-    }
 
     // Check the edition exists and is active
     const edition = await prisma.showcaseEdition.findUnique({
@@ -96,7 +93,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         email:       body.email       ?? undefined,
         phone:       body.phone       ?? undefined,
         parentName:  body.parentName  ?? undefined,
-        parentEmail: body.parentEmail.trim().toLowerCase(),
+        parentEmail: body.parentEmail ? body.parentEmail.trim().toLowerCase() : undefined,
         parentPhone: body.parentPhone ?? undefined,
         isEbrighter: true,
         faStudentId: body.faStudentId ? String(body.faStudentId) : undefined,
@@ -113,9 +110,9 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       color: { dark: "#1f2937", light: "#ffffff" },
     });
 
-    // Send email to parent — fire-and-forget with best-effort (SMTP may not be configured)
+    // Send email to parent — only if parentEmail provided, fire-and-forget
     let emailSentAt: Date | null = null;
-    try {
+    if (participant.parentEmail) try {
       const html = await buildParentEmail({
         studentName:     participant.fullName,
         editionName:     edition.name,
