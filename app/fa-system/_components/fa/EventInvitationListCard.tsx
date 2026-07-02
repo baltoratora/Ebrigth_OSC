@@ -1,10 +1,10 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Users, Search, Download } from "lucide-react";
+import { Users, Search, Download, Video, Image as ImageIcon } from "lucide-react";
 import { useFAStore } from "@fa/_lib/store";
 import { StatusPill } from "@fa/_components/fa/StatusPill";
-import { BRANCHES, FAEvent, InvitationStatus, countsAsAttended } from "@fa/_types";
+import { BRANCHES, FAEvent, Invitation, InvitationStatus, countsAsAttended, countsAsConfirmed } from "@fa/_types";
 import { downloadCSV } from "@fa/_lib/csv";
 
 const STATUS_TONE: Record<InvitationStatus, "neutral" | "info" | "success" | "warning" | "danger"> = {
@@ -111,6 +111,7 @@ export function EventInvitationListCard({ event }: EventInvitationListCardProps)
       "Branch code", "Branch name", "Student name", "Student ID",
       "Grade", "Credit", "Day", "Session #", "Session time",
       "Status", "Parent name", "Parent phone",
+      "Proof status", "Video link", "Proof link",
     ];
     const csvRows = rows.map(({ invitation, student, session }) => [
       invitation.branch,
@@ -125,6 +126,13 @@ export function EventInvitationListCard({ event }: EventInvitationListCardProps)
       STATUS_LABEL[invitation.status],
       student?.parentName ?? "",
       student?.parentPhone ?? "",
+      invitation.videoLink && invitation.proofUrl
+        ? "Submitted"
+        : countsAsConfirmed(invitation.status)
+          ? "Pending"
+          : "Awaiting confirmation",
+      invitation.videoLink ?? "",
+      invitation.proofUrl ?? "",
     ]);
     const safeName = event.name.replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, "");
     const suffix = filter === "confirmed" ? "confirmed" : "all";
@@ -221,6 +229,7 @@ export function EventInvitationListCard({ event }: EventInvitationListCardProps)
                 <th>Time</th>
                 <th>Parent</th>
                 <th>Status</th>
+                <th>Video / Proof</th>
               </tr>
             </thead>
             <tbody>
@@ -255,6 +264,9 @@ export function EventInvitationListCard({ event }: EventInvitationListCardProps)
                       {STATUS_LABEL[invitation.status]}
                     </StatusPill>
                   </td>
+                  <td>
+                    <ProofProgress inv={invitation} />
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -262,5 +274,56 @@ export function EventInvitationListCard({ event }: EventInvitationListCardProps)
         )}
       </div>
     </section>
+  );
+}
+
+/**
+ * Per-student proof progress for the Marketing invitation list. Shown on EVERY
+ * row so Marketing can track who has/hasn't submitted:
+ *   - confirmed + video & proof present → green "Submitted" + clickable links
+ *   - confirmed + still missing         → red "Pending" (+ any partial link)
+ *   - not confirmed yet                 → grey "Awaiting confirmation"
+ * The Proof link opens the uploaded image (Google Drive) in a new tab.
+ */
+function ProofProgress({ inv }: { inv: Invitation }) {
+  const hasVideo = !!inv.videoLink;
+  const hasProof = !!inv.proofUrl;
+  const complete = hasVideo && hasProof;
+  const confirmed = countsAsConfirmed(inv.status);
+
+  const badge = complete
+    ? { cls: "bg-success-soft text-success", label: "Submitted" }
+    : confirmed
+      ? { cls: "bg-danger-soft text-danger", label: "Pending" }
+      : { cls: "bg-ivory-200 text-ink-500", label: "Awaiting confirmation" };
+
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${badge.cls}`}>
+        {badge.label}
+      </span>
+      {hasVideo && (
+        <a
+          href={inv.videoLink}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 text-[11px] text-brand-700 hover:underline"
+          title="Testing video"
+        >
+          <Video className="w-3 h-3" /> Video
+        </a>
+      )}
+      {hasProof && (
+        <a
+          href={inv.proofUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 text-[11px] text-brand-700 hover:underline"
+          title="View proof — student completed testing before the event"
+        >
+          <ImageIcon className="w-3 h-3" /> View proof
+        </a>
+      )}
+    </div>
   );
 }

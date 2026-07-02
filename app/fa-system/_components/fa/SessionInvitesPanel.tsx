@@ -1,14 +1,16 @@
 ﻿"use client";
 
-import { Clock, X, Phone, UserPlus } from "lucide-react";
+import { useState } from "react";
+import { Clock, X, Phone, UserPlus, Video, Image as ImageIcon } from "lucide-react";
 import { useFAStore } from "@fa/_lib/store";
 import { EmptyState } from "@fa/_components/shared/EmptyState";
 import { StatusPill } from "@fa/_components/fa/StatusPill";
 import { InvitationStatusSelector } from "@fa/_components/fa/InvitationStatusSelector";
-import { Invitation, InvitationStatus, Session, Student, hasBacklog, resolveStudentById, countsAsAttended } from "@fa/_types";
+import { ConfirmProofModal } from "@fa/_components/fa/ConfirmProofModal";
+import { Invitation, InvitationStatus, Session, Student, hasBacklog, resolveStudentById, countsAsAttended, countsAsConfirmed } from "@fa/_types";
 
 export function SessionInvitesPanel({
-  session, quota, invitations, canInvite, isLocked, onOpenInvite, onStatusChange, onRemove,
+  session, quota, invitations, canInvite, isLocked, onOpenInvite, onStatusChange, onAttachProof, onRemove,
 }: {
   session: Session;
   quota: number;
@@ -18,11 +20,32 @@ export function SessionInvitesPanel({
   isLocked?: boolean;
   onOpenInvite: () => void;
   onStatusChange: (id: string, status: InvitationStatus) => void;
+  /** After a BM confirms, they can (optionally) attach a testing video link +
+   *  proof image. When provided, clicking "Confirmed" confirms immediately AND
+   *  opens the (skippable) proof modal. */
+  onAttachProof?: (
+    invId: string,
+    args: { videoLink: string; base64Data: string | null; studentId: string; branch: string }
+  ) => Promise<void>;
   onRemove: (inv: Invitation) => void;
 }) {
   // Treat missing isLocked as false (backwards-compat)
   const locked = isLocked ?? !canInvite;
   const students = useFAStore(s => s.students);
+  // The testing video + proof live in their own always-visible column (below)
+  // AND are prompted for right after confirming. This holds the row whose
+  // video/proof editor is open.
+  const [editProofFor, setEditProofFor] = useState<{ inv: Invitation; name: string } | null>(null);
+
+  // Confirm immediately, then pop the proof editor so the branch is prompted to
+  // add the testing video + proof on the spot (the column keeps it editable
+  // later too). Other transitions (Pending / Declined / attendance) pass through.
+  function handleStatusChange(inv: Invitation, name: string, status: InvitationStatus) {
+    onStatusChange(inv.id, status);
+    if (status === "confirmed" && onAttachProof) {
+      setEditProofFor({ inv, name });
+    }
+  }
   // `quota` from the page is marketing's confirm target. Invite cap is 3× that.
   const inviteCap = quota * 3;
   const remaining = inviteCap - invitations.length;
@@ -82,12 +105,21 @@ export function SessionInvitesPanel({
                 <th>Backlog</th>
                 <th>Parent</th>
                 <th>Status</th>
+                <th>Video / Proof</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {invitations.map(inv => {
                 const student = getStudent(inv.studentId);
+                // Once confirmed, the student needs BOTH a testing video link
+                // and a proof image. Tint the WHOLE row red until both are
+                // present, then green — so a branch can't confirm and forget.
+                const requiresProof = countsAsConfirmed(inv.status);
+                const proofComplete = !!(inv.videoLink && inv.proofUrl);
+                const proofTone = requiresProof
+                  ? (proofComplete ? "bg-success-soft" : "bg-danger-soft")
+                  : "";
                 // Orphaned invitation: the student record was removed from
                 // studentrecords after the invite was created. Show it (with a
                 // remove button) instead of silently hiding it — otherwise the
@@ -95,7 +127,7 @@ export function SessionInvitesPanel({
                 // has no way to clear the stale invite.
                 if (!student) {
                   return (
-                    <tr key={inv.id} className="bg-amber-50/40">
+                    <tr key={inv.id} className={proofTone || "bg-amber-50/40"}>
                       <td>
                         <div className={`font-medium ${inv.studentNameSnapshot ? "text-ink-900" : "text-danger"}`}>
                           {inv.studentNameSnapshot || "Unknown student"}
@@ -111,8 +143,15 @@ export function SessionInvitesPanel({
                       <td>
                         <InvitationStatusSelector
                           value={inv.status}
-                          onChange={(s) => onStatusChange(inv.id, s)}
+                          onChange={(s) => handleStatusChange(inv, inv.studentNameSnapshot || "this student", s)}
                           disabled={locked}
+                        />
+                      </td>
+                      <td>
+                        <ProofCell
+                          inv={inv}
+                          locked={locked || !onAttachProof}
+                          onEdit={() => setEditProofFor({ inv, name: inv.studentNameSnapshot || "this student" })}
                         />
                       </td>
                       <td>
@@ -130,7 +169,7 @@ export function SessionInvitesPanel({
                 }
                 const backlog = hasBacklog(student);
                 return (
-                  <tr key={inv.id}>
+                  <tr key={inv.id} className={proofTone}>
                     <td>
                       <div className="font-medium text-ink-900">{student.name}</div>
                       <div className="text-xs text-ink-400">#{student.id}</div>
@@ -158,8 +197,15 @@ export function SessionInvitesPanel({
                     <td>
                       <InvitationStatusSelector
                         value={inv.status}
-                        onChange={(s) => onStatusChange(inv.id, s)}
+                        onChange={(s) => handleStatusChange(inv, student.name, s)}
                         disabled={locked}
+                      />
+                    </td>
+                    <td>
+                      <ProofCell
+                        inv={inv}
+                        locked={locked || !onAttachProof}
+                        onEdit={() => setEditProofFor({ inv, name: student.name })}
                       />
                     </td>
                     <td>
@@ -178,6 +224,83 @@ export function SessionInvitesPanel({
             </tbody>
           </table>
         </div>
+      )}
+
+      {editProofFor && onAttachProof && (
+        <ConfirmProofModal
+          open
+          onClose={() => setEditProofFor(null)}
+          studentName={editProofFor.name}
+          initialVideoLink={editProofFor.inv.videoLink ?? ""}
+          initialProofUrl={editProofFor.inv.proofUrl ?? ""}
+          onSave={async ({ videoLink, base64Data }) => {
+            await onAttachProof(editProofFor.inv.id, {
+              videoLink,
+              base64Data,
+              studentId: editProofFor.inv.studentId,
+              branch: editProofFor.inv.branch,
+            });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * "Video / Proof" cell. Only relevant once the student is CONFIRMED — before
+ * that it stays empty ("—"). After confirming, the WHOLE ROW is tinted RED until
+ * BOTH the testing video link and proof image are added, then GREEN (see
+ * proofTone in the row map). This cell just holds the clickable links + an
+ * Add/Edit button so a branch can't confirm and forget. Read-only when locked.
+ */
+function ProofCell({
+  inv, locked, onEdit,
+}: { inv: Invitation; locked: boolean; onEdit: () => void }) {
+  // Nothing to do until the student is confirmed.
+  if (!countsAsConfirmed(inv.status)) {
+    return <span className="text-xs text-ink-400">—</span>;
+  }
+  const hasVideo = !!inv.videoLink;
+  const hasProof = !!inv.proofUrl;
+  const complete = hasVideo && hasProof;
+
+  return (
+    <div className="inline-flex items-center gap-2">
+      {hasVideo && (
+        <a
+          href={inv.videoLink}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 text-[11px] text-brand-700 hover:underline"
+          title="Testing video"
+        >
+          <Video className="w-3 h-3" /> Video
+        </a>
+      )}
+      {hasProof && (
+        <a
+          href={inv.proofUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 text-[11px] text-brand-700 hover:underline"
+          title="Proof of testing before the event"
+        >
+          <ImageIcon className="w-3 h-3" /> Proof
+        </a>
+      )}
+      {complete ? (
+        !locked && (
+          <button onClick={onEdit} className="text-[11px] text-ink-600 hover:text-brand-700">
+            Edit
+          </button>
+        )
+      ) : !locked ? (
+        <button onClick={onEdit} className="text-[11px] font-semibold text-danger hover:underline">
+          {hasVideo || hasProof ? "Complete proof" : "+ Add video / proof"}
+        </button>
+      ) : (
+        <span className="text-[11px] font-medium text-danger">Missing proof</span>
       )}
     </div>
   );

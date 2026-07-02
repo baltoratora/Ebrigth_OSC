@@ -118,6 +118,13 @@ interface FAStore {
     allowOverQuota?: boolean;
   }) => Promise<Invitation | null>;
   updateInvitationStatus: (id: string, status: InvitationStatus, by?: string) => Promise<void>;
+  /** Attach a testing video link and/or a proof image to an (already-confirmed)
+   *  invitation. Both are optional — a proof image is uploaded to Google Drive
+   *  and its link saved; the video link is saved as-is. Surfaced to Marketing. */
+  attachInvitationProof: (
+    id: string,
+    args: { videoLink: string; base64Data: string | null; studentId: string; branch: string; by?: string }
+  ) => Promise<void>;
   removeInvitation: (id: string) => Promise<void>;
   moveInvitationToSession: (invitationId: string, targetSessionId: string) => Promise<void>;
 
@@ -522,6 +529,39 @@ export const useFAStore = create<FAStore>()(
           }
           return { invitations };
         });
+      },
+
+      attachInvitationProof: async (id, { videoLink, base64Data, studentId, branch, by }) => {
+        // With an image → upload route (uploads to Drive, saves proof + video).
+        // Video-link only → a plain PATCH. Nothing provided → no-op.
+        let r;
+        if (base64Data) {
+          r = await apiJson<Invitation>(
+            `/api/fa/invitations/${encodeURIComponent(id)}/proof`,
+            {
+              method: "POST",
+              body: JSON.stringify({ videoLink, base64Data, studentId, branch, markedBy: by }),
+            }
+          );
+        } else if (videoLink.trim()) {
+          r = await apiJson<Invitation>(`/api/fa/invitations/${encodeURIComponent(id)}`, {
+            method: "PATCH",
+            body: JSON.stringify({ videoLink: videoLink.trim() }),
+          });
+        } else {
+          return; // nothing to save
+        }
+        if (!r.ok) {
+          const msg =
+            r.body && typeof r.body === "object" && "error" in r.body
+              ? String((r.body as { error?: unknown }).error)
+              : `Save failed (HTTP ${r.status})`;
+          throw new Error(msg);
+        }
+        const updated = r.data;
+        set((s) => ({
+          invitations: s.invitations.map((i) => (i.id === id ? updated : i)),
+        }));
       },
 
       removeInvitation: async (id) => {

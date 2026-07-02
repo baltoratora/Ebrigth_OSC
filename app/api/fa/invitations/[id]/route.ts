@@ -52,6 +52,8 @@ export async function PATCH(
       status: body.status as InvitationStatus | undefined,
       sessionId: body.sessionId,
       markedBy: body.markedBy,
+      videoLink: typeof body.videoLink === "string" ? body.videoLink : undefined,
+      proofUrl: typeof body.proofUrl === "string" ? body.proofUrl : undefined,
     });
     if (!updated) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return NextResponse.json(updated);
