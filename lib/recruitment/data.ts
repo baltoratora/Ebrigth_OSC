@@ -54,7 +54,7 @@ export async function getKanban(): Promise<RecColumn[]> {
     select: {
       id: true, name: true, shortCode: true, order: true, color: true,
       recruits: {
-        where: { deletedAt: null },
+        where: { deletedAt: null, archivedAt: null },
         orderBy: [{ ghlCreatedAt: "desc" }, { createdAt: "desc" }],
         select: CARD_SELECT,
       },
@@ -96,7 +96,7 @@ export async function getKanban(): Promise<RecColumn[]> {
 export async function getRecruitsList(): Promise<(RecCard & { stageName: string; stageShort: string })[]> {
   await syncCareerApplications();
   const rows = await prisma.recRecruit.findMany({
-    where: { deletedAt: null },
+    where: { deletedAt: null, archivedAt: null },
     orderBy: [{ ghlCreatedAt: "desc" }, { createdAt: "desc" }],
     select: { ...CARD_SELECT, stage: { select: { name: true, shortCode: true, order: true } } },
   });
@@ -130,7 +130,7 @@ export async function getDashboardMetrics(): Promise<RecMetrics> {
   const [stages, recruits] = await Promise.all([
     prisma.recStage.findMany({ orderBy: { order: "asc" }, select: { id: true, name: true, shortCode: true, color: true, order: true } }),
     prisma.recRecruit.findMany({
-      where: { deletedAt: null },
+      where: { deletedAt: null, archivedAt: null },
       select: { id: true, phone: true, email: true, position: true, hired: true, stageId: true, ghlCreatedAt: true, createdAt: true },
     }),
   ]);
@@ -166,7 +166,7 @@ export interface RecruitOption {
  *  recruit pickers. The most-advanced card represents each person. */
 export async function getRecruitOptions(): Promise<RecruitOption[]> {
   const rows = await prisma.recRecruit.findMany({
-    where: { deletedAt: null },
+    where: { deletedAt: null, archivedAt: null },
     orderBy: { name: "asc" },
     select: { id: true, name: true, phone: true, email: true, position: true, hired: true, stageId: true, ghlCreatedAt: true, createdAt: true, stage: { select: { shortCode: true, order: true } } },
   });
@@ -186,7 +186,7 @@ export async function getRecruitOptions(): Promise<RecruitOption[]> {
 /** Most recently-submitted recruits — drives the Notifications feed. */
 export async function getRecentRecruits(limit = 40): Promise<(RecCard & { stageName: string })[]> {
   const rows = await prisma.recRecruit.findMany({
-    where: { deletedAt: null },
+    where: { deletedAt: null, archivedAt: null },
     orderBy: [{ ghlCreatedAt: "desc" }, { createdAt: "desc" }],
     take: limit,
     select: { ...CARD_SELECT, stage: { select: { name: true } } },

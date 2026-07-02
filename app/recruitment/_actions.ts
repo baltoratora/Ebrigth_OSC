@@ -8,6 +8,7 @@ import { hrfsPrisma as prisma } from "@/lib/hrfs";
 import { ROLES, normalizeRole } from "@/lib/roles";
 import { getHrfsCandidate, type HrfsCandidate } from "@/lib/recruitment/hrfs-candidate";
 import { isTrainingCode } from "@/lib/recruitment/training";
+import { phoneKey } from "@/lib/recruitment/dedupe";
 
 const ALLOWED = new Set<string>([ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD]);
 
@@ -141,6 +142,135 @@ export async function bulkDeleteRecruits(ids: string[]): Promise<MoveResult & { 
 export async function deleteRecruit(id: string): Promise<MoveResult> {
   const res = await bulkDeleteRecruits([id]);
   return { ok: res.ok, error: res.error };
+}
+
+// ─── Archive (park, reversibly, off the active board) ───────────────────────
+
+/** Archive recruit cards — hidden from the active board but still viewable via
+ *  "Show archived" and restorable. Distinct from delete; reversible. */
+export async function archiveRecruits(ids: string[]): Promise<MoveResult & { count?: number }> {
+  try {
+    await requireAccess();
+    if (!ids.length) return { ok: true, count: 0 };
+    const res = await prisma.recRecruit.updateMany({
+      where: { id: { in: ids }, deletedAt: null, archivedAt: null },
+      data: { archivedAt: new Date() },
+    });
+    revalidatePath("/recruitment/opportunity");
+    revalidatePath("/recruitment/dashboard");
+    return { ok: true, count: res.count };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Archive failed" };
+  }
+}
+
+/** Restore archived cards back to the active board. */
+export async function unarchiveRecruits(ids: string[]): Promise<MoveResult & { count?: number }> {
+  try {
+    await requireAccess();
+    if (!ids.length) return { ok: true, count: 0 };
+    const res = await prisma.recRecruit.updateMany({
+      where: { id: { in: ids }, deletedAt: null, archivedAt: { not: null } },
+      data: { archivedAt: null },
+    });
+    revalidatePath("/recruitment/opportunity");
+    revalidatePath("/recruitment/dashboard");
+    return { ok: true, count: res.count };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Restore failed" };
+  }
+}
+
+export interface ArchivedCard {
+  id: string;
+  name: string;
+  source: string | null;
+  position: string | null;
+  branch: string | null;
+  hired: boolean;
+  createdAt: string;
+  ghlCreatedAt: string | null;
+  stageId: string;
+}
+
+/** All archived cards (flat, with their stage) for the "Show archived" view. */
+export async function getArchivedRecruits(): Promise<{ ok: boolean; cards: ArchivedCard[] }> {
+  try {
+    await requireAccess();
+    const rows = await prisma.recRecruit.findMany({
+      where: { deletedAt: null, archivedAt: { not: null } },
+      orderBy: [{ ghlCreatedAt: "desc" }, { createdAt: "desc" }],
+      select: {
+        id: true, name: true, source: true, position: true, branch: true, hired: true,
+        createdAt: true, ghlCreatedAt: true, stageId: true,
+      },
+    });
+    return {
+      ok: true,
+      cards: rows.map((r) => ({
+        ...r,
+        createdAt: r.createdAt.toISOString(),
+        ghlCreatedAt: r.ghlCreatedAt ? r.ghlCreatedAt.toISOString() : null,
+      })),
+    };
+  } catch {
+    return { ok: false, cards: [] };
+  }
+}
+
+/**
+ * Archive every active card that isn't backed by a real record in the
+ * applications database (ebright_hrfs.career_applications). "Not in database"
+ * means: no applicationId link to an existing row AND no email/phone match. The
+ * legacy GHL-imported and hand-created cards fall here. Reversible.
+ */
+export async function archiveOrphanRecruits(): Promise<MoveResult & { count?: number }> {
+  try {
+    await requireAccess();
+    const cards = await prisma.recRecruit.findMany({
+      where: { deletedAt: null, archivedAt: null },
+      select: { id: true, applicationId: true, email: true, phone: true },
+    });
+
+    let apps: { id: number; email: string | null; phone: string | null }[];
+    try {
+      apps = await prisma.$queryRawUnsafe<{ id: number; email: string | null; phone: string | null }[]>(
+        `SELECT id, email, phone FROM public.career_applications LIMIT 100000`,
+      );
+    } catch (e) {
+      return { ok: false, error: "Could not read the applications database: " + (e as Error).message };
+    }
+    const appIds = new Set(apps.map((a) => a.id));
+    const appEmails = new Set(apps.map((a) => a.email?.trim().toLowerCase()).filter(Boolean) as string[]);
+    const appPhones = new Set(apps.map((a) => phoneKey(a.phone)).filter(Boolean) as string[]);
+
+    const orphanIds = cards
+      .filter((c) => {
+        if (c.applicationId != null && appIds.has(c.applicationId)) return false; // linked → backed
+        const em = c.email?.trim().toLowerCase();
+        const ph = phoneKey(c.phone);
+        const matches = (em && appEmails.has(em)) || (ph && appPhones.has(ph));
+        return !matches; // no link and no email/phone match → not in the database
+      })
+      .map((c) => c.id);
+
+    if (!orphanIds.length) return { ok: true, count: 0 };
+
+    const now = new Date();
+    let count = 0;
+    for (let i = 0; i < orphanIds.length; i += 1000) {
+      const res = await prisma.recRecruit.updateMany({
+        where: { id: { in: orphanIds.slice(i, i + 1000) } },
+        data: { archivedAt: now },
+      });
+      count += res.count;
+    }
+    revalidatePath("/recruitment/opportunity");
+    revalidatePath("/recruitment/dashboard");
+    return { ok: true, count };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Archive failed" };
+  }
 }
 
 export interface RecruitDetail {

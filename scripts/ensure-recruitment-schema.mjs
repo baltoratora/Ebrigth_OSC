@@ -132,6 +132,7 @@ const ALTERS = [
   `ALTER TABLE ${S}.rec_recruit ADD COLUMN IF NOT EXISTS "trainingConfirmedAt" timestamp(3)`,
   `ALTER TABLE ${S}.rec_recruit ADD COLUMN IF NOT EXISTS "rescheduleAt" timestamp(3)`,
   `ALTER TABLE ${S}.rec_recruit ADD COLUMN IF NOT EXISTS "rescheduleReturnCode" text`,
+  `ALTER TABLE ${S}.rec_recruit ADD COLUMN IF NOT EXISTS "archivedAt" timestamp(3)`,
 ];
 
 // Constraints / indexes created separately so they apply to pre-existing tables
