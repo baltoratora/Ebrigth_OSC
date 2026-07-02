@@ -68,6 +68,15 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     if (!body.fullName || typeof body.fullName !== "string") {
       return NextResponse.json({ error: "fullName is required" }, { status: 400 });
     }
+    if (!body.parentName || typeof body.parentName !== "string") {
+      return NextResponse.json({ error: "parentName is required" }, { status: 400 });
+    }
+    if (!body.parentEmail || typeof body.parentEmail !== "string") {
+      return NextResponse.json({ error: "parentEmail is required" }, { status: 400 });
+    }
+    if (!body.parentPhone || typeof body.parentPhone !== "string") {
+      return NextResponse.json({ error: "parentPhone is required" }, { status: 400 });
+    }
 
     // Check the edition exists and is active
     const edition = await prisma.showcaseEdition.findUnique({
@@ -93,7 +102,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         email:       body.email       ?? undefined,
         phone:       body.phone       ?? undefined,
         parentName:  body.parentName  ?? undefined,
-        parentEmail: body.parentEmail ? body.parentEmail.trim().toLowerCase() : undefined,
+        parentEmail: body.parentEmail.trim().toLowerCase(),
         parentPhone: body.parentPhone ?? undefined,
         isEbrighter: true,
         faStudentId: body.faStudentId ? String(body.faStudentId) : undefined,

@@ -82,7 +82,10 @@ function RegisterTab({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.fullName.trim()) { toast.error("Student name is required"); return; }
+    if (!form.fullName.trim())    { toast.error("Student name is required"); return; }
+    if (!form.parentName.trim())  { toast.error("Parent name is required"); return; }
+    if (!form.parentEmail.trim()) { toast.error("Parent email is required"); return; }
+    if (!form.parentPhone.trim()) { toast.error("Parent phone is required"); return; }
     setSubmitting(true);
     try {
       const res = await fetch(`/api/annual-showcase/editions/${editionId}/participants/invite`, {
@@ -125,16 +128,16 @@ function RegisterTab({
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Parent / Guardian</p>
           <div className="space-y-3">
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1.5">Parent Name</label>
+              <label className="block text-xs font-medium text-gray-600 mb-1.5">Parent Name <span className="text-red-500">*</span></label>
               <Input placeholder="Parent / guardian name" value={form.parentName} onChange={f("parentName")} />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1.5">Parent Email <span className="text-gray-400 font-normal">(optional)</span></label>
+              <label className="block text-xs font-medium text-gray-600 mb-1.5">Parent Email <span className="text-red-500">*</span></label>
               <Input type="email" placeholder="parent@example.com" value={form.parentEmail} onChange={f("parentEmail")} />
               <p className="text-[11px] text-gray-400 mt-1">QR code will be sent here once SMTP is configured.</p>
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1.5">Parent Phone</label>
+              <label className="block text-xs font-medium text-gray-600 mb-1.5">Parent Phone <span className="text-red-500">*</span></label>
               <Input placeholder="e.g. 012-3456789" value={form.parentPhone} onChange={f("parentPhone")} />
             </div>
           </div>
