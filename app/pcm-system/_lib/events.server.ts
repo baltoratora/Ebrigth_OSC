@@ -277,10 +277,22 @@ export async function fetchAllEventData(): Promise<{
          FROM pcm_invitations i
          LEFT JOIN studentrecords s
                 ON s.id::text = i.student_id
-         LEFT JOIN archived_students a
-                ON a.student_id = i.student_id
-                OR a.no::text = i.student_id
-                OR a.student_id = 'arch-' || i.student_id
+         -- Recover names for students removed from studentrecords. A LATERAL
+         -- returning a SINGLE row is required: an invitation's student_id can
+         -- coincidentally equal an unrelated archive row's no (e.g. student
+         -- 743 vs. archive no=743, a different person), so a plain LEFT JOIN
+         -- would match two archive rows and FAN OUT one invitation into
+         -- duplicate display rows. Prefer the reliable id forms first, take one.
+         LEFT JOIN LATERAL (
+           SELECT a2.name
+             FROM archived_students a2
+            WHERE a2.student_id = i.student_id
+               OR a2.student_id = 'arch-' || i.student_id
+               OR a2.no::text = i.student_id
+            ORDER BY (a2.student_id = i.student_id) DESC,
+                     (a2.student_id = 'arch-' || i.student_id) DESC
+            LIMIT 1
+         ) a ON true
         WHERE i.tenant_id = $1`,
       [TENANT]
     ).catch((err) => {
