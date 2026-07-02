@@ -82,7 +82,7 @@ export function CertificateBody({ report }: { report: PcmReport }) {
           </div>
           <div className="text-ink-700 font-semibold">Date of Assessment</div>
           <div className="bg-white rounded-full border border-ink-300 px-5 py-2 text-ink-900 font-mono">
-            {format(parseISO(report.createdAt), "d MMMM yyyy")}
+            {format(parseISO(report.assessmentDate), "d MMMM yyyy")}
           </div>
           <div className="text-ink-700 font-semibold">Grade</div>
           <div className="flex items-center gap-3">
@@ -180,46 +180,6 @@ export function CertificateBody({ report }: { report: PcmReport }) {
         <div className="grid grid-cols-2 gap-5 mt-6">
           <NarrativeBox label="Strengths"        dotColor="#16a34a" content={report.strengths} />
           <NarrativeBox label="Improvement Plan" dotColor="#d97706" content={report.improvementPlan} />
-        </div>
-
-
-        {/* Signatures — dotted underline like the PDF. Generous spacing
-            so the signature image (when present) has room to breathe. */}
-        <div className="grid grid-cols-2 gap-10 mt-12">
-          <div>
-            <div className="font-bold mb-3" style={{ fontSize: 16 }}>Prepared by:</div>
-            {/* Signature container with bottom padding so the signature's
-                ink ends BEFORE the line below — without the gap the
-                signature's bottom strokes touch the line and visually
-                "merge" with it, making one half of the line look
-                thicker than the other. */}
-            <div className="flex items-end" style={{ minHeight: 56, paddingBottom: 4 }}>
-              {report.preparedBySignature ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={report.preparedBySignature}
-                  alt="Coach signature"
-                  className="max-h-[56px] max-w-[260px] object-contain"
-                />
-              ) : null}
-            </div>
-            <div
-              className="pt-2 text-ink-900"
-              style={{ borderTop: "2px dotted #1f2937", fontSize: 15 }}
-            >
-              {report.preparedBy || ""}
-            </div>
-          </div>
-          <div>
-            <div className="font-bold mb-3" style={{ fontSize: 16 }}>Received by:</div>
-            <div style={{ minHeight: 56, paddingBottom: 4 }} />
-            <div
-              className="pt-2 text-ink-900"
-              style={{ borderTop: "2px dotted #1f2937", fontSize: 15 }}
-            >
-              {report.receivedBy || ""}
-            </div>
-          </div>
         </div>
       </div>
     </div>

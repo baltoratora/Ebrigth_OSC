@@ -7,7 +7,7 @@ import { useFAStore } from "@pcm/_lib/store";
 import { useCurrentUser } from "@pcm/_hooks/useCurrentUser";
 import { AppShell } from "@pcm/_components/shared/AppShell";
 import { BRANCHES, BranchCode, resolveStudentById } from "@pcm/_types";
-import { ArrowLeft, ClipboardCheck, Printer, AlertCircle, CheckCircle2, Upload, Trash2, UserPlus } from "lucide-react";
+import { ArrowLeft, ClipboardCheck, Printer, AlertCircle, CheckCircle2, UserPlus } from "lucide-react";
 import { format, parseISO } from "date-fns";
 
 // The four rubric criteria. Wording is verbatim from the assessment-report
@@ -91,7 +91,6 @@ export default function CoachReportFormPage() {
   /** Coach signature as a base64 data URL. Uploaded via <input type=file>;
    *  shown in a small preview box and round-tripped through the API on save. */
   const [signature, setSignature]               = useState<string>("");
-  const [signatureError, setSignatureError]     = useState<string | null>(null);
   const [receivedBy, setReceivedBy]             = useState("");
   const [assessmentDate, setAssessmentDate]     = useState("");
 
@@ -101,6 +100,9 @@ export default function CoachReportFormPage() {
 
   // Hydrate once the invitation/report data is available.
   useEffect(() => {
+    // Date of Assessment = the date the student joined the event (the event's
+    // start date), filled automatically. Coaches no longer pick it.
+    const joinDate = event?.startDate ? event.startDate.slice(0, 10) : "";
     if (existing) {
       setScores({
         confidence: existing.confidenceScore,
@@ -113,37 +115,14 @@ export default function CoachReportFormPage() {
       setPreparedBy(existing.preparedBy);
       setSignature(existing.preparedBySignature ?? "");
       setReceivedBy(existing.receivedBy);
-      setAssessmentDate(existing.assessmentDate);
+      setAssessmentDate(joinDate || existing.assessmentDate);
     } else if (invitation) {
-      // Sensible defaults for a fresh report:
-      //   • Date = TODAY (when the coach is filling the form). Coaches fill
-      //     in right after the assessment, so today is the correct default —
-      //     not the event start date (which can be days earlier for
-      //     multi-day weekly PCM events).
-      //   • Coach name = the invitation's assigned coach (if any)
-      setAssessmentDate(new Date().toISOString().slice(0, 10));
+      // Fresh report: date = the event join date (fallback to today only if the
+      // event has no date). Coach name kept for the record (not shown on cert).
+      setAssessmentDate(joinDate || new Date().toISOString().slice(0, 10));
       setPreparedBy(invitation.coachName ?? "");
     }
-  }, [existing, invitation, events]);
-
-  function handleSignatureFile(file: File | undefined) {
-    setSignatureError(null);
-    if (!file) return;
-    if (!file.type.startsWith("image/")) {
-      return setSignatureError("Pick an image file (PNG, JPG).");
-    }
-    // 300 KB hard cap — matches the server-side cap. Anything larger gets
-    // rejected before we even read it into memory.
-    if (file.size > 300_000) {
-      return setSignatureError("Image too large — keep it under 300 KB. Try a PNG export with transparent background.");
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") setSignature(reader.result);
-    };
-    reader.onerror = () => setSignatureError("Could not read the file. Try again.");
-    reader.readAsDataURL(file);
-  }
+  }, [existing, invitation, event, events]);
 
   if (!user) return null;
 
@@ -168,8 +147,6 @@ export default function CoachReportFormPage() {
     setError(null);
     if (!invitation || !student) return setError("Missing student data.");
     if (!allScored)              return setError("Pick a score (1–5) for every criterion.");
-    if (!preparedBy.trim())      return setError("Please enter the coach name (Prepared by).");
-    if (!assessmentDate)         return setError("Pick the date of assessment.");
 
     setSubmitting(true);
     try {
@@ -292,13 +269,14 @@ export default function CoachReportFormPage() {
               <span className="fa-mono text-[11px] uppercase text-ink-600 font-bold w-[150px]" style={{ letterSpacing: "0.06em" }}>
                 Date of Assessment
               </span>
-              {/* Auto-set to today on save. The academy wants the printed
-                  date on the cert to always reflect when the coach actually
-                  filled the form, so this is no longer user-editable. */}
+              {/* Automatic: the date the student joined the event (event start
+                  date). Not user-editable. */}
               <div className="flex-1 min-w-[260px] bg-white rounded-full border border-ivory-300 px-4 py-1.5 text-sm font-mono text-ink-900">
-                {existing
-                  ? format(parseISO(existing.createdAt), "d MMMM yyyy")
-                  : <span className="text-ink-400 italic">Auto-set to today on save</span>
+                {event?.startDate
+                  ? format(parseISO(event.startDate), "d MMMM yyyy")
+                  : existing
+                    ? format(parseISO(existing.assessmentDate), "d MMMM yyyy")
+                    : <span className="text-ink-400 italic">—</span>
                 }
               </div>
             </div>
@@ -410,81 +388,6 @@ export default function CoachReportFormPage() {
               maxLength={400}
               onChange={e => setImprovementPlan(e.target.value)}
             />
-          </div>
-        </section>
-
-        {/* Signatures */}
-        <section className="rounded-2xl bg-white border border-ivory-300 shadow-sm p-5 space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="fa-label">Prepared by (coach name)</label>
-              <input
-                className="fa-input"
-                placeholder="e.g. XIN YI"
-                value={preparedBy}
-                onChange={e => setPreparedBy(e.target.value)}
-              />
-            </div>
-            <div>
-              <label className="fa-label">Received by (parent / student)</label>
-              <input
-                className="fa-input"
-                placeholder="Optional"
-                value={receivedBy}
-                onChange={e => setReceivedBy(e.target.value)}
-              />
-            </div>
-          </div>
-
-          {/* Coach signature upload — base64 stored on the row. */}
-          <div>
-            <label className="fa-label">Coach signature (image)</label>
-            <div className="flex items-start gap-4 flex-wrap">
-              {/* Preview / placeholder */}
-              <div
-                className="rounded-lg border-2 border-dashed border-ivory-300 bg-ivory-50 flex items-center justify-center overflow-hidden"
-                style={{ width: 220, height: 90 }}
-              >
-                {signature ? (
-                  <img
-                    src={signature}
-                    alt="Coach signature"
-                    className="max-w-full max-h-full object-contain"
-                  />
-                ) : (
-                  <span className="text-[11px] text-ink-400 italic">No signature uploaded</span>
-                )}
-              </div>
-              <div className="flex flex-col gap-2">
-                <label
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-violet-200 bg-violet-50 text-violet-700 text-xs font-semibold hover:bg-violet-100 hover:border-violet-400 cursor-pointer transition-all"
-                >
-                  <Upload className="w-3.5 h-3.5" />
-                  {signature ? "Replace image" : "Upload signature"}
-                  <input
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp"
-                    className="hidden"
-                    onChange={e => handleSignatureFile(e.target.files?.[0])}
-                  />
-                </label>
-                {signature && (
-                  <button
-                    type="button"
-                    onClick={() => setSignature("")}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-rose-200 bg-rose-50 text-rose-700 text-xs font-semibold hover:bg-rose-100 hover:border-rose-400 transition-all"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" /> Remove
-                  </button>
-                )}
-                <p className="text-[11px] text-ink-400 max-w-[220px]">
-                  PNG with transparent background works best on the certificate. Max ~300 KB.
-                </p>
-                {signatureError && (
-                  <p className="text-[11px] text-rose-600">{signatureError}</p>
-                )}
-              </div>
-            </div>
           </div>
         </section>
 

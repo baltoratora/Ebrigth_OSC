@@ -1547,7 +1547,22 @@ export default function ManpowerCostReportPage() {
             </div>
             <div className="mt-5 flex justify-end gap-2">
               <a
-                href="mailto:hr@ebright.my?subject=Attendance%20justification"
+                href={(() => {
+                  const empName = data?.staff?.[0]?.name || meName || userName || "";
+                  const subject = `Attendance justification — ${empName || "Manpower report"} (${monthLabel})`;
+                  const body =
+                    `Dear HR,\n\n` +
+                    `I would like to justify my attendance for ${monthLabel}. ` +
+                    `I have ${noRecordCount} day${noRecordCount !== 1 ? "s" : ""} with no attendance record.\n\n` +
+                    `Reason: \n\n` +
+                    (empName ? `Name: ${empName}\n` : "") +
+                    `Period: ${monthLabel}\n\n` +
+                    `Thank you.`;
+                  return `https://mail.google.com/mail/?view=cm&fs=1&to=hr@ebright.my&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+                })()}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setShowLockPopup(false)}
                 className="px-4 py-2 rounded-lg text-sm font-semibold bg-red-600 text-white hover:bg-red-700 transition-all"
               >
                 Email HR
