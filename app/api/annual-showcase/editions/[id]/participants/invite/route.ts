@@ -68,8 +68,14 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     if (!body.fullName || typeof body.fullName !== "string") {
       return NextResponse.json({ error: "fullName is required" }, { status: 400 });
     }
+    if (!body.parentName || typeof body.parentName !== "string") {
+      return NextResponse.json({ error: "parentName is required" }, { status: 400 });
+    }
     if (!body.parentEmail || typeof body.parentEmail !== "string") {
       return NextResponse.json({ error: "parentEmail is required" }, { status: 400 });
+    }
+    if (!body.parentPhone || typeof body.parentPhone !== "string") {
+      return NextResponse.json({ error: "parentPhone is required" }, { status: 400 });
     }
 
     // Check the edition exists and is active
@@ -113,9 +119,9 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       color: { dark: "#1f2937", light: "#ffffff" },
     });
 
-    // Send email to parent — fire-and-forget with best-effort (SMTP may not be configured)
+    // Send email to parent — only if parentEmail provided, fire-and-forget
     let emailSentAt: Date | null = null;
-    try {
+    if (participant.parentEmail) try {
       const html = await buildParentEmail({
         studentName:     participant.fullName,
         editionName:     edition.name,
