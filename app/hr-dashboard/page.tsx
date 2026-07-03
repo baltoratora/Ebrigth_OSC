@@ -526,7 +526,7 @@ export default function HRDashboardPage() {
         ) : detailView === "annual_leave" ? (
           <DetailView title="Annual Leave" color={C.purple} lightColor={C.purpleLight} records={annualLeave} dateField="al_date" dateLabel="AL Date" onBack={() => setDetailView(null)} />
         ) : detailView === "flagged" ? (
-          <DetailView title={`Flagged — ≥2 SL or ≥2 UL days (${formatMonthLabel(flaggedMonth)})`} color={C.orange} lightColor={C.orangeLight} records={flagged} dateField="last_date" datesField="dates" dateLabel="Leave dates" typeField="flag_label" typeLabel="Flag" alertNames showAction actionMonth={flaggedMonth} onBack={() => setDetailView(null)} />
+          <DetailView title={`Flagged — ≥2 SL or ≥2 UL leaves (${formatMonthLabel(flaggedMonth)})`} color={C.orange} lightColor={C.orangeLight} records={flagged} dateField="last_date" datesField="dates" dateLabel="Leave dates" typeField="flag_label" typeLabel="Flag" alertNames showAction actionMonth={flaggedMonth} onBack={() => setDetailView(null)} />
         ) : detailView === "mia" ? (
           <DetailView title={`MIA — Unpaid Leave (${formatMonthLabel(miaMonth)})${miaMissingToday.length ? " + Missing Today" : ""}`} color={C.red} lightColor={C.redLight} records={miaCombined} dateField="last_date" dateLabel="Last UL / Today" typeField="flag_label" typeLabel="Type" alertNames onBack={() => setDetailView(null)} />
         ) : (

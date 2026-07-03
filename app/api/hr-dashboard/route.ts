@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 // only through Autocount Payroll, whose API returns no name — so their
 // LeaveTransaction.EmployeeName is NULL and they'd otherwise render as raw codes
 // (e.g. "EBPT216"). This DB is reachable via FA_DATABASE_URL / LEADS_DB_URL.
-interface AutocountEntry { name: string; role: string | null; branch: string | null; status: string | null; }
+interface AutocountEntry { name: string; role: string | null; branch: string | null; status: string | null; employeeId: string | null; }
 let _leadsPool: Pool | null = null;
 function leadsPool(): Pool | null {
   const url = process.env.FA_DATABASE_URL || process.env.LEADS_DB_URL;
@@ -27,13 +27,13 @@ async function loadAutocountMap(): Promise<Map<string, AutocountEntry>> {
   if (!pool) return m;
   try {
     const r = await pool.query(
-      `SELECT m.autocount_code AS code, bs.name, bs.role, bs.branch, bs.status
+      `SELECT m.autocount_code AS code, bs.name, bs.role, bs.branch, bs.status, bs."employeeId" AS employee_id
          FROM public.autocount_employee_map m
          JOIN hrfs."BranchStaff" bs ON bs.id = m.branchstaff_id
         WHERE bs.name IS NOT NULL AND TRIM(bs.name) <> ''`,
     );
     for (const row of r.rows) {
-      m.set(String(row.code).trim().toUpperCase(), { name: row.name, role: row.role, branch: row.branch, status: row.status });
+      m.set(String(row.code).trim().toUpperCase(), { name: row.name, role: row.role, branch: row.branch, status: row.status, employeeId: row.employee_id ?? null });
     }
   } catch (e) {
     console.warn("[hr-dashboard] autocount map load failed:", (e as Error).message);
@@ -122,10 +122,65 @@ interface AlertRecord {
   dates: string[];
 }
 
+// ── Date helpers for episode grouping ──────────────────────────────────────
+const DOW_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+function dowOfDate(dateStr: string): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return DOW_NAMES[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+}
+function addDaysStr(dateStr: string, k: number): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + k));
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+}
+function daysBetweenStr(a: string, b: string): number {
+  const [ay, am, ad] = a.split("-").map(Number);
+  const [by, bm, bd] = b.split("-").map(Number);
+  return Math.round((Date.UTC(by, bm - 1, bd) - Date.UTC(ay, am - 1, ad)) / 86400000);
+}
+function isWorkingDateWH(wh: WeekHours, dateStr: string): boolean {
+  if (!wh) return true; // unknown schedule → treat as working
+  const day = wh[dowOfDate(dateStr)];
+  return !!(day && typeof day === "object");
+}
+
+// Count leave EPISODES for one person's (working-day) rows: a maximal run of
+// consecutive days with the SAME reason is ONE leave (a single multi-day MC is
+// one leave, not N). A calendar gap only continues the run when every day in
+// between is a rest day — so a Fri + Mon sick note over the weekend counts as one
+// leave, but Fri + next Wed (with a worked Tue in between) counts as two.
+function countLeaveEpisodes(rows: AlertLeaveRow[]): number {
+  const byDate = new Map<string, AlertLeaveRow>();
+  for (const r of rows) if (!byDate.has(r.leave_date)) byDate.set(r.leave_date, r);
+  const days = Array.from(byDate.keys()).sort();
+  if (days.length === 0) return 0;
+  let episodes = 1;
+  for (let i = 1; i < days.length; i++) {
+    const prev = days[i - 1], cur = days[i];
+    const sameReason = (byDate.get(prev)!.reason ?? "") === (byDate.get(cur)!.reason ?? "");
+    const gap = daysBetweenStr(prev, cur);
+    let consecutive = false;
+    if (sameReason && gap >= 1) {
+      consecutive = true;
+      const wh = byDate.get(cur)!.working_hours;
+      for (let k = 1; k < gap; k++) {
+        if (isWorkingDateWH(wh, addDaysStr(prev, k))) { consecutive = false; break; }
+      }
+    }
+    if (!consecutive) episodes++;
+  }
+  return episodes;
+}
+
 // Group approved leave-days of one type into per-person alert records, counting
 // ONLY days the person is scheduled to work (BranchStaff.workingHours; unknown
-// schedule → count every day). Keep people with >= minCount working leave-days.
-function buildLeaveAlert(rows: AlertLeaveRow[], minCount: number, unit: string): AlertRecord[] {
+// schedule → count every day). With opts.countEpisodes, consecutive same-reason
+// days count as ONE leave (Flagged); otherwise each working day counts (MIA).
+// Keep people whose count >= minCount.
+function buildLeaveAlert(
+  rows: AlertLeaveRow[], minCount: number, unit: string,
+  opts: { countEpisodes?: boolean } = {},
+): AlertRecord[] {
   const isWorkingDay = (r: AlertLeaveRow) => {
     const wh = r.working_hours;
     if (!wh) return true; // unknown schedule → count it
@@ -142,7 +197,7 @@ function buildLeaveAlert(rows: AlertLeaveRow[], minCount: number, unit: string):
   }
   const out: AlertRecord[] = [];
   for (const p of byCode.values()) {
-    const cnt = p.days.size;
+    const cnt = opts.countEpisodes ? countLeaveEpisodes(p.rows) : p.days.size;
     if (cnt < minCount) continue;
     const sorted = p.rows.slice().sort((a, b) => (a.leave_date < b.leave_date ? 1 : -1));
     const dates = Array.from(p.days).sort((a, b) => (a < b ? 1 : -1)); // newest first
@@ -150,7 +205,9 @@ function buildLeaveAlert(rows: AlertLeaveRow[], minCount: number, unit: string):
       code: p.r.code, name: p.r.name, position: p.r.position, department_branch: p.r.department_branch,
       cnt, last_date: sorted[0]?.leave_date ?? null,
       reason: (sorted.find(x => x.reason) || {}).reason ?? null,
-      flag_label: `${cnt} ${unit} days`,
+      flag_label: opts.countEpisodes
+        ? `${cnt} ${unit} leave${cnt !== 1 ? "s" : ""}`
+        : `${cnt} ${unit} days`,
       dates,
     });
   }
@@ -335,12 +392,14 @@ export async function GET(req: NextRequest) {
     slRows = slRows.filter(r => !isInactiveCode(r.code)).map(resolveRow);
     ulRows = ulRows.filter(r => !isInactiveCode(r.code)).map(resolveRow);
     ulMonthRows = ulMonthRows.filter(r => !isInactiveCode(r.code)).map(resolveRow);
-    // Flagged = repeat offenders this month: ≥2 SL days OR ≥2 UL days. A person
-    // hit by both rules is merged into one row (combined label + dates).
+    // Flagged = repeat offenders this month: ≥2 SL leaves OR ≥2 UL leaves, where
+    // consecutive same-reason days count as ONE leave (a multi-day MC ≠ many
+    // flags). A person hit by both rules is merged into one row.
     const flagged = mergeAlerts(
-      buildLeaveAlert(slRows, 2, "SL"),
-      buildLeaveAlert(ulMonthRows, 2, "UL"),
+      buildLeaveAlert(slRows, 2, "SL", { countEpisodes: true }),
+      buildLeaveAlert(ulMonthRows, 2, "UL", { countEpisodes: true }),
     );
+    // MIA still counts UL working-days (unchanged): any UL day surfaces here.
     const mia = buildLeaveAlert(ulRows, 1, "UL");
 
     // Mark whether HR has already completed the escalation action for each
@@ -399,7 +458,19 @@ export async function GET(req: NextRequest) {
       todayKL,
     );
     const scannedSet = new Set(scanRows.map(r => remapStScan(r.device_id, r.person_id, null).personId));
-    const leaveRows = await hrfsPrisma.$queryRawUnsafe<{ code: string }[]>(
+    // Anyone on approved leave today → resolve their payroll code to the numeric
+    // employeeId so they're excluded from "Missing today". Two bridges, unioned:
+    //   (a) autocount_employee_map (payroll code → employeeId) — the reliable one;
+    //   (b) name-match on lt.EmployeeName (a fallback; that column is often NULL).
+    // Matching only on EmployeeName wrongly nagged people on leave (e.g. an MC).
+    const leaveCodeRows = await hrfsPrisma.$queryRawUnsafe<{ code: string }[]>(
+      `SELECT DISTINCT lt."EmployeeCode" AS code
+         FROM "LeaveTransaction" lt
+        WHERE lt."ApplyStatus" = 'A' AND lt."LeaveDate"::date = $1::date
+          AND lt."EmployeeCode" IS NOT NULL`,
+      todayKL,
+    );
+    const leaveNameRows = await hrfsPrisma.$queryRawUnsafe<{ code: string }[]>(
       `SELECT DISTINCT bs."employeeId" AS code
          FROM "LeaveTransaction" lt
          JOIN "BranchStaff" bs ON UPPER(TRIM(bs.name)) = UPPER(TRIM(lt."EmployeeName"))
@@ -407,7 +478,12 @@ export async function GET(req: NextRequest) {
           AND bs."employeeId" IS NOT NULL`,
       todayKL,
     );
-    const onLeaveSet = new Set(leaveRows.map(r => r.code));
+    const onLeaveSet = new Set<string>();
+    for (const { code } of leaveCodeRows) {
+      const emp = autocountMap.get(String(code).trim().toUpperCase())?.employeeId;
+      if (emp) onLeaveSet.add(emp);
+    }
+    for (const { code } of leaveNameRows) if (code) onLeaveSet.add(code);
     const justRows = await hrfsPrisma.$queryRawUnsafe<{ code: string }[]>(
       `SELECT emp_no AS code FROM public.attendance_justification WHERE just_date = $1::date`,
       todayKL,
@@ -423,7 +499,12 @@ export async function GET(req: NextRequest) {
     };
     const todayDate = new Date(todayKL + "T00:00:00");
 
+    // Staff intentionally hidden from attendance tracking — never shown as
+    // "Missing today" (mirrors ATTENDANCE_HIDDEN_EMPLOYEE_IDS in branch-locations).
+    const HIDDEN_EMPLOYEE_IDS = new Set(["33030010", "33010041"]); // CHOW CHIN HUI, ROHAN KUMAR A/L MANOHAR LAL
+
     const miaMissingToday = staffRows.filter(s => {
+      if (HIDDEN_EMPLOYEE_IDS.has(s.code)) return false;
       // Active window
       const sd = parseDay(s.start_date); if (sd && sd > todayDate) return false;
       const ed = parseDay(s.end_date);   if (ed && ed < todayDate) return false;
