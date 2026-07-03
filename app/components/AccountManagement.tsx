@@ -73,6 +73,73 @@ function RoleBadge({ role }: { role: string }) {
 // "Reset to role default" clears every override. Saved as a JSON column on
 // the User row — see /api/users PATCH update-permissions.
 
+// Every key in `node` plus all of its descendants, at any depth.
+function subtreeKeys(node: DashboardNode): string[] {
+  return [node.key, ...(node.children ?? []).flatMap(subtreeKeys)];
+}
+
+function TreeRow({
+  node,
+  role,
+  overrides,
+  onChange,
+  depth,
+}: {
+  node: DashboardNode;
+  role: string;
+  overrides: DashboardOverrides;
+  onChange: (next: DashboardOverrides) => void;
+  depth: number;
+}) {
+  const children = node.children ?? [];
+  const allowed = canAccess(role, node.key, overrides);
+  const descendantKeys = subtreeKeys(node).slice(1); // excludes node.key itself
+  const someDescendantAllowed = descendantKeys.some((k) => canAccess(role, k, overrides));
+  const allDescendantsAllowed = descendantKeys.length > 0 && descendantKeys.every((k) => canAccess(role, k, overrides));
+  const indeterminate = children.length > 0 && (allowed || someDescendantAllowed) && !(allowed && allDescendantsAllowed);
+  const rowType: "Role Default" | "Custom" = node.key in overrides ? "Custom" : "Role Default";
+
+  // Ticking/unticking a node with children is a bulk action over the whole
+  // subtree (self + every descendant at any depth) — matches admin intuition:
+  // checking "Manpower Planning" should grant all of its sub-pages too.
+  // Leaf nodes just flip their own key.
+  function toggle() {
+    const allOn = allowed && allDescendantsAllowed;
+    const value: "ALLOWED" | "DENIED" = children.length > 0 ? (allOn ? "DENIED" : "ALLOWED") : (allowed ? "DENIED" : "ALLOWED");
+    const next = { ...overrides };
+    for (const k of subtreeKeys(node)) next[k] = value;
+    onChange(next);
+  }
+
+  return (
+    <div style={depth > 0 ? { marginLeft: depth * 24 } : undefined} className={depth === 0 ? "px-3 py-2" : "mt-1"}>
+      <div className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          checked={allowed}
+          ref={(el) => { if (el) el.indeterminate = indeterminate; }}
+          onChange={toggle}
+          className={depth === 0 ? "h-4 w-4 accent-blue-600 cursor-pointer" : "h-3.5 w-3.5 accent-blue-600 cursor-pointer"}
+        />
+        {depth === 0 && <span className="text-base">{node.icon}</span>}
+        <span className={`${depth === 0 ? "text-sm font-semibold" : "text-xs"} flex-1 ${allowed ? (depth === 0 ? "text-gray-800" : "text-gray-700") : "text-gray-400"}`}>
+          {node.label}
+        </span>
+        <span className={`text-[10px] uppercase font-semibold tracking-wider ${rowType === "Custom" ? "text-blue-600" : "text-gray-400"}`}>
+          {rowType}
+        </span>
+      </div>
+      {children.length > 0 && (
+        <div className={depth === 0 ? "ml-7 mt-1 space-y-1" : "space-y-1"}>
+          {children.map((child) => (
+            <TreeRow key={child.key} node={child} role={role} overrides={overrides} onChange={onChange} depth={depth + 1} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PermissionTree({
   role,
   overrides,
@@ -82,28 +149,6 @@ function PermissionTree({
   overrides: DashboardOverrides;
   onChange: (next: DashboardOverrides) => void;
 }) {
-  function toggleNode(key: string) {
-    const currentlyAllowed = canAccess(role, key, overrides);
-    onChange({ ...overrides, [key]: currentlyAllowed ? "DENIED" : "ALLOWED" });
-  }
-
-  // "Tick parent" = allow self + every descendant. "Untick parent" = deny self
-  // + every descendant. Matches the screenshot UX where the parent checkbox
-  // is a bulk action over its children.
-  function toggleParent(parent: DashboardNode) {
-    const allOn =
-      canAccess(role, parent.key, overrides) &&
-      (parent.children ?? []).every((c) => canAccess(role, c.key, overrides));
-    const value = allOn ? "DENIED" : "ALLOWED";
-    const next = { ...overrides, [parent.key]: value as "ALLOWED" | "DENIED" };
-    for (const c of parent.children ?? []) next[c.key] = value;
-    onChange(next);
-  }
-
-  function rowType(key: string): "Role Default" | "Custom" {
-    return key in overrides ? "Custom" : "Role Default";
-  }
-
   return (
     <div className="border border-gray-200 rounded-lg overflow-hidden">
       <div className="bg-gray-50 px-3 py-2 border-b border-gray-200 flex items-center justify-between">
@@ -120,57 +165,9 @@ function PermissionTree({
         </button>
       </div>
       <div className="max-h-80 overflow-y-auto divide-y divide-gray-100">
-        {DASHBOARD_TREE.map((parent) => {
-          const parentAllowed = canAccess(role, parent.key, overrides);
-          const children = parent.children ?? [];
-          const someChildAllowed = children.some((c) => canAccess(role, c.key, overrides));
-          const allChildAllowed  = children.length > 0 && children.every((c) => canAccess(role, c.key, overrides));
-          const indeterminate = parentAllowed && children.length > 0 && someChildAllowed && !allChildAllowed;
-
-          return (
-            <div key={parent.key} className="px-3 py-2">
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={parentAllowed}
-                  ref={(el) => { if (el) el.indeterminate = indeterminate; }}
-                  onChange={() => toggleParent(parent)}
-                  className="h-4 w-4 accent-blue-600 cursor-pointer"
-                />
-                <span className="text-base">{parent.icon}</span>
-                <span className={`text-sm font-semibold flex-1 ${parentAllowed ? "text-gray-800" : "text-gray-400"}`}>
-                  {parent.label}
-                </span>
-                <span className={`text-[10px] uppercase font-semibold tracking-wider ${rowType(parent.key) === "Custom" ? "text-blue-600" : "text-gray-400"}`}>
-                  {rowType(parent.key)}
-                </span>
-              </div>
-              {children.length > 0 && (
-                <div className="ml-7 mt-1 space-y-1">
-                  {children.map((child) => {
-                    const childAllowed = canAccess(role, child.key, overrides);
-                    return (
-                      <div key={child.key} className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={childAllowed}
-                          onChange={() => toggleNode(child.key)}
-                          className="h-3.5 w-3.5 accent-blue-600 cursor-pointer"
-                        />
-                        <span className={`text-xs flex-1 ${childAllowed ? "text-gray-700" : "text-gray-400"}`}>
-                          {child.label}
-                        </span>
-                        <span className={`text-[10px] uppercase font-semibold tracking-wider ${rowType(child.key) === "Custom" ? "text-blue-600" : "text-gray-400"}`}>
-                          {rowType(child.key)}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })}
+        {DASHBOARD_TREE.map((parent) => (
+          <TreeRow key={parent.key} node={parent} role={role} overrides={overrides} onChange={onChange} depth={0} />
+        ))}
       </div>
       <div className="px-3 py-2 bg-gray-50 border-t border-gray-200 text-[11px] text-gray-500">
         Defaults come from the user&apos;s role. Toggling a row marks it <span className="text-blue-600 font-semibold">Custom</span>.
