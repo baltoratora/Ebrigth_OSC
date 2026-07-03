@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { requireRole, canSeeAllBranches, assertSameBranch } from '@/lib/auth';
-import { MANAGEMENT_ROLES } from '@/lib/roles';
+import { requireRole, requireSession, canSeeAllBranches, assertSameBranch } from '@/lib/auth';
+import { MANAGEMENT_ROLES, hasAnyRole } from '@/lib/roles';
+import { canAccess, parseOverrides } from '@/lib/dashboard-access';
 
 type ScheduleBody = {
   id: string;
@@ -43,12 +44,30 @@ function parseSchedule(raw: unknown): { ok: true; data: ScheduleBody } | { ok: f
 }
 
 // GET /api/schedules — return all schedules, newest first.
-//   Management-only (admins, HOD, BM). Branch Managers see only their branch;
-//   admins/HOD see all. Employees never hit this — they read their own report
-//   via /api/manpower-cost which scopes server-side.
+//   Management roles (admins, HOD, BM, HR) always get through. Anyone else
+//   only gets through if an admin has explicitly granted them the Archive
+//   Overview sub-page in Account Management (dashboardOverrides) — e.g. the
+//   ACADEMY role, which isn't management but can be granted read-only
+//   visibility into schedule history. Branch Managers see only their branch;
+//   everyone else covered by canSeeAllBranches (admins/HOD/HR/ACADEMY) sees
+//   all. Employees never hit this — they read their own report via
+//   /api/manpower-cost which scopes server-side.
 export async function GET() {
-  const { session, error } = await requireRole(MANAGEMENT_ROLES);
+  const { session, error } = await requireSession();
   if (error) return error;
+
+  const role = (session.user as { role?: unknown } | undefined)?.role;
+  let allowed = hasAnyRole(role, MANAGEMENT_ROLES);
+  if (!allowed && session.user?.email) {
+    const user = await prisma.user.findUnique({
+      where:  { email: session.user.email },
+      select: { dashboardOverrides: true },
+    });
+    allowed = canAccess(role, 'hrms.manpower-planning.archive', parseOverrides(user?.dashboardOverrides));
+  }
+  if (!allowed) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
 
   try {
     const where: Record<string, unknown> = {};

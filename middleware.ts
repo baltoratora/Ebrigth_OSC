@@ -3,6 +3,7 @@ import { getToken } from "next-auth/jwt";
 import { prisma } from "@/lib/prisma";
 import { normalizeRole, ROLES, type Role } from "@/lib/roles";
 import { isReadOnlyViewer } from "@/lib/crm/operation-accounts";
+import { isPathGated, checkGatedPathOverride, parseOverrides } from "@/lib/dashboard-access";
 
 // ─── Read-only viewer (marketing-advisor monitor) write-block ────────────────
 // Hard backstop for the view-only account (see AGENCY_VIEW_EMAILS): it may VIEW
@@ -216,6 +217,31 @@ export async function middleware(req: NextRequest) {
 
   // 5. SUPER_ADMIN bypasses every per-route rule.
   if (role === ROLES.SUPER_ADMIN) return NextResponse.next();
+
+  // 5b. Path-gated modules (Manpower Planning / Attendance / Recruitment /
+  //     Employee Dashboard sub-pages): admins can grant or deny individual
+  //     sub-pages per user via the Account Management permission modal. Only
+  //     fetches overrides when the path is actually one of these — a no-op
+  //     DB-wise for every other route. Overrides-only: a user with no custom
+  //     overrides here falls straight through to ROLE_RULES below, unchanged.
+  if (isPathGated(pathname) && token.email) {
+    try {
+      const user = await prisma.user.findUnique({
+        where:  { email: String(token.email) },
+        select: { dashboardOverrides: true },
+      });
+      const decision = checkGatedPathOverride(pathname, parseOverrides(user?.dashboardOverrides));
+      if (decision === true)  return NextResponse.next();
+      if (decision === false) {
+        const homeUrl = new URL("/home", req.url);
+        homeUrl.searchParams.set("forbidden", pathname);
+        return NextResponse.redirect(homeUrl);
+      }
+      // decision === null: no relevant override — fall through to ROLE_RULES.
+    } catch (err) {
+      console.error("[middleware] gated-path override lookup DB error — failing open:", err);
+    }
+  }
 
   // 6. Per-prefix role rules. Any path not in ROLE_RULES is allowed for any
   //    authenticated, non-locked role — the API layer is the actual data
