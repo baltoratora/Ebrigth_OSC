@@ -321,6 +321,7 @@ async function main() {
       FROM public.master_leads_unified
      WHERE submitted_at IS NOT NULL
        AND (full_name IS NOT NULL OR phone IS NOT NULL OR email IS NOT NULL)
+       AND source_table <> 'cns_leads'
      ORDER BY submitted_at ASC, sibling_index ASC NULLS FIRST
   `)
   console.log(`→ Found ${leadsRes.rows.length.toLocaleString()} importable leads`)

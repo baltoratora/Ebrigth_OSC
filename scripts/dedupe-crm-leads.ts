@@ -24,8 +24,15 @@
  *
  * SURVIVOR (kept): the most-advanced stage → then the most stage-history
  * (most-worked) → then the earliest created (the original). Every other member
- * of the group is SOFT-deleted (deletedAt on both the opportunity and its
- * contact — reversible). Nothing is hard-deleted; survivors are never touched.
+ * of the group is a candidate loser, but only the ones actually still sitting
+ * in New Lead or Cold Lead get SOFT-deleted (deletedAt on both the
+ * opportunity and its contact — reversible). A "loser" that has been moved to
+ * any other stage (Follow-Up, Trial, Enrolled, Unresponsive, Do Not Disturb,
+ * etc.) is LEFT ALONE even though it lost the group comparison — someone
+ * worked that card, and an untouched-but-duplicate lead is a much smaller
+ * problem than silently disappearing a lead a staff member progressed. Those
+ * skipped duplicates are reported separately so a human can reconcile them.
+ * Nothing is hard-deleted; survivors are never touched.
  *
  * CAVEAT: notes / appointments / history attached to a soft-deleted loser are
  * NOT merged onto the survivor. The survivor rule keeps the most-worked card to
@@ -44,6 +51,11 @@ const BRANCH = process.argv.find((a) => a.startsWith("--branch="))?.split("=")[1
 
 // Tables whose leads the two bugs could duplicate.
 const AFFECTED_SOURCES = ["meta_leads", "social_posts", "raw_wix_leads", "trial_form"];
+
+// Only a duplicate sitting in one of these stages is safe to auto-remove — it
+// was never worked (New Lead) or was abandoned (Cold Lead). Anything else
+// means a human touched it; deleting it risks losing real progress.
+const DELETABLE_STAGE_NAMES = new Set(["New Lead", "Cold Lead"]);
 
 /** Same phone normalisation the app uses (strip non-digits, drop 60 / leading 0s). */
 function phoneKey(raw: string | null | undefined): string | null {
@@ -75,8 +87,11 @@ async function main() {
   console.log(`\n=== CRM lead de-dup ${APPLY ? "(APPLY — WILL WRITE)" : "(dry run)"} ===`);
   console.log(`scope: ${ALL_SOURCES ? "ALL sources" : AFFECTED_SOURCES.join(", ")}${BRANCH ? ` · branch ${BRANCH}` : ""}\n`);
 
-  const stages = await prisma.crm_stage.findMany({ select: { id: true, order: true } });
+  const stages = await prisma.crm_stage.findMany({ select: { id: true, order: true, name: true } });
   const orderById = new Map(stages.map((s) => [s.id, s.order]));
+  const deletableStageIds = new Set(
+    stages.filter((s) => DELETABLE_STAGE_NAMES.has(s.name)).map((s) => s.id),
+  );
 
   const opps = await prisma.crm_opportunity.findMany({
     where: {
@@ -119,7 +134,9 @@ async function main() {
   const loserContactIds: string[] = [];
   let dupGroups = 0;
   let losersWithHistory = 0;
+  let losersKeptStageProgressed = 0;
   const samples: string[] = [];
+  const keptSamples: string[] = [];
 
   for (const [, members] of groups) {
     if (members.length < 2) continue;
@@ -130,17 +147,31 @@ async function main() {
       return a.createdAt.getTime() - b.createdAt.getTime(); // earliest original
     });
     const survivor = sorted[0];
-    const losers = sorted.slice(1);
+    const allLosers = sorted.slice(1);
+    // Only actually remove a loser still sitting in New Lead / Cold Lead. A
+    // loser that was moved to any other stage was worked by someone — leave
+    // it on the board even though it "lost" the group comparison.
+    const losers = allLosers.filter((l) => deletableStageIds.has(l.stageId));
+    const keptDespiteDuplicate = allLosers.filter((l) => !deletableStageIds.has(l.stageId));
     for (const l of losers) {
       loserOppIds.push(l.oppId);
       loserContactIds.push(l.contactId);
       if (l.historyCount > 0) losersWithHistory++;
     }
+    losersKeptStageProgressed += keptDespiteDuplicate.length;
     if (VERBOSE || samples.length < 15) {
-      samples.push(
-        `  "${survivor.name}" — keep opp ${survivor.oppId.slice(0, 8)} ` +
-        `(stageOrder ${survivor.stageOrder}, ${survivor.historyCount} moves) · ` +
-        `drop ${losers.length}: ${losers.map((l) => l.oppId.slice(0, 8)).join(", ")}`,
+      if (losers.length) {
+        samples.push(
+          `  "${survivor.name}" — keep opp ${survivor.oppId.slice(0, 8)} ` +
+          `(stageOrder ${survivor.stageOrder}, ${survivor.historyCount} moves) · ` +
+          `drop ${losers.length}: ${losers.map((l) => l.oppId.slice(0, 8)).join(", ")}`,
+        );
+      }
+    }
+    if ((VERBOSE || keptSamples.length < 15) && keptDespiteDuplicate.length) {
+      keptSamples.push(
+        `  "${survivor.name}" — duplicate(s) left in place (progressed stage): ` +
+        keptDespiteDuplicate.map((l) => `${l.oppId.slice(0, 8)} (stageOrder ${l.stageOrder})`).join(", "),
       );
     }
   }
@@ -150,7 +181,13 @@ async function main() {
   console.log(`skipped (no phone/email): ${skippedNoKey}`);
   console.log(`duplicate groups      : ${dupGroups}`);
   console.log(`leads to soft-delete  : ${loserOppIds.length} (of which ${losersWithHistory} have stage history)`);
+  console.log(`duplicates LEFT IN PLACE (moved past New Lead/Cold Lead): ${losersKeptStageProgressed}`);
   console.log("");
+  if (keptSamples.length) {
+    console.log(VERBOSE ? "all duplicates left in place:" : `sample of duplicates left in place (first ${keptSamples.length}):`);
+    console.log(keptSamples.join("\n"));
+    console.log("");
+  }
   if (samples.length) {
     console.log(VERBOSE ? "all duplicate groups:" : `sample (first ${samples.length}):`);
     console.log(samples.join("\n"));
