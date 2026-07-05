@@ -466,7 +466,10 @@ export function RecruitmentBoard({
       )}
 
       <DragDropContext onDragEnd={onDragEnd}>
-        <div className="flex-1 overflow-x-auto p-6 pt-4">
+        <div
+          className="flex-1 overflow-x-scroll p-6 pt-4 [scrollbar-width:auto] [&::-webkit-scrollbar]:h-2.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-300 hover:[&::-webkit-scrollbar-thumb]:bg-slate-400 dark:[&::-webkit-scrollbar-thumb]:bg-slate-600"
+          title="Scroll sideways to reach more stages — or drag a card to the screen edge to auto-scroll"
+        >
           <div className="flex h-full items-stretch gap-3">
             {displayed.map((stage) => (
               <Droppable droppableId={stage.id} key={stage.id}>
@@ -637,7 +640,12 @@ export function RecruitmentBoard({
         />
       )}
 
-      <RecruitDetailModal recruitId={detailId} onClose={() => setDetailId(null)} />
+      <RecruitDetailModal
+        recruitId={detailId}
+        onClose={() => setDetailId(null)}
+        stages={columns.map((c) => ({ id: c.id, name: c.name, shortCode: c.shortCode }))}
+        onMoved={() => router.refresh()}
+      />
 
       {interviewFor && (
         <InterviewScheduleModal

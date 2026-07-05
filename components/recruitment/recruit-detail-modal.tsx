@@ -5,7 +5,7 @@ import {
   X, UserRoundCheck, Loader2, Clock, CalendarDays, FileText,
   Phone, Mail, MapPin, GraduationCap, Users, Briefcase, Globe, Download,
 } from "lucide-react";
-import { getRecruitDetail, type RecruitDetail } from "@/app/recruitment/_actions";
+import { getRecruitDetail, moveRecruit, type RecruitDetail } from "@/app/recruitment/_actions";
 import { formTypeLabel, sourceLabel } from "@/lib/recruitment/labels";
 
 function fmt(iso: string | null) {
@@ -42,13 +42,34 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 export function RecruitDetailModal({
   recruitId,
   onClose,
+  stages = [],
+  onMoved,
 }: {
   recruitId: string | null;
   onClose: () => void;
+  /** Full ordered stage list — powers the "Move to stage" dropdown (drag-free). */
+  stages?: { id: string; name: string; shortCode: string }[];
+  /** Called after a successful stage move so the board can refresh. */
+  onMoved?: () => void;
 }) {
   const [detail, setDetail] = useState<RecruitDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [moving, setMoving] = useState(false);
+
+  async function handleMove(toStageId: string) {
+    if (!recruitId || !toStageId) return;
+    setMoving(true);
+    setErr(null);
+    const res = await moveRecruit(recruitId, toStageId);
+    setMoving(false);
+    if (!res.ok) {
+      setErr(res.error ?? "Move failed");
+      return;
+    }
+    onMoved?.();
+    onClose();
+  }
 
   useEffect(() => {
     if (!recruitId) return;
@@ -56,12 +77,25 @@ export function RecruitDetailModal({
     setLoading(true);
     setErr(null);
     setDetail(null);
-    getRecruitDetail(recruitId).then((res) => {
-      if (!active) return;
-      if (res.ok && res.detail) setDetail(res.detail);
-      else setErr(res.error ?? "Failed to load");
-      setLoading(false);
-    });
+    // Race the action against a timeout so a rejected OR hung server action
+    // surfaces an error instead of an endless "Loading recruit…" spinner.
+    Promise.race([
+      getRecruitDetail(recruitId),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Timed out loading recruit — try again")), 20000),
+      ),
+    ])
+      .then((res) => {
+        if (!active) return;
+        if (res.ok && res.detail) setDetail(res.detail);
+        else setErr(res.error ?? "Failed to load");
+        setLoading(false);
+      })
+      .catch((e) => {
+        if (!active) return;
+        setErr(e instanceof Error ? e.message : "Failed to load recruit");
+        setLoading(false);
+      });
     return () => {
       active = false;
     };
@@ -131,6 +165,25 @@ export function RecruitDetailModal({
                   {p}
                 </span>
               ))}
+            </div>
+          )}
+
+          {/* Move to stage — drag-free way to reassign across the ~28 stages */}
+          {detail && stages.length > 0 && (
+            <div className="mt-4 flex items-center gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Move to</span>
+              <select
+                value={stages.find((s) => s.shortCode === detail.stageShort)?.id ?? ""}
+                onChange={(e) => handleMove(e.target.value)}
+                disabled={moving}
+                className="max-w-55 rounded-lg border border-slate-300 bg-white/90 px-2 py-1 text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-white"
+                title="Move this candidate to another stage"
+              >
+                {stages.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+              {moving && <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-500" />}
             </div>
           )}
         </div>
