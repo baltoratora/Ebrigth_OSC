@@ -9,6 +9,7 @@ import { ROLES, normalizeRole } from "@/lib/roles";
 import { getHrfsCandidate, type HrfsCandidate } from "@/lib/recruitment/hrfs-candidate";
 import { isTrainingCode } from "@/lib/recruitment/training";
 import { phoneKey } from "@/lib/recruitment/dedupe";
+import { EMPLOYMENT_TYPES, type EmploymentType } from "@/lib/recruitment/employment";
 
 const ALLOWED = new Set<string>([ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD]);
 
@@ -57,10 +58,6 @@ async function mirrorStageToCareerApplications(
     );
   }
 }
-
-/** Employment types a manually-added candidate can be filed under. */
-export const EMPLOYMENT_TYPES = ["Internship", "Part Time", "Full Time"] as const;
-export type EmploymentType = (typeof EMPLOYMENT_TYPES)[number];
 
 export interface CreateRecruitInput {
   name: string;

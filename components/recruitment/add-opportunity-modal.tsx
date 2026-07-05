@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { X, UserPlus, Loader2 } from "lucide-react";
-import { createRecruit, EMPLOYMENT_TYPES, type EmploymentType } from "@/app/recruitment/_actions";
+import { createRecruit } from "@/app/recruitment/_actions";
+import { EMPLOYMENT_TYPES, type EmploymentType } from "@/lib/recruitment/employment";
 
 const FIELD =
   "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-800 dark:text-white";
