@@ -8,7 +8,7 @@ import {
   Draggable,
   type DropResult,
 } from "@hello-pangea/dnd";
-import { UserRoundCheck, Search, X, Trash2, ArrowRightLeft, CheckSquare, Archive, ArchiveRestore } from "lucide-react";
+import { UserRoundCheck, Search, X, Trash2, ArrowRightLeft, CheckSquare, Archive, ArchiveRestore, UserPlus } from "lucide-react";
 import {
   moveRecruit, bulkMoveRecruits, bulkDeleteRecruits, deleteRecruit,
   archiveRecruits, unarchiveRecruits, archiveOrphanRecruits, getArchivedRecruits,
@@ -18,6 +18,7 @@ import { sourceLabel } from "@/lib/recruitment/labels";
 import { RecruitDetailModal } from "@/components/recruitment/recruit-detail-modal";
 import { InterviewScheduleModal } from "@/components/recruitment/interview-schedule-modal";
 import { ResumeUploadModal } from "@/components/recruitment/resume-upload-modal";
+import { AddOpportunityModal } from "@/components/recruitment/add-opportunity-modal";
 
 // Stages that intercept a drop with a popup before the move is committed.
 const INTERVIEW_CODE = "ID"; // Interview Date → date/time picker
@@ -95,6 +96,9 @@ export function RecruitmentBoard({
 
   // ── Detail modal ───────────────────────────────────────────────────────────
   const [detailId, setDetailId] = useState<string | null>(null);
+
+  // ── Add-opportunity modal ────────────────────────────────────────────────────
+  const [showAdd, setShowAdd] = useState(false);
 
   // ── Special-stage drop popups (Interview / Resume) ──────────────────────────
   const [interviewFor, setInterviewFor] = useState<{ recruitId: string; name: string; fromStageId: string } | null>(null);
@@ -391,6 +395,13 @@ export function RecruitmentBoard({
           </button>
         )}
         <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={() => setShowAdd(true)}
+            title="Manually add a candidate opportunity"
+            className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
+          >
+            <UserPlus className="h-3.5 w-3.5" /> Add Opportunity
+          </button>
           {canDelete && (
             <button
               onClick={doArchiveOrphans}
@@ -614,6 +625,17 @@ export function RecruitmentBoard({
           </div>
         </div>
       </DragDropContext>
+
+      {showAdd && (
+        <AddOpportunityModal
+          onClose={() => setShowAdd(false)}
+          onCreated={() => {
+            setShowAdd(false);
+            flashOk("Opportunity added.");
+            router.refresh();
+          }}
+        />
+      )}
 
       <RecruitDetailModal recruitId={detailId} onClose={() => setDetailId(null)} />
 

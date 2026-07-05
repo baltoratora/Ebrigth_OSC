@@ -4,6 +4,12 @@ import { revalidatePath } from "next/cache";
 // Recruitment lives in the ebright_hrfs database — use the HRFS client.
 import { hrfsPrisma as prisma } from "@/lib/hrfs";
 import { requireRecruitmentAccess, stageIdByShortCode } from "@/lib/recruitment/access";
+import {
+  isRecruitmentDriveConfigured,
+  recruitmentDriveFolderId,
+  uploadPrivateFile,
+  deleteDriveFile,
+} from "@/lib/googleDrive";
 
 export interface ResumeResult {
   ok: boolean;
@@ -57,6 +63,21 @@ export async function uploadResume(formData: FormData): Promise<ResumeResult> {
 
     const buf = Buffer.from(await file.arrayBuffer());
 
+    // Prefer the recruitment Google Drive folder (private) when configured;
+    // fall back to storing the bytes in the DB if it isn't set or the upload
+    // fails. Exactly one of {data, driveFileId} ends up populated.
+    let driveFileId: string | null = null;
+    let dbData: Buffer | null = buf;
+    if (isRecruitmentDriveConfigured()) {
+      try {
+        const res = await uploadPrivateFile(buf, file.name || "resume", mime, recruitmentDriveFolderId()!);
+        driveFileId = res.fileId;
+        dbData = null; // stored on Drive — don't also keep it in Postgres
+      } catch (e) {
+        console.error("[resume] Drive upload failed, storing in DB instead:", (e as Error).message);
+      }
+    }
+
     const created = await prisma.$transaction(async (tx) => {
       const resume = await tx.recResume.create({
         data: {
@@ -64,7 +85,8 @@ export async function uploadResume(formData: FormData): Promise<ResumeResult> {
           fileName: file.name || "resume",
           mimeType: mime,
           sizeBytes: buf.length,
-          data: buf,
+          data: dbData ? new Uint8Array(dbData) : undefined,
+          driveFileId: driveFileId ?? undefined,
           uploadedBy: userId,
         },
         select: { id: true },
@@ -90,7 +112,13 @@ export async function uploadResume(formData: FormData): Promise<ResumeResult> {
 export async function deleteResume(resumeId: string): Promise<ResumeResult> {
   try {
     await requireRecruitmentAccess();
+    const existing = await prisma.recResume.findUnique({ where: { id: resumeId }, select: { driveFileId: true } });
     await prisma.recResume.delete({ where: { id: resumeId } });
+    // Best-effort: remove the Drive copy too so we don't orphan it.
+    if (existing?.driveFileId) {
+      try { await deleteDriveFile(existing.driveFileId); }
+      catch (e) { console.error("[resume] Drive delete failed:", (e as Error).message); }
+    }
     revalidatePath("/recruitment/library");
     return { ok: true };
   } catch (e) {

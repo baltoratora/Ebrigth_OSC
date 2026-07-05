@@ -158,6 +158,7 @@ async function processNotification(payload: string, pg: PgClient): Promise<void>
     try {
       result = await importLead(prisma, { tenantId: tid }, row, caches, {
         enqueueAutomation: enqueueAutomation ?? undefined,
+        dedupeByContact: true,
       })
     } catch (e) {
       console.error(`[leadIngest] importLead threw for ${label}:`, (e as Error).message)
@@ -175,6 +176,10 @@ function logResult(label: string, result: ImportResult): void {
     case 'duplicate':
       // Common during polling-backstop overlap with LISTEN — debug, not warn.
       console.log(`[leadIngest] = ${label} already imported`)
+      break
+    case 'duplicate_contact':
+      // A different source row for the same human (phone + name) already exists.
+      console.log(`[leadIngest] = ${label} same-contact dupe → ${result.contactId}`)
       break
     case 'no_branch':
       console.warn(`[leadIngest] ✗ ${label} ${result.reason}`)
@@ -227,9 +232,10 @@ async function runBackstop(pg: PgClient): Promise<void> {
     try {
       const r = await importLead(prisma, { tenantId: tid }, row, caches, {
         enqueueAutomation: enqueueAutomation ?? undefined,
+        dedupeByContact: true,
       })
       if (r.status === 'created') created++
-      else if (r.status === 'duplicate') dup++
+      else if (r.status === 'duplicate' || r.status === 'duplicate_contact') dup++
       else skipped++
     } catch (e) {
       console.error(

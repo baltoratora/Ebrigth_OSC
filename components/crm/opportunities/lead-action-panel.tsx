@@ -14,7 +14,7 @@ import {
 
 const WEEKDAY_SLOTS = ['06:00 PM', '07:15 PM', '08:30 PM']
 const WEEKEND_SLOTS = ['09:15 AM', '10:30 AM', '12:00 PM', '01:15 PM', '02:45 PM', '04:00 PM', '05:30 PM']
-const PACKAGES: Array<3 | 6 | 9 | 12> = [3, 6, 9, 12]
+const PACKAGES: Array<3 | 6 | 9 | 12 | 18 | 24> = [3, 6, 9, 12, 18, 24]
 const WEEKS: Array<{ key: 'last' | 'this' | 'next'; label: string }> = [
   { key: 'last', label: 'Last week' },
   { key: 'this', label: 'This week' },

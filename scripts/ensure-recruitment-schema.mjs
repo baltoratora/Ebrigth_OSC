@@ -133,6 +133,9 @@ const ALTERS = [
   `ALTER TABLE ${S}.rec_recruit ADD COLUMN IF NOT EXISTS "rescheduleAt" timestamp(3)`,
   `ALTER TABLE ${S}.rec_recruit ADD COLUMN IF NOT EXISTS "rescheduleReturnCode" text`,
   `ALTER TABLE ${S}.rec_recruit ADD COLUMN IF NOT EXISTS "archivedAt" timestamp(3)`,
+  // Resume binary can live on Google Drive instead of in the DB.
+  `ALTER TABLE ${S}.rec_resume ADD COLUMN IF NOT EXISTS "driveFileId" text`,
+  `ALTER TABLE ${S}.rec_resume ALTER COLUMN data DROP NOT NULL`,
 ];
 
 // Constraints / indexes created separately so they apply to pre-existing tables

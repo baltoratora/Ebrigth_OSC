@@ -27,6 +27,144 @@ export interface MoveResult {
   error?: string;
 }
 
+/**
+ * Mirror a recruit's current pipeline stage back into the canonical
+ * `career_applications` store (ebright_hrfs.public), so the applications table
+ * HR inspects always reflects where the candidate actually is — instead of
+ * being stuck at its default 'new'. The link is rec_recruit.applicationId =
+ * career_applications.id. Best-effort: a mirror failure never blocks the move
+ * (the board's rec_recruit is still the live source of truth). We write the
+ * human-readable stage NAME (what the board column shows).
+ */
+async function mirrorStageToCareerApplications(
+  applicationIds: (number | null | undefined)[],
+  stageName: string,
+): Promise<void> {
+  const ids = applicationIds.filter(
+    (x): x is number => typeof x === "number" && Number.isInteger(x),
+  );
+  if (!ids.length) return;
+  try {
+    // ids are DB-sourced integers (rec_recruit.applicationId) — safe to inline.
+    await prisma.$executeRawUnsafe(
+      `UPDATE public.career_applications SET stage = $1, updated_at = now() WHERE id IN (${ids.join(",")})`,
+      stageName,
+    );
+  } catch (e) {
+    console.warn(
+      "[recruitment] career_applications stage mirror failed (move still applied):",
+      (e as Error).message,
+    );
+  }
+}
+
+/** Employment types a manually-added candidate can be filed under. */
+export const EMPLOYMENT_TYPES = ["Internship", "Part Time", "Full Time"] as const;
+export type EmploymentType = (typeof EMPLOYMENT_TYPES)[number];
+
+export interface CreateRecruitInput {
+  name: string;
+  employmentType: EmploymentType;
+  phone?: string | null;
+  email?: string | null;
+  branch?: string | null;
+}
+
+/**
+ * Manually add a candidate opportunity (the "Add Opportunity" button).
+ *
+ * Writes the canonical record into `career_applications` (ebright_hrfs.public)
+ * FIRST — that table is the store of record — then creates the linked board
+ * card (rec_recruit) filed under the chosen employment type's stage
+ * (Internship→INTERN, Full Time→FT, Part Time→PT). The applicationId link keeps
+ * the two in sync (career-sync won't duplicate, and stage moves mirror back).
+ */
+const STAGE_BY_TYPE: Record<EmploymentType, string> = {
+  Internship: "INTERN",
+  "Full Time": "FT",
+  "Part Time": "PT",
+};
+
+export async function createRecruit(
+  input: CreateRecruitInput,
+): Promise<MoveResult & { id?: string }> {
+  try {
+    const { userId } = await requireAccess();
+
+    const name = input.name?.trim();
+    if (!name) return { ok: false, error: "Candidate name is required" };
+    if (!EMPLOYMENT_TYPES.includes(input.employmentType)) {
+      return { ok: false, error: "Choose Internship, Part Time or Full Time" };
+    }
+
+    // File the card under the type's stage; fall back to the first stage if that
+    // shortCode isn't configured on this pipeline.
+    const stage =
+      (await prisma.recStage.findFirst({
+        where: { shortCode: STAGE_BY_TYPE[input.employmentType] },
+        select: { id: true, name: true },
+      })) ??
+      (await prisma.recStage.findFirst({ orderBy: { order: "asc" }, select: { id: true, name: true } }));
+    if (!stage) return { ok: false, error: "No recruitment stages configured" };
+
+    const email = input.email?.trim() || null;
+    const phone = input.phone?.trim() || null;
+    const branch = input.branch?.trim() || null;
+
+    // Canonical store first: insert into career_applications. Its NOT NULL text
+    // columns get '' when unknown; stage carries the readable stage name.
+    let applicationId: number | null = null;
+    try {
+      const rows = await prisma.$queryRawUnsafe<{ id: number }[]>(
+        `INSERT INTO public.career_applications
+           (name, phone, email, gender, education_level, city, position, stage, source)
+         VALUES ($1, $2, $3, '', '', '', $4, $5, 'manual')
+         RETURNING id`,
+        name, phone ?? "", email ?? "", input.employmentType, stage.name,
+      );
+      applicationId = rows[0]?.id ?? null;
+    } catch (e) {
+      return {
+        ok: false,
+        error:
+          "Could not write to career_applications — check HRFS_DATABASE_URL points to ebright_hrfs (" +
+          (e as Error).message + ")",
+      };
+    }
+
+    // Working board card, linked back to the application it represents.
+    const recruit = await prisma.recRecruit.create({
+      data: {
+        name,
+        email,
+        phone,
+        branch,
+        source: "manual",
+        position: input.employmentType,
+        stageId: stage.id,
+        applicationId: applicationId ?? undefined,
+      },
+      select: { id: true },
+    });
+
+    // Best-effort initial history entry — never block the create on it.
+    try {
+      await prisma.recStageHistory.create({
+        data: { recruitId: recruit.id, fromStageId: null, toStageId: stage.id, changedBy: userId, note: "Added manually" },
+      });
+    } catch {
+      /* history is secondary — the card already exists */
+    }
+
+    revalidatePath("/recruitment/opportunity");
+    revalidatePath("/recruitment/contacts");
+    revalidatePath("/recruitment/dashboard");
+    return { ok: true, id: recruit.id };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Could not add opportunity" };
+  }
+}
+
 /** Move a recruit to a new stage (kanban drag) + record the transition. */
 export async function moveRecruit(recruitId: string, toStageId: string): Promise<MoveResult> {
   try {
@@ -34,32 +172,41 @@ export async function moveRecruit(recruitId: string, toStageId: string): Promise
 
     const recruit = await prisma.recRecruit.findFirst({
       where: { id: recruitId, deletedAt: null },
-      select: { id: true, stageId: true },
+      select: { id: true, stageId: true, applicationId: true },
     });
     if (!recruit) return { ok: false, error: "Recruit not found" };
     if (recruit.stageId === toStageId) return { ok: true };
 
-    const toStage = await prisma.recStage.findUnique({ where: { id: toStageId }, select: { id: true, shortCode: true } });
+    const toStage = await prisma.recStage.findUnique({ where: { id: toStageId }, select: { id: true, shortCode: true, name: true } });
     if (!toStage) return { ok: false, error: "Stage not found" };
 
     // Dragging into a training stage (re)starts its 3-day attendance clock; any
     // manual move also cancels a pending reschedule auto-return.
     const enteringTraining = isTrainingCode(toStage.shortCode);
-    await prisma.$transaction([
-      prisma.recRecruit.update({
-        where: { id: recruitId },
-        data: {
-          stageId: toStageId,
-          trainingEnteredAt: enteringTraining ? new Date() : undefined,
-          trainingConfirmedAt: enteringTraining ? null : undefined,
-          rescheduleAt: null,
-          rescheduleReturnCode: null,
-        },
-      }),
-      prisma.recStageHistory.create({
+    // The stage change is the primary write and must commit on its own. The
+    // history entry is a secondary audit log — kept best-effort so a problem
+    // writing it (e.g. rec_stage_history not provisioned) can never roll back
+    // and silently lose the actual move.
+    await prisma.recRecruit.update({
+      where: { id: recruitId },
+      data: {
+        stageId: toStageId,
+        trainingEnteredAt: enteringTraining ? new Date() : undefined,
+        trainingConfirmedAt: enteringTraining ? null : undefined,
+        rescheduleAt: null,
+        rescheduleReturnCode: null,
+      },
+    });
+    try {
+      await prisma.recStageHistory.create({
         data: { recruitId, fromStageId: recruit.stageId, toStageId, changedBy: userId },
-      }),
-    ]);
+      });
+    } catch (e) {
+      console.warn("[recruitment] stage-history write failed (move still applied):", (e as Error).message);
+    }
+
+    // Mirror the new stage into the canonical career_applications store.
+    await mirrorStageToCareerApplications([recruit.applicationId], toStage.name);
 
     revalidatePath("/recruitment/opportunity");
     revalidatePath("/recruitment/dashboard");
@@ -78,32 +225,39 @@ export async function bulkMoveRecruits(
     const { userId } = await requireAccess();
     if (!ids.length) return { ok: true, moved: 0 };
 
-    const toStage = await prisma.recStage.findUnique({ where: { id: toStageId }, select: { id: true, shortCode: true } });
+    const toStage = await prisma.recStage.findUnique({ where: { id: toStageId }, select: { id: true, shortCode: true, name: true } });
     if (!toStage) return { ok: false, error: "Stage not found" };
 
     const recruits = await prisma.recRecruit.findMany({
       where: { id: { in: ids }, deletedAt: null },
-      select: { id: true, stageId: true },
+      select: { id: true, stageId: true, applicationId: true },
     });
     const toMove = recruits.filter((r) => r.stageId !== toStageId);
     if (!toMove.length) return { ok: true, moved: 0 };
 
     const enteringTraining = isTrainingCode(toStage.shortCode);
-    await prisma.$transaction([
-      prisma.recRecruit.updateMany({
-        where: { id: { in: toMove.map((r) => r.id) } },
-        data: {
-          stageId: toStageId,
-          trainingEnteredAt: enteringTraining ? new Date() : undefined,
-          trainingConfirmedAt: enteringTraining ? null : undefined,
-          rescheduleAt: null,
-          rescheduleReturnCode: null,
-        },
-      }),
-      prisma.recStageHistory.createMany({
+    // Primary write (the actual move) commits on its own; history is best-effort
+    // so it can never roll back a successful move (see moveRecruit).
+    await prisma.recRecruit.updateMany({
+      where: { id: { in: toMove.map((r) => r.id) } },
+      data: {
+        stageId: toStageId,
+        trainingEnteredAt: enteringTraining ? new Date() : undefined,
+        trainingConfirmedAt: enteringTraining ? null : undefined,
+        rescheduleAt: null,
+        rescheduleReturnCode: null,
+      },
+    });
+    try {
+      await prisma.recStageHistory.createMany({
         data: toMove.map((r) => ({ recruitId: r.id, fromStageId: r.stageId, toStageId, changedBy: userId })),
-      }),
-    ]);
+      });
+    } catch (e) {
+      console.warn("[recruitment] bulk stage-history write failed (moves still applied):", (e as Error).message);
+    }
+
+    // Mirror the new stage into the canonical career_applications store.
+    await mirrorStageToCareerApplications(toMove.map((r) => r.applicationId), toStage.name);
 
     revalidatePath("/recruitment/opportunity");
     revalidatePath("/recruitment/dashboard");
