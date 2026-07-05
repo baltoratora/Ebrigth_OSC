@@ -107,7 +107,7 @@ export async function createOpportunity(
 export interface MoveOpportunityExtras {
   trialDate?: string
   trialTimeSlot?: string
-  enrollmentMonths?: 3 | 6 | 9 | 12
+  enrollmentMonths?: 3 | 6 | 9 | 12 | 18 | 24
   rescheduleDate?: string
 }
 

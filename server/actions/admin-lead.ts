@@ -298,7 +298,7 @@ export async function adminSetTrial(
 
 /** Change the enrolled package length. */
 export async function adminSetPackage(
-  opportunityId: string, months: 3 | 6 | 9 | 12,
+  opportunityId: string, months: 3 | 6 | 9 | 12 | 18 | 24,
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     const { userId, tenantId } = await requireSuperAdmin()

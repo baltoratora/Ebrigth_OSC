@@ -1844,7 +1844,11 @@ model RecResume {
   fileName   String
   mimeType   String   @default("application/octet-stream")
   sizeBytes  Int      @default(0)
-  data       Bytes
+  // Binary lives in ONE place: the DB (data) for legacy/unconfigured envs, or
+  // Google Drive (driveFileId) once the recruitment Drive folder is set. The
+  // API route streams whichever is present, keeping access auth-gated either way.
+  data          Bytes?
+  driveFileId   String?
   uploadedBy String?
   uploadedAt DateTime @default(now())
 

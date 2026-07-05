@@ -49,8 +49,17 @@ const VERBOSE = process.argv.includes("--verbose");
 const ALL_SOURCES = process.argv.includes("--all-sources");
 const BRANCH = process.argv.find((a) => a.startsWith("--branch="))?.split("=")[1] ?? null;
 
-// Tables whose leads the two bugs could duplicate.
-const AFFECTED_SOURCES = ["meta_leads", "social_posts", "raw_wix_leads", "trial_form"];
+// Tables whose leads the two bugs could duplicate. `new_website_form` is the
+// roadshow/website intake surfaced by master_leads_unified — it produces the
+// bulk of the same-person dupes (upstream emits several rows per submission),
+// so it MUST be in scope or the default run silently misses them.
+const AFFECTED_SOURCES = [
+  "meta_leads",
+  "social_posts",
+  "raw_wix_leads",
+  "new_website_form",
+  "trial_form",
+];
 
 // Only a duplicate sitting in one of these stages is safe to auto-remove — it
 // was never worked (New Lead) or was abandoned (Cold Lead). Anything else

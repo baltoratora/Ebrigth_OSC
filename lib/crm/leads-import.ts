@@ -17,7 +17,7 @@
 
 import type { PrismaClient } from '@prisma/client'
 import { Prisma } from '@prisma/client'
-import { normalizePhone } from './utils'
+import { normalizePhone, phoneSearchDigits } from './utils'
 import { createLeadNotifications } from './notifications'
 
 // Importing './queue' transitively pulls in BullMQ + ioredis, which try to
@@ -65,11 +65,12 @@ export interface UnifiedLeadRow {
 }
 
 export type ImportStatus =
-  | 'created'      // contact + opportunity inserted
-  | 'duplicate'    // already imported (unique constraint hit)
-  | 'no_branch'    // clean_branch couldn't be matched to any crm_branch
-  | 'no_pipeline'  // matched branch has no pipeline (seed not run for it)
-  | 'no_pii'       // row has no name/email/phone — not worth creating
+  | 'created'           // contact + opportunity inserted
+  | 'duplicate'         // already imported (same source row — unique constraint hit)
+  | 'duplicate_contact' // a different source row for the SAME human (phone + name) already exists
+  | 'no_branch'         // clean_branch couldn't be matched to any crm_branch
+  | 'no_pipeline'       // matched branch has no pipeline (seed not run for it)
+  | 'no_pii'            // row has no name/email/phone — not worth creating
 
 export interface ImportResult {
   status: ImportStatus
@@ -97,7 +98,31 @@ export interface ImportOptions {
    * submissions always start in 'NL'.
    */
   stageShortCode?: string
+  /**
+   * When true, before creating a new contact we look for an existing,
+   * non-deleted contact that represents the SAME human — matched on
+   * phone-digit-core AND normalized name within a recent window — and skip
+   * creation if found (`status: 'duplicate_contact'`).
+   *
+   * This catches the real-world duplicate the @@unique(sourceTable, sourceId)
+   * key can't: upstream sources (roadshow website form re-taps, Meta webhook
+   * re-delivery, form retries) emit MULTIPLE physical rows for one person, each
+   * with a distinct source_id, so every one otherwise mints a fresh card.
+   *
+   * Sibling-safe by design: siblings share a parent phone but have DIFFERENT
+   * names, so requiring the name to match too never merges them.
+   *
+   * OFF by default so the historical bulk seed (which sets stageShortCode and
+   * legitimately imports many rows fast) is unaffected. The realtime
+   * leadIngestWorker turns it ON.
+   */
+  dedupeByContact?: boolean
 }
+
+/** Days back to look for a same-human contact. Long enough to catch the
+ *  minutes-to-days re-submission bursts we see in the data, short enough that a
+ *  genuine re-inquiry months later still creates a fresh lead. */
+const DEDUP_WINDOW_DAYS = 30
 
 // ─── Caches ────────────────────────────────────────────────────────────────────
 // Each call would otherwise do 4 DB lookups (branch, pipeline, NL stage, lead_source).
@@ -384,6 +409,55 @@ async function resolveLeadSourceId(
   return created.id
 }
 
+/**
+ * Collapse a first/last name pair into the canonical form used for duplicate
+ * matching: single-spaced, trimmed, lower-cased. MUST stay in lock-step with
+ * the SQL expression in findDuplicateContactId so JS and Postgres agree on
+ * what "the same name" means.
+ */
+function normalizeNameForMatch(firstName: string, lastName: string | null): string {
+  return `${firstName} ${lastName ?? ''}`.replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+/**
+ * Find an existing, non-deleted contact that represents the SAME human as the
+ * row we're about to import — matched on phone-digit-core AND normalized name,
+ * within DEDUP_WINDOW_DAYS. Returns its id, or null when there's no match.
+ *
+ * The stored `phone` column is a mix of E.164 ("+60123456789"), local
+ * ("0123456789") and raw form strings with spaces/dashes, so we reduce BOTH
+ * sides to the bare national significant number (drop non-digits, a leading
+ * Malaysian "60", then leading zeros) exactly like phoneSearchDigits does — a
+ * CNS-form "+60 18-576 3367" and a marketing "+60185763367" then compare equal.
+ *
+ * Requiring the name to match as well is what keeps this sibling-safe: siblings
+ * share the parent phone but differ in name, so they are never collapsed.
+ */
+async function findDuplicateContactId(
+  prisma: PrismaClient,
+  tenantId: string,
+  phoneDigits: string,
+  normalizedName: string,
+): Promise<string | null> {
+  const rows = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT id
+      FROM crm.crm_contact
+     WHERE "tenantId" = ${tenantId}
+       AND "deletedAt" IS NULL
+       AND "createdAt" > now() - (${DEDUP_WINDOW_DAYS} || ' days')::interval
+       AND regexp_replace(
+             regexp_replace(
+               regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'),
+             '^60', ''),
+           '^0+', '') = ${phoneDigits}
+       AND lower(btrim(regexp_replace(
+             coalesce("firstName", '') || ' ' || coalesce("lastName", ''),
+             '[[:space:]]+', ' ', 'g'))) = ${normalizedName}
+     LIMIT 1
+  `
+  return rows[0]?.id ?? null
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -447,6 +521,31 @@ export async function importLead(
   const submittedAt = row.submitted_at ?? new Date()
 
   const { firstName, lastName, childAge, parentFullName } = pickContactName(row)
+
+  // ── Content-level dedup (same human, different source row) ───────────────────
+  // The @@unique(sourceTable, sourceId) key only stops the SAME source row from
+  // importing twice. It can't stop the upstream sources from emitting SEVERAL
+  // rows for one person (roadshow form re-taps, Meta webhook re-delivery, form
+  // retries) — each carries a distinct source_id, so each would otherwise mint a
+  // fresh card minutes-to-hours apart. When the caller opts in (the realtime
+  // worker does; the bulk seed does not), skip creation if a contact with the
+  // same phone-digit-core AND name already exists in the recent window. Requiring
+  // BOTH keeps siblings (shared phone, different names) as separate contacts.
+  if (opts.dedupeByContact) {
+    const phoneDigits = row.phone ? phoneSearchDigits(row.phone) : null
+    const normalizedName = normalizeNameForMatch(firstName, lastName)
+    if (phoneDigits && normalizedName) {
+      const existingId = await findDuplicateContactId(
+        prisma,
+        ctx.tenantId,
+        phoneDigits,
+        normalizedName,
+      )
+      if (existingId) {
+        return { status: 'duplicate_contact', contactId: existingId, branchId: branch.id }
+      }
+    }
+  }
 
   // ── Idempotency key ────────────────────────────────────────────────────────
   // This MUST be a pure function of the source ROW so the unique constraint

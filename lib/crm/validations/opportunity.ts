@@ -16,8 +16,8 @@ export const MoveOpportunitySchema = z.object({
   trialDate: z.string().optional(),
   /** e.g. "10:00 AM – 11:00 AM" — set when moving into "Confirmed for Trial" */
   trialTimeSlot: z.string().optional(),
-  /** 3 | 6 | 9 | 12 — set when moving into "Enrolled" */
-  enrollmentMonths: z.union([z.literal(3), z.literal(6), z.literal(9), z.literal(12)]).optional(),
+  /** 3 | 6 | 9 | 12 | 18 | 24 — set when moving into "Enrolled" */
+  enrollmentMonths: z.union([z.literal(3), z.literal(6), z.literal(9), z.literal(12), z.literal(18), z.literal(24)]).optional(),
   /** ISO date string (YYYY-MM-DD) — set when moving into "Reschedule" */
   rescheduleDate: z.string().optional(),
 })

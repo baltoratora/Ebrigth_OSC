@@ -403,6 +403,10 @@ interface BranchUser {
 }
 
 export type WeekFilter = 'today' | 'yesterday' | 'this' | 'next' | 'last' | 'custom' | 'all'
+/** Which timestamp the day/week filter matches against:
+ *  'created' = when the lead came in (createdAt),
+ *  'updated' = when it was last moved/worked (lastStageChangeAt). */
+export type DateBasis = 'created' | 'updated'
 
 /**
  * Resolve the selected preset into a concrete {from, to} Date range (inclusive
@@ -474,6 +478,8 @@ interface FiltersBarProps {
   pipelineLocked?: boolean
   weekFilter: WeekFilter
   onWeekFilterChange: (f: WeekFilter) => void
+  dateBasis: DateBasis
+  onDateBasisChange: (b: DateBasis) => void
   customFrom: string
   customTo: string
   onCustomFromChange: (s: string) => void
@@ -502,6 +508,8 @@ function FiltersBar({
   pipelineLocked = false,
   weekFilter,
   onWeekFilterChange,
+  dateBasis,
+  onDateBasisChange,
   customFrom,
   customTo,
   onCustomFromChange,
@@ -594,6 +602,28 @@ function FiltersBar({
           <option value="all">All</option>
         </select>
         <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+      </div>
+
+      {/* Which timestamp the day/week range matches: created vs last-updated. */}
+      <div
+        className="inline-flex overflow-hidden rounded-lg border border-slate-300 text-xs dark:border-slate-600"
+        title="Filter the date range by when the lead was created, or when it was last moved/updated"
+      >
+        {(['created', 'updated'] as const).map((b) => (
+          <button
+            key={b}
+            type="button"
+            onClick={() => onDateBasisChange(b)}
+            className={cn(
+              'px-2.5 py-1.5 font-medium capitalize transition',
+              dateBasis === b
+                ? 'bg-indigo-600 text-white'
+                : 'bg-white text-slate-600 hover:bg-slate-50 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700',
+            )}
+          >
+            {b}
+          </button>
+        ))}
       </div>
 
       {weekFilter === 'custom' && (
@@ -759,6 +789,7 @@ function BulkActionBar({
 interface KanbanFilterMemory {
   search: string
   weekFilter: WeekFilter
+  dateBasis: DateBasis
   customFrom: string
   customTo: string
   sourceFilter: string
@@ -897,6 +928,7 @@ export function KanbanBoard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contextBranch?.id])
   const [weekFilter, setWeekFilter] = useState<WeekFilter>(() => kanbanFilterMemory.weekFilter ?? 'all')
+  const [dateBasis, setDateBasis] = useState<DateBasis>(() => kanbanFilterMemory.dateBasis ?? 'created')
   const [customFrom, setCustomFrom] = useState<string>(() => kanbanFilterMemory.customFrom ?? '')
   const [customTo, setCustomTo] = useState<string>(() => kanbanFilterMemory.customTo ?? '')
 
@@ -918,15 +950,16 @@ export function KanbanBoard({
   useEffect(() => {
     kanbanFilterMemory.search = searchInput
     kanbanFilterMemory.weekFilter = weekFilter
+    kanbanFilterMemory.dateBasis = dateBasis
     kanbanFilterMemory.customFrom = customFrom
     kanbanFilterMemory.customTo = customTo
     kanbanFilterMemory.sourceFilter = sourceFilter
     kanbanFilterMemory.ageFilter = ageFilter
     kanbanFilterMemory.tagFilter = tagFilter
-  }, [searchInput, weekFilter, customFrom, customTo, sourceFilter, ageFilter, tagFilter])
+  }, [searchInput, weekFilter, dateBasis, customFrom, customTo, sourceFilter, ageFilter, tagFilter])
 
   // Filter signature for the columns' progressive-reveal reset (see KanbanColumn).
-  const filterKey = `${selectedPipelineId}|${weekFilter}|${customFrom}|${customTo}|${sourceFilter}|${ageFilter}|${tagFilter}|${search}`
+  const filterKey = `${selectedPipelineId}|${weekFilter}|${dateBasis}|${customFrom}|${customTo}|${sourceFilter}|${ageFilter}|${tagFilter}|${search}`
 
   // Always pass undefined for branchId — the pipeline itself already scopes to one branch.
   const { data, isLoading, isError, refetch } = useKanban(
@@ -979,7 +1012,7 @@ export function KanbanBoard({
   const [moveNote, setMoveNote] = useState('')
   const [trialDate, setTrialDate] = useState<string>('')
   const [trialTimeSlot, setTrialTimeSlot] = useState<string>('')
-  const [enrollmentMonths, setEnrollmentMonths] = useState<3 | 6 | 9 | 12 | undefined>(undefined)
+  const [enrollmentMonths, setEnrollmentMonths] = useState<3 | 6 | 9 | 12 | 18 | 24 | undefined>(undefined)
   const [rescheduleDate, setRescheduleDate] = useState<string>('')
   // Local pending flag scoped to the modal confirm action. Using
   // moveMutation.isPending directly would leak state from any other in-flight
@@ -1028,18 +1061,19 @@ export function KanbanBoard({
   }, [stages])
 
   // Filter by date range + lead source + age class + tag (client-side).
-  // Every card — CT included — matches by its CREATION date, so a date filter
-  // always shows exactly the leads that came in during the period (mirrors the
-  // dashboard's New Leads count).
+  // The date basis toggle picks which timestamp the range matches: 'created'
+  // (createdAt — leads that came in during the period, mirrors the dashboard's
+  // New Leads count) or 'updated' (lastStageChangeAt — leads last moved/worked
+  // during the period).
   const filteredStages = useMemo(() => {
     const range = resolveRange(weekFilter, customFrom, customTo)
     return stages.map((stage) => {
       return {
       ...stage,
       opportunities: stage.opportunities.filter((o) => {
-        // Date range — match on creation date for every stage.
+        // Date range — match on created or last-updated date per the toggle.
         if (range) {
-          const when = new Date(o.createdAt)
+          const when = new Date(dateBasis === 'updated' ? o.lastStageChangeAt : o.createdAt)
           if (when < range.from || when > range.to) return false
         }
         // Lead source / platform
@@ -1058,7 +1092,7 @@ export function KanbanBoard({
       }),
     }
     })
-  }, [stages, weekFilter, customFrom, customTo, sourceFilter, ageFilter, tagFilter])
+  }, [stages, weekFilter, dateBasis, customFrom, customTo, sourceFilter, ageFilter, tagFilter])
 
   // ── Drag & Drop ──────────────────────────────────────────────────────────────
 
@@ -1609,6 +1643,8 @@ export function KanbanBoard({
         pipelineLocked={!!contextBranch}
         weekFilter={weekFilter}
         onWeekFilterChange={setWeekFilter}
+        dateBasis={dateBasis}
+        onDateBasisChange={setDateBasis}
         customFrom={customFrom}
         customTo={customTo}
         onCustomFromChange={setCustomFrom}
