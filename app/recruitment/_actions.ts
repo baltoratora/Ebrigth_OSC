@@ -29,27 +29,52 @@ export interface MoveResult {
 }
 
 /**
+ * `career_applications.stage` is constrained (career_applications_stage_check)
+ * to a coarse 6-status funnel — new | screening | interview | offer | hired |
+ * rejected — separate from the ~28 detailed board stages. So we map each board
+ * stage (by shortCode) onto one of those statuses before mirroring. Any code
+ * not listed falls back to 'new'. Tweak the buckets here if HR wants a
+ * different rollup (e.g. Trial/Training as 'offer' vs 'hired').
+ */
+const CAREER_STATUS_BY_STAGE: Record<string, string> = {
+  CD: "new", INTERN: "new", FT: "new", PT: "new", OD: "new",
+  BR: "screening", RS: "screening", BV: "screening", VS: "screening",
+  HD: "screening", GS: "screening", FUP: "screening", SL: "screening",
+  ID: "interview", INT: "interview", RSD: "interview",
+  SAL: "offer", TRL: "offer",
+  HRD: "hired", TR1: "hired", TR2: "hired", TR3: "hired", PRB: "hired",
+  PAY: "hired", IOP1: "hired", IOP2: "hired", IOP3: "hired",
+  RJT: "rejected",
+};
+
+/** Coarse career_applications status for a board stage shortCode. */
+function careerStatusForStage(shortCode: string): string {
+  return CAREER_STATUS_BY_STAGE[shortCode.toUpperCase()] ?? "new";
+}
+
+/**
  * Mirror a recruit's current pipeline stage back into the canonical
  * `career_applications` store (ebright_hrfs.public), so the applications table
- * HR inspects always reflects where the candidate actually is — instead of
- * being stuck at its default 'new'. The link is rec_recruit.applicationId =
- * career_applications.id. Best-effort: a mirror failure never blocks the move
- * (the board's rec_recruit is still the live source of truth). We write the
- * human-readable stage NAME (what the board column shows).
+ * HR inspects reflects where the candidate is — instead of being stuck at its
+ * default 'new'. The link is rec_recruit.applicationId = career_applications.id.
+ * We translate the board stage's shortCode to the allowed coarse status (see
+ * CAREER_STATUS_BY_STAGE) so the write satisfies career_applications_stage_check.
+ * Best-effort: a mirror failure never blocks the move.
  */
 async function mirrorStageToCareerApplications(
   applicationIds: (number | null | undefined)[],
-  stageName: string,
+  stageShortCode: string,
 ): Promise<void> {
   const ids = applicationIds.filter(
     (x): x is number => typeof x === "number" && Number.isInteger(x),
   );
   if (!ids.length) return;
+  const status = careerStatusForStage(stageShortCode);
   try {
     // ids are DB-sourced integers (rec_recruit.applicationId) — safe to inline.
     await prisma.$executeRawUnsafe(
       `UPDATE public.career_applications SET stage = $1, updated_at = now() WHERE id IN (${ids.join(",")})`,
-      stageName,
+      status,
     );
   } catch (e) {
     console.warn(
@@ -109,15 +134,17 @@ export async function createRecruit(
     const branch = input.branch?.trim() || null;
 
     // Canonical store first: insert into career_applications. Its NOT NULL text
-    // columns get '' when unknown; stage carries the readable stage name.
+    // columns get '' when unknown; stage must be one of the allowed coarse
+    // statuses (career_applications_stage_check) — a brand-new manual candidate
+    // is 'new'.
     let applicationId: number | null = null;
     try {
       const rows = await prisma.$queryRawUnsafe<{ id: number }[]>(
         `INSERT INTO public.career_applications
            (name, phone, email, gender, education_level, city, position, stage, source)
-         VALUES ($1, $2, $3, '', '', '', $4, $5, 'manual')
+         VALUES ($1, $2, $3, '', '', '', $4, 'new', 'manual')
          RETURNING id`,
-        name, phone ?? "", email ?? "", input.employmentType, stage.name,
+        name, phone ?? "", email ?? "", input.employmentType,
       );
       applicationId = rows[0]?.id ?? null;
     } catch (e) {
@@ -203,7 +230,7 @@ export async function moveRecruit(recruitId: string, toStageId: string): Promise
     }
 
     // Mirror the new stage into the canonical career_applications store.
-    await mirrorStageToCareerApplications([recruit.applicationId], toStage.name);
+    await mirrorStageToCareerApplications([recruit.applicationId], toStage.shortCode);
 
     revalidatePath("/recruitment/opportunity");
     revalidatePath("/recruitment/dashboard");
@@ -254,7 +281,7 @@ export async function bulkMoveRecruits(
     }
 
     // Mirror the new stage into the canonical career_applications store.
-    await mirrorStageToCareerApplications(toMove.map((r) => r.applicationId), toStage.name);
+    await mirrorStageToCareerApplications(toMove.map((r) => r.applicationId), toStage.shortCode);
 
     revalidatePath("/recruitment/opportunity");
     revalidatePath("/recruitment/dashboard");
