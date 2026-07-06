@@ -328,6 +328,31 @@ export function RecruitmentBoard({
     router.refresh();
   }
 
+  // Move requested from the detail modal's "Move to stage" dropdown. Routes
+  // special stages (Interview Date / Resume Submission) through their popups —
+  // exactly like a drag — instead of moving straight there; otherwise it's a
+  // normal optimistic move. Closes the detail modal either way.
+  async function handleModalMove(recruitId: string, toStageId: string) {
+    const fromCol = columns.find((c) => c.recruits.some((r) => r.id === recruitId));
+    const rec = fromCol?.recruits.find((r) => r.id === recruitId);
+    if (!fromCol || !rec) { setDetailId(null); return; }
+    if (fromCol.id === toStageId) { setDetailId(null); return; } // no-op
+
+    const destCode = codeById.get(toStageId);
+    setDetailId(null);
+    if (destCode === INTERVIEW_CODE || destCode === RESUME_CODE) {
+      const ctx = { recruitId, name: rec.name, fromStageId: fromCol.id };
+      if (destCode === INTERVIEW_CODE) setInterviewFor(ctx);
+      else setResumeFor(ctx);
+      return;
+    }
+    const prev = columns;
+    moveCardLocal(recruitId, fromCol.id, toStageId);
+    const res = await moveRecruit(recruitId, toStageId);
+    if (!res.ok) { setColumns(prev); flash(res.error ?? "Move failed"); return; }
+    router.refresh();
+  }
+
   // Per-card delete (HR portal accounts). Soft-deletes the CARD only — never the
   // applicant/contact behind it.
   async function doDeleteCard(id: string) {
@@ -645,6 +670,7 @@ export function RecruitmentBoard({
         onClose={() => setDetailId(null)}
         stages={columns.map((c) => ({ id: c.id, name: c.name, shortCode: c.shortCode }))}
         onMoved={() => router.refresh()}
+        onMove={(toStageId) => detailId && handleModalMove(detailId, toStageId)}
       />
 
       {interviewFor && (

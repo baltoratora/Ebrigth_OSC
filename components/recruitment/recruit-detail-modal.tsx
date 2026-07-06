@@ -44,6 +44,7 @@ export function RecruitDetailModal({
   onClose,
   stages = [],
   onMoved,
+  onMove,
 }: {
   recruitId: string | null;
   onClose: () => void;
@@ -51,6 +52,13 @@ export function RecruitDetailModal({
   stages?: { id: string; name: string; shortCode: string }[];
   /** Called after a successful stage move so the board can refresh. */
   onMoved?: () => void;
+  /**
+   * When provided, the "Move to stage" dropdown delegates the move to the board
+   * instead of calling moveRecruit directly — so the board can intercept special
+   * stages (Interview Date / Resume Submission) with their popups, exactly like
+   * a drag would. The board is responsible for closing this modal.
+   */
+  onMove?: (toStageId: string) => void;
 }) {
   const [detail, setDetail] = useState<RecruitDetail | null>(null);
   const [loading, setLoading] = useState(false);
@@ -174,7 +182,7 @@ export function RecruitDetailModal({
               <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Move to</span>
               <select
                 value={stages.find((s) => s.shortCode === detail.stageShort)?.id ?? ""}
-                onChange={(e) => handleMove(e.target.value)}
+                onChange={(e) => (onMove ? onMove(e.target.value) : handleMove(e.target.value))}
                 disabled={moving}
                 className="max-w-55 rounded-lg border border-slate-300 bg-white/90 px-2 py-1 text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-white"
                 title="Move this candidate to another stage"
