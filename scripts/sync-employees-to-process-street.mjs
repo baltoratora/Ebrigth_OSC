@@ -74,12 +74,16 @@ const updateRecord = (dsId, id, cells) => ps(`/data-sets/${dsId}/records/${id}`,
 const deleteRecord = (dsId, id) => ps(`/data-sets/${dsId}/records/${id}`, { method: "DELETE" });
 
 async function ensureDataSet() {
-  const sets = await listDataSets();
+  let sets = await listDataSets();
   let ds = sets.find((d) => (d.name || "").trim() === DATA_SET_NAME);
   if (!ds) {
     console.log(`data set "${DATA_SET_NAME}" not found — ${APPLY ? "creating" : "would create"} it`);
-    if (APPLY) ds = await createDataSet(DATA_SET_NAME, COLUMNS.map(([n]) => n));
-    else return null; // dry run: can't map fields without a real data set
+    if (!APPLY) return null; // dry run: can't map fields without a real data set
+    await createDataSet(DATA_SET_NAME, COLUMNS.map(([n]) => n));
+    // The create response doesn't echo the fields — re-fetch to get their ids.
+    sets = await listDataSets();
+    ds = sets.find((d) => (d.name || "").trim() === DATA_SET_NAME);
+    if (!ds) throw new Error("created data set but could not re-fetch it");
   }
   const fieldIdByName = {};
   for (const f of ds.fields || []) fieldIdByName[(f.name || "").trim()] = f.id;
