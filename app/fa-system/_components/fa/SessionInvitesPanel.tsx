@@ -7,10 +7,11 @@ import { EmptyState } from "@fa/_components/shared/EmptyState";
 import { StatusPill } from "@fa/_components/fa/StatusPill";
 import { InvitationStatusSelector } from "@fa/_components/fa/InvitationStatusSelector";
 import { ConfirmProofModal } from "@fa/_components/fa/ConfirmProofModal";
+import { SchedulePracticeModal } from "@fa/_components/fa/SchedulePracticeModal";
 import { Invitation, InvitationStatus, Session, Student, hasBacklog, resolveStudentById, countsAsAttended, countsAsConfirmed } from "@fa/_types";
 
 export function SessionInvitesPanel({
-  session, quota, invitations, canInvite, isLocked, onOpenInvite, onStatusChange, onAttachProof, onRemove,
+  session, quota, invitations, canInvite, isLocked, onOpenInvite, onStatusChange, onAttachProof, onSchedulePractice, onRemove,
 }: {
   session: Session;
   quota: number;
@@ -20,30 +21,36 @@ export function SessionInvitesPanel({
   isLocked?: boolean;
   onOpenInvite: () => void;
   onStatusChange: (id: string, status: InvitationStatus) => void;
-  /** After a BM confirms, they can (optionally) attach a testing video link +
-   *  proof image. When provided, clicking "Confirmed" confirms immediately AND
-   *  opens the (skippable) proof modal. */
+  /** Attach a testing video link and/or proof image to a confirmed invitation.
+   *  Triggered manually via the "+Add video / proof" / "Edit" control. */
   onAttachProof?: (
     invId: string,
     args: { videoLink: string; base64Data: string | null; studentId: string; branch: string }
+  ) => Promise<void>;
+  /** After a BM confirms, they're prompted (optionally, skippable) to schedule
+   *  a practice-session date/time. When provided, clicking "Confirmed"
+   *  confirms immediately AND opens this scheduling popup. Neither field is
+   *  required — the student shows in the Practice sidebar either way. */
+  onSchedulePractice?: (
+    invId: string,
+    args: { practiceDate: string | null; practiceTime: string | null }
   ) => Promise<void>;
   onRemove: (inv: Invitation) => void;
 }) {
   // Treat missing isLocked as false (backwards-compat)
   const locked = isLocked ?? !canInvite;
   const students = useFAStore(s => s.students);
-  // The testing video + proof live in their own always-visible column (below)
-  // AND are prompted for right after confirming. This holds the row whose
-  // video/proof editor is open.
+  // Manual video/proof editor (via the "+Add"/"Edit" control in the column).
   const [editProofFor, setEditProofFor] = useState<{ inv: Invitation; name: string } | null>(null);
+  // Practice-schedule popup, auto-opened right after confirming.
+  const [schedulingFor, setSchedulingFor] = useState<{ inv: Invitation; name: string } | null>(null);
 
-  // Confirm immediately, then pop the proof editor so the branch is prompted to
-  // add the testing video + proof on the spot (the column keeps it editable
-  // later too). Other transitions (Pending / Declined / attendance) pass through.
+  // Confirm immediately, then pop the (skippable) practice-schedule prompt.
+  // Other transitions (Pending / Declined / attendance) pass straight through.
   function handleStatusChange(inv: Invitation, name: string, status: InvitationStatus) {
     onStatusChange(inv.id, status);
-    if (status === "confirmed" && onAttachProof) {
-      setEditProofFor({ inv, name });
+    if (status === "confirmed" && onSchedulePractice) {
+      setSchedulingFor({ inv, name });
     }
   }
   // `quota` from the page is marketing's confirm target. Invite cap is 3× that.
@@ -240,6 +247,19 @@ export function SessionInvitesPanel({
               studentId: editProofFor.inv.studentId,
               branch: editProofFor.inv.branch,
             });
+          }}
+        />
+      )}
+
+      {schedulingFor && onSchedulePractice && (
+        <SchedulePracticeModal
+          open
+          onClose={() => setSchedulingFor(null)}
+          studentName={schedulingFor.name}
+          initialDate={schedulingFor.inv.practiceDate ?? ""}
+          initialTime={schedulingFor.inv.practiceTime ?? ""}
+          onSave={async ({ practiceDate, practiceTime }) => {
+            await onSchedulePractice(schedulingFor.inv.id, { practiceDate, practiceTime });
           }}
         />
       )}

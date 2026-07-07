@@ -52,6 +52,7 @@ export default function BMEventDetailPage() {
   const inviteStudent = useFAStore(s => s.inviteStudent);
   const updateInvitationStatus = useFAStore(s => s.updateInvitationStatus);
   const attachInvitationProof = useFAStore(s => s.attachInvitationProof);
+  const scheduleInvitationPractice = useFAStore(s => s.scheduleInvitationPractice);
   const removeInvitation = useFAStore(s => s.removeInvitation);
   const loadEvents = useFAStore(s => s.loadEvents);
   const eventsLoading = useFAStore(s => s.eventsLoading);
@@ -320,6 +321,7 @@ export default function BMEventDetailPage() {
                 onOpenInvite={() => setInviteModalOpen(true)}
                 onStatusChange={(id, status) => updateInvitationStatus(id, status, user.id)}
                 onAttachProof={(id, args) => attachInvitationProof(id, { ...args, by: user.id })}
+                onSchedulePractice={(id, args) => scheduleInvitationPractice(id, args)}
                 onRemove={(inv) => setInvitationToRemove(inv)}
               />
             )}

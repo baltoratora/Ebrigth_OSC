@@ -5,11 +5,16 @@ import { MANAGEMENT_ROLES } from "@/lib/roles";
 
 export const dynamic = "force-dynamic";
 
-// Trial & Probation tracker, driven by public.career_applications.stage:
-//   trial → (feedback1 written, status1 = complete) → probation
-//   probation → (feedback2 written, status2 = accept|reject) → hired | rejected
-// The 4 columns are added on demand (ADD COLUMN IF NOT EXISTS) so no separate
-// migration is needed — same self-provisioning idea as flagged_action_log.
+// Trial & Probation tracker, driven by public.career_applications.board_stage
+// (the live recruitment-board stage name, e.g. "Candidate (CD)", "Trial",
+// "Hired") — NOT the separate `stage` column, which uses its own unrelated
+// vocabulary (new/screening/interview/offer) for a different pipeline and
+// must never be overwritten by this feature:
+//   board_stage='Trial'     → (feedback1 written, status1=complete) → 'Probation'
+//   board_stage='Probation' → (feedback2 written, status2=accept|reject) → 'Hired' | 'Rejected'
+// The 4 status/feedback columns are added on demand (ADD COLUMN IF NOT
+// EXISTS) so no separate migration is needed — same self-provisioning idea
+// as flagged_action_log.
 async function ensureColumns(): Promise<void> {
   await hrfsPrisma.$executeRawUnsafe(`
     ALTER TABLE public.career_applications
@@ -20,9 +25,9 @@ async function ensureColumns(): Promise<void> {
 }
 
 const SELECT_COLS =
-  `id, name, position, stage, feedback1, feedback2, status1, status2`;
+  `id, name, position, board_stage, feedback1, feedback2, status1, status2`;
 
-// GET → applications currently in the trial or probation stage.
+// GET → applications currently on the Trial or Probation board stage.
 export async function GET() {
   const { error } = await requireRole(MANAGEMENT_ROLES);
   if (error) return error;
@@ -30,8 +35,8 @@ export async function GET() {
     await ensureColumns();
     const rows = await hrfsPrisma.$queryRawUnsafe<Record<string, unknown>[]>(
       `SELECT ${SELECT_COLS} FROM public.career_applications
-        WHERE LOWER(stage) IN ('trial', 'probation')
-        ORDER BY stage, name`
+        WHERE LOWER(board_stage) IN ('trial', 'probation')
+        ORDER BY board_stage, name`
     );
     return NextResponse.json({ entries: rows });
   } catch (err) {
@@ -42,9 +47,10 @@ export async function GET() {
 
 // PATCH → save feedback text, or run a stage action.
 // Body: { id, feedback1?, feedback2?, action? }
-//   action: "complete_trial" → status1='complete', stage='probation'
-//           "accept"         → status2='accept',   stage='hired'
-//           "reject"         → status2='reject',   stage='rejected'
+//   action: "complete_trial" → status1='accept', board_stage='Probation'
+//           "reject_trial"   → status1='reject', board_stage='Rejected'
+//           "accept"         → status2='accept', board_stage='Hired'
+//           "reject"         → status2='reject', board_stage='Rejected'
 export async function PATCH(req: NextRequest) {
   const { error } = await requireRole(MANAGEMENT_ROLES);
   if (error) return error;
@@ -63,13 +69,16 @@ export async function PATCH(req: NextRequest) {
 
     switch (body?.action) {
       case "complete_trial":
-        sets.push(`status1 = 'complete'`, `stage = 'probation'`);
+        sets.push(`status1 = 'accept'`, `board_stage = 'Probation'`);
+        break;
+      case "reject_trial":
+        sets.push(`status1 = 'reject'`, `board_stage = 'Rejected'`);
         break;
       case "accept":
-        sets.push(`status2 = 'accept'`, `stage = 'hired'`);
+        sets.push(`status2 = 'accept'`, `board_stage = 'Hired'`);
         break;
       case "reject":
-        sets.push(`status2 = 'reject'`, `stage = 'rejected'`);
+        sets.push(`status2 = 'reject'`, `board_stage = 'Rejected'`);
         break;
       case undefined:
       case null:

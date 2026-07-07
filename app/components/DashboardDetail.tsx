@@ -50,6 +50,7 @@ const dashboards: DashboardCard[] = [
       { key: "hrms.manpower-planning",name: "Manpower Planning",   href: "/manpower-schedule",             icon: "🗂️" },
       { key: "hrms.claims",           name: "Claims",              href: "/claim",                         icon: "💰" },
       { key: "hrms.attendance",       name: "Attendance",          href: "/attendance",                    icon: "⏰" },
+      { key: "hrms.attendance-manual",name: "Attendance Manual",   href: "/attendance-manual",             icon: "✍️" },
       { key: "hrms.recruitment",      name: "Recruitment",         href: "/recruitment",                   icon: "🧑‍💼" },
       { key: "hrms.onboarding",       name: "Onboarding",          href: "/onboarding",                    icon: "🟢" },
       { key: "hrms.offboarding",      name: "Offboarding",         href: "/offboarding",                   icon: "🔴" },

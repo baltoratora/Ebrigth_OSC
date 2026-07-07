@@ -383,6 +383,13 @@ export interface Invitation {
    *  Both are surfaced to Marketing. */
   videoLink?: string;
   proofUrl?: string;
+  /** Practice-session scheduling, set from the "Schedule practice session"
+   *  popup shown right after confirming (or later, from the Practice sidebar).
+   *  Both are OPTIONAL and never gate whether the student appears in the
+   *  Practice sidebar — a confirmed student shows there with or without a
+   *  scheduled date/time. */
+  practiceDate?: string;
+  practiceTime?: string;
 }
 
 // ----------------------------------------------------------------------------

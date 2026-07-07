@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { ArrowLeft, Award, ChevronRight, Clock, Printer, Download } from "lucide-react";
 import { Modal } from "@fa/_components/shared/Modal";
 import { useFAStore } from "@fa/_lib/store";
-import { BRANCHES, FAEvent, Invitation, Session, Student, countsAsAttended } from "@fa/_types";
+import { BRANCHES, FAEvent, Invitation, Session, Student, countsAsAttended, gradeLabel } from "@fa/_types";
 import { formatDateRange } from "@fa/_lib/date";
 import { downloadCSV } from "@fa/_lib/csv";
 
@@ -34,6 +34,31 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
   // below; the two flows render into the same print portal but only one is
   // populated at a time.
   const [bulk, setBulk] = useState<BulkBatch | null>(null);
+
+  // Grade filter — applies to every action in this modal (event/day/session
+  // Print + Canva CSV, and the student list). Empty set = no filter (all
+  // grades), matching the same "empty selection = show all" convention used
+  // elsewhere in this app (e.g. branch multi-selects).
+  const [gradeFilter, setGradeFilter] = useState<Set<number>>(new Set());
+
+  function certGrade(inv: Invitation, student: Student | null | undefined): number {
+    if (inv.targetGrade && inv.targetGrade > 0) return inv.targetGrade;
+    return student?.grade ?? 0;
+  }
+
+  function passesGradeFilter(inv: Invitation): boolean {
+    if (gradeFilter.size === 0) return true;
+    const student = allStudents.find(s => s.id === inv.studentId);
+    return gradeFilter.has(certGrade(inv, student));
+  }
+
+  function toggleGrade(g: number) {
+    setGradeFilter(prev => {
+      const next = new Set(prev);
+      if (next.has(g)) next.delete(g); else next.add(g);
+      return next;
+    });
+  }
 
   useEffect(() => {
     if (!bulk) return;
@@ -66,7 +91,7 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
   function printAllForSession(sessId: string) {
     const invs = allInvitations.filter(
       i => i.sessionId === sessId && (i.status === "confirmed" || countsAsAttended(i.status))
-    );
+    ).filter(passesGradeFilter);
     if (invs.length === 0) return;
     setBulk(buildBatch(invs));
   }
@@ -74,7 +99,7 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
   function printAllForEvent() {
     const invs = allInvitations.filter(
       i => i.eventId === event.id && (i.status === "confirmed" || countsAsAttended(i.status))
-    );
+    ).filter(passesGradeFilter);
     if (invs.length === 0) return;
     setBulk(buildBatch(invs));
   }
@@ -131,7 +156,7 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
   function exportCanvaForSession(sessId: string) {
     const invs = allInvitations.filter(
       i => i.sessionId === sessId && (i.status === "confirmed" || countsAsAttended(i.status))
-    );
+    ).filter(passesGradeFilter);
     const sess = allSessions.find(s => s.id === sessId);
     const suffix = sess ? `D${sess.dayNumber}S${sess.sessionNumber}` : "session";
     exportCanvaCSV(invs, suffix);
@@ -140,7 +165,7 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
   function exportCanvaForEvent() {
     const invs = allInvitations.filter(
       i => i.eventId === event.id && (i.status === "confirmed" || countsAsAttended(i.status))
-    );
+    ).filter(passesGradeFilter);
     exportCanvaCSV(invs, "all");
   }
 
@@ -150,7 +175,7 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
       if (i.status !== "confirmed" && !countsAsAttended(i.status)) return false;
       const sess = allSessions.find(s => s.id === i.sessionId);
       return sess?.dayNumber === day;
-    });
+    }).filter(passesGradeFilter);
     if (dayInvs.length === 0) return;
     setBulk(buildBatch(dayInvs));
   }
@@ -161,7 +186,7 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
       if (i.status !== "confirmed" && !countsAsAttended(i.status)) return false;
       const sess = allSessions.find(s => s.id === i.sessionId);
       return sess?.dayNumber === day;
-    });
+    }).filter(passesGradeFilter);
     exportCanvaCSV(dayInvs, `D${day}`);
   }
 
@@ -178,16 +203,30 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
     [allSessions, event.id]
   );
 
+  // Every grade present among this event's cert-eligible invitations — drives
+  // the filter chips below. Only shows grades that actually exist here.
+  const availableGrades = useMemo(() => {
+    const set = new Set<number>();
+    for (const i of allInvitations) {
+      if (i.eventId !== event.id) continue;
+      if (i.status !== "confirmed" && !countsAsAttended(i.status)) continue;
+      const student = allStudents.find(s => s.id === i.studentId);
+      const g = certGrade(i, student);
+      if (g > 0) set.add(g);
+    }
+    return Array.from(set).sort((a, b) => a - b);
+  }, [allInvitations, allStudents, event.id]);
+
   // Per-session expected-attendee counts for the session picker view.
   const sessionExpectedCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const s of eventSessions) {
       counts[s.id] = allInvitations.filter(
         i => i.sessionId === s.id && (i.status === "confirmed" || countsAsAttended(i.status))
-      ).length;
+      ).filter(passesGradeFilter).length;
     }
     return counts;
-  }, [eventSessions, allInvitations]);
+  }, [eventSessions, allInvitations, gradeFilter, allStudents]);
 
   const selectedSession = sessionId
     ? eventSessions.find(s => s.id === sessionId) ?? null
@@ -198,10 +237,11 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
     if (!selectedSession) return [];
     return allInvitations
       .filter(i => i.sessionId === selectedSession.id && (i.status === "confirmed" || countsAsAttended(i.status)))
+      .filter(passesGradeFilter)
       .map(i => ({ inv: i, student: allStudents.find(s => s.id === i.studentId) ?? null }))
       .filter((x): x is { inv: Invitation; student: Student } => x.student !== null)
       .sort((a, b) => a.student.name.localeCompare(b.student.name));
-  }, [selectedSession, allInvitations, allStudents]);
+  }, [selectedSession, allInvitations, allStudents, gradeFilter]);
 
   const previewStudent = studentInv
     ? allStudents.find(s => s.id === studentInv.studentId) ?? null
@@ -238,6 +278,42 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
               know what to do with the CSV download. Always visible at the
               top of the session picker. */}
           <CanvaGuide />
+
+          {/* Grade filter — narrows every action below (event/day/session
+              Print + Canva CSV, and the student list) to only the selected
+              grade(s). No selection = all grades. */}
+          {availableGrades.length > 0 && (
+            <div className="flex items-center flex-wrap gap-1.5 pb-3 mb-3 border-b border-ivory-300">
+              <span className="fa-mono text-[10px] uppercase text-ink-400 mr-1" style={{ letterSpacing: "0.08em" }}>
+                Grade
+              </span>
+              <button
+                type="button"
+                onClick={() => setGradeFilter(new Set())}
+                className={`px-2.5 py-1 rounded-full text-xs font-semibold transition-colors ${
+                  gradeFilter.size === 0
+                    ? "bg-ink-900 text-ivory-50"
+                    : "bg-ivory-100 text-ink-600 hover:bg-ivory-200"
+                }`}
+              >
+                All
+              </button>
+              {availableGrades.map(g => (
+                <button
+                  key={g}
+                  type="button"
+                  onClick={() => toggleGrade(g)}
+                  className={`px-2.5 py-1 rounded-full text-xs font-semibold transition-colors ${
+                    gradeFilter.has(g)
+                      ? "bg-gold-500 text-white"
+                      : "bg-ivory-100 text-ink-600 hover:bg-ivory-200"
+                  }`}
+                >
+                  {gradeLabel(g)}
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* Bulk-print actions */}
           {(() => {
@@ -389,6 +465,11 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
             >
               <ArrowLeft className="w-3.5 h-3.5" /> All sessions
             </button>
+            {gradeFilter.size > 0 && (
+              <span className="fa-mono text-[10px] font-semibold px-2 py-0.5 rounded-full bg-gold-100 text-gold-700">
+                Grade filter: {Array.from(gradeFilter).sort((a, b) => a - b).map(gradeLabel).join(", ")}
+              </span>
+            )}
             <div className="text-xs text-ink-500 ml-auto">
               {sessionAttendees.length} certificate{sessionAttendees.length !== 1 ? "s" : ""}
             </div>

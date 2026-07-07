@@ -79,6 +79,30 @@ interface InvitationRow {
   student_name_snapshot?: string | null;
   video_link?: string | null;
   proof_url?: string | null;
+  practice_date?: string | null;
+  practice_time?: string | null;
+}
+
+// Self-provisioning columns for the confirm-proof + practice-scheduling
+// feature. Same idea as ensureTable()/ensureColumns() elsewhere in this app
+// (e.g. flagged_action_log, career_applications): run once per server process
+// via ADD COLUMN IF NOT EXISTS, so the columns exist before any write touches
+// them — no separate manual migration step required.
+let columnsEnsured: Promise<void> | null = null;
+function ensureConfirmProofColumns(): Promise<void> {
+  if (!columnsEnsured) {
+    columnsEnsured = pool.query(`
+      ALTER TABLE fa_invitations
+        ADD COLUMN IF NOT EXISTS video_link    text,
+        ADD COLUMN IF NOT EXISTS proof_url     text,
+        ADD COLUMN IF NOT EXISTS practice_date date,
+        ADD COLUMN IF NOT EXISTS practice_time text
+    `).then(() => undefined).catch((err) => {
+      columnsEnsured = null; // let the next call retry
+      throw err;
+    });
+  }
+  return columnsEnsured;
 }
 
 interface EventBranchOverrideRow {
@@ -99,6 +123,15 @@ function isoTimestamp(d: Date | string | null): string | undefined {
   if (d == null) return undefined;
   if (d instanceof Date) return d.toISOString();
   return String(d);
+}
+
+/** Date-only field (e.g. practice_date), null-safe. Postgres `date` columns
+ *  come back as a UTC-midnight Date via node-pg; toISOString() is always UTC
+ *  so this reads the calendar date correctly regardless of server timezone. */
+function isoDateOrNull(d: Date | string | null | undefined): string | undefined {
+  if (d == null) return undefined;
+  if (d instanceof Date) return d.toISOString().split("T")[0];
+  return String(d).split("T")[0];
 }
 
 function rowToEvent(r: EventRow): FAEvent {
@@ -176,18 +209,18 @@ function rowToInvitation(r: InvitationRow): Invitation {
     studentNameSnapshot: r.student_name_snapshot ?? undefined,
     videoLink: r.video_link ?? undefined,
     proofUrl: r.proof_url ?? undefined,
+    practiceDate: isoDateOrNull(r.practice_date),
+    practiceTime: r.practice_time ?? undefined,
   };
 }
 
-// RETURNING column lists for fa_invitations writes. FULL includes the
-// confirm-proof columns (video_link/proof_url); CORE omits them so writes still
-// succeed when that migration (prisma/sql/2026-07-02-fa-invitation-confirm-proof.sql)
-// hasn't been applied yet. Callers try FULL, then fall back to CORE on 42703
-// (undefined_column) — so inviting/confirming never 500s pre-migration.
-const INV_RETURNING_CORE =
+// RETURNING column list for fa_invitations writes. ensureConfirmProofColumns()
+// runs before every write that uses this, so video_link/proof_url/practice_date/
+// practice_time are always present by the time this SELECT runs.
+const INV_RETURNING_FULL =
   `id, event_id, session_id, student_id, branch, target_grade, status, invited_by,
-   invited_at, confirmed_at, attendance_marked_at, attendance_marked_by, notes, student_name_snapshot`;
-const INV_RETURNING_FULL = `${INV_RETURNING_CORE}, video_link, proof_url`;
+   invited_at, confirmed_at, attendance_marked_at, attendance_marked_by, notes, student_name_snapshot,
+   video_link, proof_url, practice_date, practice_time`;
 
 // ----------------------------------------------------------------------------
 // Reads
@@ -200,6 +233,7 @@ export async function fetchAllEventData(): Promise<{
   invitations: Invitation[];
   overrides: EventBranchOverride[];
 }> {
+  await ensureConfirmProofColumns();
   const [eventsRes, sessionsRes, quotasRes, invitationsRes, overridesRes] = await Promise.all([
     pool.query<EventRow>(
       `SELECT id, name, month, year, venue, start_date, end_date, number_of_days,
@@ -224,26 +258,11 @@ export async function fetchAllEventData(): Promise<{
     pool.query<InvitationRow>(
       `SELECT id, event_id, session_id, student_id, branch, target_grade, status, invited_by,
               invited_at, confirmed_at, attendance_marked_at, attendance_marked_by, notes,
-              student_name_snapshot, video_link, proof_url
+              student_name_snapshot, video_link, proof_url, practice_date, practice_time
          FROM fa_invitations
         WHERE tenant_id = $1`,
       [TENANT]
-    ).catch((err) => {
-      // undefined_column — the video_link/proof_url migration hasn't been
-      // applied yet. Fall back to the legacy shape so the FA dashboard still
-      // loads; the confirm-proof fields just render empty until it's migrated.
-      if ((err as { code?: string }).code === "42703") {
-        return pool.query<InvitationRow>(
-          `SELECT id, event_id, session_id, student_id, branch, target_grade, status, invited_by,
-                  invited_at, confirmed_at, attendance_marked_at, attendance_marked_by, notes,
-                  student_name_snapshot
-             FROM fa_invitations
-            WHERE tenant_id = $1`,
-          [TENANT]
-        );
-      }
-      throw err;
-    }),
+    ),
     // Per-event per-branch multi-grade overrides. The fa_event_branch_overrides
     // table may not exist on older deploys yet — wrap in a try so the FA
     // dashboard still loads if the migration hasn't been applied.
@@ -656,31 +675,25 @@ export async function createInvitationRow(args: {
   }
 
   // 3. INSERT — final DB safety net via UNIQUE(event, student, target_grade).
-  const insertSql = (returning: string) =>
-    `INSERT INTO fa_invitations
-         (tenant_id, event_id, session_id, student_id, branch, target_grade, status, invited_by, invited_at, confirmed_at, student_name_snapshot)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), CASE WHEN $7 IN ('confirmed', 'walk_in') THEN now() ELSE NULL END,
-               -- Snapshot the student's name at invite time so the roster can
-               -- still show who this is even if the student id later breaks
-               -- (archive/restore/delete). Mirrors pcm_invitations.
-               COALESCE(
-                 (SELECT name FROM studentrecords WHERE id::text = $4),
-                 (SELECT name FROM archived_students
-                   WHERE student_id = $4 OR student_id = 'arch-' || $4 OR no::text = $4
-                   LIMIT 1)
-               ))
-       RETURNING ${returning}`;
+  await ensureConfirmProofColumns();
   const insertArgs = [TENANT, args.eventId, args.sessionId, args.studentId, args.branch, args.targetGrade, args.status, args.invitedBy];
   try {
-    let rows: InvitationRow[];
-    try {
-      ({ rows } = await pool.query<InvitationRow>(insertSql(INV_RETURNING_FULL), insertArgs));
-    } catch (err) {
-      // video_link/proof_url migration not applied yet — retry without them.
-      if ((err as { code?: string }).code === "42703") {
-        ({ rows } = await pool.query<InvitationRow>(insertSql(INV_RETURNING_CORE), insertArgs));
-      } else throw err;
-    }
+    const { rows } = await pool.query<InvitationRow>(
+      `INSERT INTO fa_invitations
+           (tenant_id, event_id, session_id, student_id, branch, target_grade, status, invited_by, invited_at, confirmed_at, student_name_snapshot)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), CASE WHEN $7 IN ('confirmed', 'walk_in') THEN now() ELSE NULL END,
+                 -- Snapshot the student's name at invite time so the roster can
+                 -- still show who this is even if the student id later breaks
+                 -- (archive/restore/delete). Mirrors pcm_invitations.
+                 COALESCE(
+                   (SELECT name FROM studentrecords WHERE id::text = $4),
+                   (SELECT name FROM archived_students
+                     WHERE student_id = $4 OR student_id = 'arch-' || $4 OR no::text = $4
+                     LIMIT 1)
+                 ))
+         RETURNING ${INV_RETURNING_FULL}`,
+      insertArgs,
+    );
     return rowToInvitation(rows[0]);
   } catch (err) {
     const code = (err as { code?: string }).code;
@@ -702,67 +715,58 @@ export async function updateInvitationRow(
     videoLink?: string;
     /** Confirm-proof: Google Drive link to the uploaded proof image. */
     proofUrl?: string;
+    /** Practice-session scheduling: both optional, neither gates the other. */
+    practiceDate?: string | null;
+    practiceTime?: string | null;
   }
 ): Promise<Invitation | null> {
-  // Build + run the UPDATE. `includeProof` controls whether the video_link/
-  // proof_url columns are touched — omitted on the fallback path when that
-  // migration hasn't been applied yet, so core status/session updates still work.
-  async function run(includeProof: boolean): Promise<InvitationRow | null> {
-    const fields: string[] = [];
-    const values: unknown[] = [];
-    let i = 1;
-    if (patch.status !== undefined) {
-      fields.push(`status = $${i++}`);
-      values.push(patch.status);
-      if (patch.status === "confirmed") {
-        fields.push(`confirmed_at = now()`);
-      }
-      if (patch.status === "attended" || patch.status === "no_show" || patch.status === "walk_in") {
-        fields.push(`attendance_marked_at = now()`);
-        if (patch.markedBy) {
-          fields.push(`attendance_marked_by = $${i++}`);
-          values.push(patch.markedBy);
-        }
+  await ensureConfirmProofColumns();
+  const fields: string[] = [];
+  const values: unknown[] = [];
+  let i = 1;
+  if (patch.status !== undefined) {
+    fields.push(`status = $${i++}`);
+    values.push(patch.status);
+    if (patch.status === "confirmed") {
+      fields.push(`confirmed_at = now()`);
+    }
+    if (patch.status === "attended" || patch.status === "no_show" || patch.status === "walk_in") {
+      fields.push(`attendance_marked_at = now()`);
+      if (patch.markedBy) {
+        fields.push(`attendance_marked_by = $${i++}`);
+        values.push(patch.markedBy);
       }
     }
-    if (patch.sessionId !== undefined) {
-      fields.push(`session_id = $${i++}`);
-      values.push(patch.sessionId);
-    }
-    if (includeProof && patch.videoLink !== undefined) {
-      fields.push(`video_link = $${i++}`);
-      values.push(patch.videoLink || null);
-    }
-    if (includeProof && patch.proofUrl !== undefined) {
-      fields.push(`proof_url = $${i++}`);
-      values.push(patch.proofUrl || null);
-    }
-    if (fields.length === 0) return null;
-    fields.push(`updated_at = now()`);
-    values.push(id, TENANT);
-    const { rows } = await pool.query<InvitationRow>(
-      `UPDATE fa_invitations SET ${fields.join(", ")} WHERE id = $${i++} AND tenant_id = $${i}
-       RETURNING ${includeProof ? INV_RETURNING_FULL : INV_RETURNING_CORE}`,
-      values
-    );
-    return rows[0] ?? null;
   }
-
-  let row: InvitationRow | null;
-  try {
-    row = await run(true);
-  } catch (err) {
-    if ((err as { code?: string }).code === "42703") {
-      // video_link/proof_url migration not applied yet — retry core columns so
-      // status/session updates still work. Proof won't persist until migrated.
-      console.warn(
-        "[fa] fa_invitations.video_link/proof_url missing — update fell back to core columns; run the confirm-proof migration"
-      );
-      row = await run(false);
-    } else {
-      throw err;
-    }
+  if (patch.sessionId !== undefined) {
+    fields.push(`session_id = $${i++}`);
+    values.push(patch.sessionId);
   }
+  if (patch.videoLink !== undefined) {
+    fields.push(`video_link = $${i++}`);
+    values.push(patch.videoLink || null);
+  }
+  if (patch.proofUrl !== undefined) {
+    fields.push(`proof_url = $${i++}`);
+    values.push(patch.proofUrl || null);
+  }
+  if (patch.practiceDate !== undefined) {
+    fields.push(`practice_date = $${i++}`);
+    values.push(patch.practiceDate || null);
+  }
+  if (patch.practiceTime !== undefined) {
+    fields.push(`practice_time = $${i++}`);
+    values.push(patch.practiceTime || null);
+  }
+  if (fields.length === 0) return null;
+  fields.push(`updated_at = now()`);
+  values.push(id, TENANT);
+  const { rows } = await pool.query<InvitationRow>(
+    `UPDATE fa_invitations SET ${fields.join(", ")} WHERE id = $${i++} AND tenant_id = $${i}
+     RETURNING ${INV_RETURNING_FULL}`,
+    values,
+  );
+  const row = rows[0] ?? null;
   if (!row) return null;
   const invitation = rowToInvitation(row);
   // When attendance is marked, persist the picked grade onto the student's
