@@ -9,7 +9,11 @@ import { ROLES, normalizeRole } from "@/lib/roles";
 import { getHrfsCandidate, type HrfsCandidate } from "@/lib/recruitment/hrfs-candidate";
 import { isTrainingCode } from "@/lib/recruitment/training";
 import { phoneKey } from "@/lib/recruitment/dedupe";
-import { EMPLOYMENT_TYPES, type EmploymentType } from "@/lib/recruitment/employment";
+import {
+  EMPLOYMENT_TYPES, type EmploymentType,
+  GENDERS, type Gender,
+  EDUCATION_LEVELS, type EducationLevel,
+} from "@/lib/recruitment/employment";
 
 const ALLOWED = new Set<string>([ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD]);
 
@@ -98,6 +102,8 @@ async function mirrorStageToCareerApplications(
 export interface CreateRecruitInput {
   name: string;
   employmentType: EmploymentType;
+  gender: Gender;
+  educationLevel: EducationLevel;
   phone?: string | null;
   email?: string | null;
   branch?: string | null;
@@ -129,6 +135,10 @@ export async function createRecruit(
     if (!EMPLOYMENT_TYPES.includes(input.employmentType)) {
       return { ok: false, error: "Choose Internship, Part Time or Full Time" };
     }
+    if (!GENDERS.includes(input.gender)) return { ok: false, error: "Choose a gender" };
+    if (!EDUCATION_LEVELS.includes(input.educationLevel)) {
+      return { ok: false, error: "Choose an education level" };
+    }
 
     // File the card under the type's stage; fall back to the first stage if that
     // shortCode isn't configured on this pipeline.
@@ -153,9 +163,9 @@ export async function createRecruit(
       const rows = await prisma.$queryRawUnsafe<{ id: number }[]>(
         `INSERT INTO public.career_applications
            (name, phone, email, gender, education_level, city, position, stage, source)
-         VALUES ($1, $2, $3, '', '', '', $4, 'new', 'manual')
+         VALUES ($1, $2, $3, $4, $5, '', $6, 'new', 'manual')
          RETURNING id`,
-        name, phone ?? "", email ?? "", input.employmentType,
+        name, phone ?? "", email ?? "", input.gender, input.educationLevel, input.employmentType,
       );
       applicationId = rows[0]?.id ?? null;
     } catch (e) {

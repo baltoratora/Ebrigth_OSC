@@ -815,10 +815,10 @@ interface KanbanBoardProps {
 // CSV download for the opportunities export (BOM so Excel reads UTF-8 right).
 function downloadOpportunitiesCsv(rows: OppExportRow[]) {
   const esc = (v: string) => `"${(v ?? '').replace(/"/g, '""')}"`
-  const header = ['Name', 'Parent', 'Phone', 'Email', 'Date Created', 'Date Updated', 'Current Stage', 'Lead Source', 'Remarks']
+  const header = ['Name', 'Parent', 'Phone', 'Email', 'Branch', 'Date Created', 'Date Updated', 'Current Stage', 'Lead Source', 'Remarks']
   const lines = [
     header.join(','),
-    ...rows.map((r) => [r.name, r.parent, r.phone, r.email, r.createdAt, r.updatedAt, r.stage, r.leadSource, r.remarks].map(esc).join(',')),
+    ...rows.map((r) => [r.name, r.parent, r.phone, r.email, r.branch, r.createdAt, r.updatedAt, r.stage, r.leadSource, r.remarks].map(esc).join(',')),
   ]
   const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)

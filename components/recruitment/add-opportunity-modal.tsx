@@ -3,7 +3,11 @@
 import { useState } from "react";
 import { X, UserPlus, Loader2 } from "lucide-react";
 import { createRecruit } from "@/app/recruitment/_actions";
-import { EMPLOYMENT_TYPES, type EmploymentType } from "@/lib/recruitment/employment";
+import {
+  EMPLOYMENT_TYPES, type EmploymentType,
+  GENDERS, type Gender,
+  EDUCATION_LEVELS, type EducationLevel,
+} from "@/lib/recruitment/employment";
 
 const FIELD =
   "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-800 dark:text-white";
@@ -23,6 +27,8 @@ export function AddOpportunityModal({
 }) {
   const [name, setName] = useState("");
   const [employmentType, setEmploymentType] = useState<EmploymentType>("Full Time");
+  const [gender, setGender] = useState<Gender>("Male");
+  const [educationLevel, setEducationLevel] = useState<EducationLevel>("Degree");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [branch, setBranch] = useState("");
@@ -33,7 +39,7 @@ export function AddOpportunityModal({
     if (!name.trim()) { setError("Candidate name is required"); return; }
     setBusy(true);
     setError(null);
-    const res = await createRecruit({ name, employmentType, phone, email, branch });
+    const res = await createRecruit({ name, employmentType, gender, educationLevel, phone, email, branch });
     setBusy(false);
     if (!res.ok) { setError(res.error ?? "Could not add opportunity"); return; }
     onCreated();
@@ -84,6 +90,25 @@ export function AddOpportunityModal({
                   {t}
                 </button>
               ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                Gender <span className="text-rose-500">*</span>
+              </label>
+              <select value={gender} onChange={(e) => setGender(e.target.value as Gender)} className={FIELD}>
+                {GENDERS.map((g) => <option key={g} value={g}>{g}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                Education level <span className="text-rose-500">*</span>
+              </label>
+              <select value={educationLevel} onChange={(e) => setEducationLevel(e.target.value as EducationLevel)} className={FIELD}>
+                {EDUCATION_LEVELS.map((ed) => <option key={ed} value={ed}>{ed}</option>)}
+              </select>
             </div>
           </div>
 
