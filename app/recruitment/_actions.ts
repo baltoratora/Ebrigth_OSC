@@ -55,32 +55,43 @@ function careerStatusForStage(shortCode: string): string {
 /**
  * Mirror a recruit's current pipeline stage back into the canonical
  * `career_applications` store (ebright_hrfs.public), so the applications table
- * HR inspects reflects where the candidate is — instead of being stuck at its
- * default 'new'. The link is rec_recruit.applicationId = career_applications.id.
- * We translate the board stage's shortCode to the allowed coarse status (see
- * CAREER_STATUS_BY_STAGE) so the write satisfies career_applications_stage_check.
- * Best-effort: a mirror failure never blocks the move.
+ * reflects where the candidate is. The link is rec_recruit.applicationId =
+ * career_applications.id. We write TWO columns:
+ *   - `stage`       — the coarse status (CAREER_STATUS_BY_STAGE), constrained by
+ *                     career_applications_stage_check; what the OTHER system reads.
+ *   - `board_stage` — the EXACT board stage name (free text), so HR sees the
+ *                     precise pipeline position.
+ * Done as two separate best-effort writes so that if `board_stage` doesn't exist
+ * yet (column not added), the coarse `stage` still updates — and neither ever
+ * blocks the move.
  */
 async function mirrorStageToCareerApplications(
   applicationIds: (number | null | undefined)[],
   stageShortCode: string,
+  stageName: string,
 ): Promise<void> {
   const ids = applicationIds.filter(
     (x): x is number => typeof x === "number" && Number.isInteger(x),
   );
   if (!ids.length) return;
-  const status = careerStatusForStage(stageShortCode);
+  // ids are DB-sourced integers (rec_recruit.applicationId) — safe to inline.
+  const inClause = ids.join(",");
   try {
-    // ids are DB-sourced integers (rec_recruit.applicationId) — safe to inline.
     await prisma.$executeRawUnsafe(
-      `UPDATE public.career_applications SET stage = $1, updated_at = now() WHERE id IN (${ids.join(",")})`,
-      status,
+      `UPDATE public.career_applications SET stage = $1, updated_at = now() WHERE id IN (${inClause})`,
+      careerStatusForStage(stageShortCode),
     );
   } catch (e) {
-    console.warn(
-      "[recruitment] career_applications stage mirror failed (move still applied):",
-      (e as Error).message,
+    console.warn("[recruitment] career_applications stage mirror failed:", (e as Error).message);
+  }
+  try {
+    await prisma.$executeRawUnsafe(
+      `UPDATE public.career_applications SET board_stage = $1 WHERE id IN (${inClause})`,
+      stageName,
     );
+  } catch (e) {
+    // board_stage column may not exist yet — non-fatal.
+    console.warn("[recruitment] career_applications board_stage mirror skipped:", (e as Error).message);
   }
 }
 
@@ -124,9 +135,9 @@ export async function createRecruit(
     const stage =
       (await prisma.recStage.findFirst({
         where: { shortCode: STAGE_BY_TYPE[input.employmentType] },
-        select: { id: true, name: true },
+        select: { id: true, name: true, shortCode: true },
       })) ??
-      (await prisma.recStage.findFirst({ orderBy: { order: "asc" }, select: { id: true, name: true } }));
+      (await prisma.recStage.findFirst({ orderBy: { order: "asc" }, select: { id: true, name: true, shortCode: true } }));
     if (!stage) return { ok: false, error: "No recruitment stages configured" };
 
     const email = input.email?.trim() || null;
@@ -170,6 +181,10 @@ export async function createRecruit(
       },
       select: { id: true },
     });
+
+    // Set board_stage (exact name) on the application; stage stays 'new'. Uses
+    // the shared mirror so the coarse status + board_stage stay consistent.
+    await mirrorStageToCareerApplications([applicationId], stage.shortCode, stage.name);
 
     // Best-effort initial history entry — never block the create on it.
     try {
@@ -230,7 +245,7 @@ export async function moveRecruit(recruitId: string, toStageId: string): Promise
     }
 
     // Mirror the new stage into the canonical career_applications store.
-    await mirrorStageToCareerApplications([recruit.applicationId], toStage.shortCode);
+    await mirrorStageToCareerApplications([recruit.applicationId], toStage.shortCode, toStage.name);
 
     revalidatePath("/recruitment/opportunity");
     revalidatePath("/recruitment/dashboard");
@@ -281,7 +296,7 @@ export async function bulkMoveRecruits(
     }
 
     // Mirror the new stage into the canonical career_applications store.
-    await mirrorStageToCareerApplications(toMove.map((r) => r.applicationId), toStage.shortCode);
+    await mirrorStageToCareerApplications(toMove.map((r) => r.applicationId), toStage.shortCode, toStage.name);
 
     revalidatePath("/recruitment/opportunity");
     revalidatePath("/recruitment/dashboard");
