@@ -11,6 +11,7 @@ export interface OppExportRow {
   parent: string
   phone: string
   email: string
+  branch: string
   createdAt: string
   updatedAt: string
   stage: string
@@ -53,6 +54,7 @@ export async function exportOpportunities(
         createdAt: true,
         updatedAt: true,
         stage: { select: { name: true } },
+        branch: { select: { name: true } },
         contact: {
           select: {
             firstName: true, lastName: true, parentFullName: true,
@@ -74,6 +76,7 @@ export async function exportOpportunities(
       parent: o.contact.parentFullName ?? '',
       phone: o.contact.phone ?? '',
       email: o.contact.email ?? '',
+      branch: o.branch?.name ?? '',
       createdAt: fmt(o.createdAt),
       updatedAt: fmt(o.updatedAt),
       stage: o.stage.name,
