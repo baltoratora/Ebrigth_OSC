@@ -48,12 +48,18 @@ export async function PATCH(
     );
     if (blocked) return blocked;
     const body = await req.json();
+    // practiceDate/practiceTime may be explicitly null (clearing a previously
+    // scheduled practice) — pass null through, not just strings.
+    const asStringOrNull = (v: unknown): string | null | undefined =>
+      v === null || typeof v === "string" ? v : undefined;
     const updated = await updateInvitationRow(id, {
       status: body.status as InvitationStatus | undefined,
       sessionId: body.sessionId,
       markedBy: body.markedBy,
       videoLink: typeof body.videoLink === "string" ? body.videoLink : undefined,
       proofUrl: typeof body.proofUrl === "string" ? body.proofUrl : undefined,
+      practiceDate: asStringOrNull(body.practiceDate),
+      practiceTime: asStringOrNull(body.practiceTime),
     });
     if (!updated) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return NextResponse.json(updated);

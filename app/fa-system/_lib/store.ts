@@ -125,6 +125,13 @@ interface FAStore {
     id: string,
     args: { videoLink: string; base64Data: string | null; studentId: string; branch: string; by?: string }
   ) => Promise<void>;
+  /** Schedule (or clear, with null) a practice session date/time for a
+   *  confirmed invitation. Both fields are optional and independent — neither
+   *  gates whether the student appears in the Practice sidebar. */
+  scheduleInvitationPractice: (
+    id: string,
+    args: { practiceDate: string | null; practiceTime: string | null }
+  ) => Promise<void>;
   removeInvitation: (id: string) => Promise<void>;
   moveInvitationToSession: (invitationId: string, targetSessionId: string) => Promise<void>;
 
@@ -551,6 +558,24 @@ export const useFAStore = create<FAStore>()(
         } else {
           return; // nothing to save
         }
+        if (!r.ok) {
+          const msg =
+            r.body && typeof r.body === "object" && "error" in r.body
+              ? String((r.body as { error?: unknown }).error)
+              : `Save failed (HTTP ${r.status})`;
+          throw new Error(msg);
+        }
+        const updated = r.data;
+        set((s) => ({
+          invitations: s.invitations.map((i) => (i.id === id ? updated : i)),
+        }));
+      },
+
+      scheduleInvitationPractice: async (id, { practiceDate, practiceTime }) => {
+        const r = await apiJson<Invitation>(`/api/fa/invitations/${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ practiceDate, practiceTime }),
+        });
         if (!r.ok) {
           const msg =
             r.body && typeof r.body === "object" && "error" in r.body

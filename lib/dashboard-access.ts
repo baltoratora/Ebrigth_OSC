@@ -92,6 +92,7 @@ export const DASHBOARD_TREE: DashboardNode[] = [
           { key: "hrms.attendance.leave",   label: "Leave",   href: "/attendance/leave" },
         ],
       },
+      { key: "hrms.attendance-manual", label: "Attendance Manual", href: "/attendance-manual" },
       {
         key: "hrms.recruitment", label: "Recruitment", href: "/recruitment", contentless: true,
         children: [
@@ -220,6 +221,7 @@ export const ROLE_ACCESS: Record<Role, readonly string[] | "*"> = {
     "hrms.employee",
     "hrms.claims",
     "hrms.attendance",
+    "hrms.attendance-manual",
     "hrms.recruitment",
     "hrms.onboarding",
     "hrms.offboarding",
@@ -245,6 +247,7 @@ export const ROLE_ACCESS: Record<Role, readonly string[] | "*"> = {
     "home",
     "hrms.manpower-planning",
     "hrms.manpower-cost",         // branch-scoped cost report + Branch Team roster
+    "hrms.attendance-manual",     // manually clock in/out their own branch's staff
     "fa-system",
     "pcm-system",
     "crm",

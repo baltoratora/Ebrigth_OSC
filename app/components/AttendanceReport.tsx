@@ -41,6 +41,9 @@ interface LogEntry {
   empName: string;
   clockInTime: string | null;
   clockOutTime: string | null;
+  /** Present when this day came from Attendance Manual (branches without a
+   *  scanner) instead of a real scan. */
+  manualStatus?: string | null;
 }
 
 interface DayRow {
@@ -54,6 +57,9 @@ interface DayRow {
   inStatus: CheckInStatus | null;
   outStatus: CheckOutStatus | null;
   leaveType: string | null; // AL / MC / etc when on leave that day
+  /** Ticked via Attendance Manual rather than a real scan — same meaning as
+   *  the "✎ manual" tag used elsewhere in the app for hand-entered records. */
+  isManual: boolean;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -226,6 +232,13 @@ export default function AttendanceReport() {
     // "Rest Day" on a scheduled day off.
     const hasBothScans = !!(log?.clockInTime && log?.clockOutTime);
 
+    // Attendance Manual (branches without a scanner): a "present" or "late"
+    // tick counts the day as Present too, same as a real scan pair. Other
+    // manual statuses (absent/leave/mia) are left alone — they fall through
+    // to the existing No Data / Rest Day logic below, same as an unticked day.
+    const manualPresent = log?.manualStatus === "present" || log?.manualStatus === "late";
+    const isManual = !!log?.manualStatus;
+
     // Which schedule applied on THIS date? With history, use the version active
     // on the date; otherwise fall back to the single current workingHours.
     // A date earlier than the first version resolves to undefined → no schedule
@@ -253,10 +266,11 @@ export default function AttendanceReport() {
       clockIn: log?.clockInTime ?? null,
       clockOut: log?.clockOutTime ?? null,
       hoursWorked,
-      attendance: hasBothScans ? "Present" : restDay && hasSchedule(activeSchedule) ? "Off Day" : restDay ? "Rest Day" : "No Data",
-      inStatus,
+      attendance: hasBothScans || manualPresent ? "Present" : restDay && hasSchedule(activeSchedule) ? "Off Day" : restDay ? "Rest Day" : "No Data",
+      inStatus: log?.manualStatus === "late" ? "Late" : inStatus,
       outStatus,
       leaveType: leaveByDate.get(dateStr) ?? null,
+      isManual,
     });
   }
 
@@ -552,6 +566,9 @@ export default function AttendanceReport() {
                                     ) : row.attendance === "Present" ? (
                                       <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-green-50 text-green-700 ring-1 ring-green-200">
                                         <CheckCircle2 className="w-3 h-3" /> Present
+                                        {row.isManual && (
+                                          <span title="Ticked via Attendance Manual, not a real scan" className="ml-0.5 text-amber-600">✎</span>
+                                        )}
                                       </span>
                                     ) : row.leaveType ? (
                                       <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-violet-50 text-violet-700 ring-1 ring-violet-200">
@@ -586,7 +603,7 @@ export default function AttendanceReport() {
                                       row.leaveType                  ? "text-violet-700" :
                                                                        "text-rose-700"
                                     }`}>{
-                                      row.attendance === "Present"  ? "Present" :
+                                      row.attendance === "Present"  ? (row.isManual ? "Present (manual)" : "Present") :
                                       row.attendance === "Rest Day" ? "—" :
                                       row.attendance === "Off Day"  ? "Off Day" :
                                       row.leaveType                  ? `On leave (${row.leaveType})` :

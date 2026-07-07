@@ -319,7 +319,8 @@ function formatMonthLabel(ym: string) {
   return new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
 }
 
-/* ─── Trial & Probation tracker ─── driven by career_applications.stage.
+/* ─── Trial & Probation tracker ─── driven by career_applications.board_stage
+   (the live recruitment-board stage name — NOT the separate `stage` column).
    Trial: write feedback1 → Complete → moves to Probation.
    Probation: write feedback2 → Accept (→ Hired) or Reject (→ Rejected).
    Completed / accepted / rejected people leave the card. */
@@ -373,12 +374,20 @@ function TPEntry({ entry, stage, onChanged }: { entry: any; stage: TPStage; onCh
         </button>
 
         {isTrial ? (
-          <button disabled={busy || !hasSaved || dirty}
-            title={!hasSaved ? "Save feedback 1 first" : dirty ? "Save your changes first" : "Complete trial → move to Probation"}
-            onClick={() => run(() => tpPatch({ id: entry.id, action: "complete_trial" }))}
-            style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 8, border: `1px solid ${C.success}`, background: (!hasSaved || dirty) ? "#fff" : C.successLight, color: (!hasSaved || dirty) ? C.muted : C.success, cursor: (!hasSaved || dirty) ? "default" : "pointer", opacity: busy ? 0.5 : 1 }}>
-            ✓ Complete → Probation
-          </button>
+          hasSaved && !dirty ? (
+            <>
+              <button disabled={busy} onClick={() => run(() => tpPatch({ id: entry.id, action: "complete_trial" }))}
+                style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 8, border: `1px solid ${C.success}`, background: C.successLight, color: C.success, cursor: "pointer", opacity: busy ? 0.5 : 1 }}>
+                ✓ Accept → Probation
+              </button>
+              <button disabled={busy} onClick={() => run(() => tpPatch({ id: entry.id, action: "reject_trial" }))}
+                style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 8, border: `1px solid ${C.red}`, background: C.redLight, color: C.red, cursor: "pointer", opacity: busy ? 0.5 : 1 }}>
+                ✕ Reject
+              </button>
+            </>
+          ) : (
+            <span style={{ fontSize: 10, color: C.muted }}>Save feedback 1 to accept / reject</span>
+          )
         ) : hasSaved && !dirty ? (
           <>
             <button disabled={busy} onClick={() => run(() => tpPatch({ id: entry.id, action: "accept" }))}
@@ -421,7 +430,7 @@ function TrialProbationCard() {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr" }}>
         {(Object.keys(TP_STAGES) as TPStage[]).map((stage, idx) => {
           const s = TP_STAGES[stage];
-          const list = entries.filter(e => String(e.stage).toLowerCase() === stage);
+          const list = entries.filter(e => String(e.board_stage).toLowerCase() === stage);
           return (
             <div key={stage} style={{ borderLeft: idx === 1 ? `1px solid ${C.border}` : "none", minHeight: 160 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 16px", background: s.light }}>

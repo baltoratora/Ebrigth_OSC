@@ -19,6 +19,7 @@ import {
   Home,
   Users,
   ClipboardCheck,
+  CalendarClock,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -41,6 +42,7 @@ const MKT_NAV: NavItem[] = [
   { href: "/fa-system/marketing/students", label: "Student List", icon: Users },
   { href: "/fa-system/shared/reports", label: "Reports", icon: ClipboardCheck },
   { href: "/fa-system/shared/attendance", label: "Attendance", icon: ClipboardList },
+  { href: "/fa-system/shared/practice", label: "Practice", icon: CalendarClock },
   { href: "/fa-system/shared/dashboard", label: "Dashboard", icon: ChartBar },
 ];
 
@@ -48,6 +50,7 @@ const BM_NAV: NavItem[] = [
   { href: "/fa-system/bm", label: "Events", icon: CalendarDays },
   { href: "/fa-system/shared/reports", label: "Reports", icon: ClipboardCheck },
   { href: "/fa-system/shared/attendance", label: "Attendance", icon: ClipboardList },
+  { href: "/fa-system/shared/practice", label: "Practice", icon: CalendarClock },
   { href: "/fa-system/shared/dashboard", label: "Dashboard", icon: ChartBar },
 ];
 
@@ -58,6 +61,7 @@ const BM_NAV_FOR_ADMIN: NavItem[] = [
   { action: "switchToMarketing", label: "Marketing View", icon: Building2 },
   { href: "/fa-system/shared/reports", label: "Reports", icon: ClipboardCheck },
   { href: "/fa-system/shared/attendance", label: "Attendance", icon: ClipboardList },
+  { href: "/fa-system/shared/practice", label: "Practice", icon: CalendarClock },
   { href: "/fa-system/shared/dashboard", label: "Dashboard", icon: ChartBar },
 ];
 
