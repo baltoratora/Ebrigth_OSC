@@ -38,6 +38,14 @@ const ST_PERSON_REMAP: Readonly<Record<string, StIdentity>> = {
 // person on EVERY scanner (e.g. a temporary id the device assigned). Unlike the
 // ST map above, these apply regardless of which scanner emitted the scan.
 //   60 → ASMA AQHILAH BINTI MOHD KAMAL ARIFFIN (HQ FT EXEC), scanning at HQ main.
+//
+// NOTE: as of 2026-06-10 this whole category of fix has a DB-side counterpart —
+// public.hikvision_id_map + a BEFORE INSERT trigger on hikvision_attendance_all
+// (see prisma/sql/2026-06-10-hikvision-id-remap.sql) — which rewrites person_id
+// (and name) at write time, so new wrong-id collisions can be fixed with an
+// INSERT into that table alone, no code deploy needed. Prefer that route over
+// adding entries here; this map still exists for the general case / anything
+// added before that migration.
 const GENERAL_PERSON_REMAP: Readonly<Record<string, StIdentity>> = {
   '60': { empNo: '33040106', name: 'ASMA AQHILAH BINTI MOHD KAMAL ARIFFIN' },
 };
