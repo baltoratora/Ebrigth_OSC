@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { hrfsPrisma } from "@/lib/hrfs";
 import { requireRole, canSeeAllBranches } from "@/lib/auth";
-import { MANAGEMENT_ROLES } from "@/lib/roles";
-import { hasSchedule, slotForDate } from "@/lib/working-hours";
+import { MANAGEMENT_ROLES, isAdmin } from "@/lib/roles";
+import { hasSchedule, slotForDate, scheduleForDate, type ScheduleVersion } from "@/lib/working-hours";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +24,12 @@ export const dynamic = "force-dynamic";
 // set, OR was added as a replacement/extra for the day.
 
 const EXCLUDED_BRANCHES = new Set(["hq", "st"]);
-const STATUSES = new Set(["present", "absent", "leave", "mia", "late"]);
+// Paper-logbook style: a person is ticked Present or Absent for the day, once,
+// then locked (no dropdown, no Late/Leave/MIA options here — those live
+// elsewhere, e.g. the Leave system). Older rows may still hold legacy values
+// (leave/mia/late) from an earlier version of this feature; they still render,
+// they're just no longer a settable option going forward.
+const STATUSES = new Set(["present", "absent"]);
 
 let tableEnsured: Promise<void> | null = null;
 function ensureTable(): Promise<void> {
@@ -123,6 +128,16 @@ function branchGuard(session: { user?: unknown }, branch: string): NextResponse 
   return null;
 }
 
+// Only SUPER_ADMIN / ADMIN / HR (see isAdmin in lib/roles) may edit a past
+// day's register — everyone else at the branch (BM, HOD) can only edit
+// today's entries; older days are view-only for them. GET is unaffected —
+// viewing history is always allowed.
+function canEditDate(session: { user?: unknown }, date: string): boolean {
+  if (date === todayKL()) return true;
+  const role = (session.user as { role?: unknown } | undefined)?.role;
+  return isAdmin(role);
+}
+
 interface ManualRow {
   id: string;
   employee_id: string;
@@ -152,9 +167,30 @@ export async function GET(req: NextRequest) {
 
     const staff = await hrfsPrisma.branchStaff.findMany({
       where: { branch, status: { not: "Inactive" }, employeeId: { not: null } },
-      select: { employeeId: true, name: true, role: true, workingHours: true, start_date: true, endDate: true },
+      select: { id: true, employeeId: true, name: true, role: true, workingHours: true, start_date: true, endDate: true },
       orderBy: { name: "asc" },
     });
+
+    // The schedule active on THIS specific date can differ from the current
+    // (latest) workingHours cached on BranchStaff — an employee's hours may
+    // have changed since. Without this, someone whose schedule changed after
+    // the fact could wrongly appear (or wrongly not appear) on a past date.
+    // Same dated-history source AttendanceReport uses, fetched in one batch
+    // for every staff member with any schedule history on this date.
+    const historyRows = await hrfsPrisma.$queryRaw<
+      { branchStaffId: number; effectiveFrom: string; schedule: unknown }[]
+    >`
+      SELECT "branchStaffId", to_char("effectiveFrom", 'YYYY-MM-DD') AS "effectiveFrom", schedule
+        FROM "BranchStaffSchedule"
+       ORDER BY "branchStaffId", "effectiveFrom"
+    `;
+    const versionsByStaff = new Map<number, ScheduleVersion[]>();
+    for (const r of historyRows) {
+      const arr = versionsByStaff.get(r.branchStaffId) ?? [];
+      arr.push({ effectiveFrom: r.effectiveFrom, schedule: r.schedule });
+      versionsByStaff.set(r.branchStaffId, arr);
+    }
+
     // Only for TODAY: hold a person off the roster until their scheduled start
     // time actually arrives (an 11pm start shouldn't appear at 9pm). Past/future
     // dates aren't "live", so this clock-time gate doesn't apply to them.
@@ -165,9 +201,13 @@ export async function GET(req: NextRequest) {
       if (start && start > date) return false; // not started yet on this date
       const end = parseLooseDate(s.endDate);
       if (end && end < date) return false; // already ended by this date
-      if (!hasSchedule(s.workingHours)) return true; // no schedule at all → show anyway
-      const slot = slotForDate(s.workingHours, date);
-      if (!slot) return false; // day off (or, defensively, no slot resolved)
+
+      const versions = versionsByStaff.get(s.id);
+      const wh = versions && versions.length > 0 ? scheduleForDate(versions, date) : s.workingHours;
+
+      if (!hasSchedule(wh)) return true; // no schedule (at all, or for this date) → show anyway
+      const slot = slotForDate(wh, date);
+      if (!slot) return false; // day off on this date (or, defensively, no slot resolved)
       if (nowSeconds !== null && nowSeconds < timeToSeconds(slot.start)) return false; // shift hasn't started yet today
       return true;
     });
@@ -236,6 +276,9 @@ export async function POST(req: NextRequest) {
 
     await ensureTable();
     const date = /^\d{4}-\d{2}-\d{2}$/.test(body?.date) ? body.date : todayKL();
+    if (!canEditDate(session, date)) {
+      return NextResponse.json({ error: "Only Super Admin / HR can edit a previous day. Today's register is still open to you." }, { status: 403 });
+    }
     const enteredBy = (session.user as { name?: string | null; email?: string | null })?.name
       ?? (session.user as { email?: string | null })?.email ?? "unknown";
 
@@ -256,11 +299,21 @@ export async function POST(req: NextRequest) {
 
     if (body?.action === "status") {
       const employeeId = String(body?.employeeId || "").trim();
-      const status = body?.status === null ? null : String(body?.status || "").trim().toLowerCase();
+      const status = String(body?.status || "").trim().toLowerCase();
       if (!employeeId) return NextResponse.json({ error: "employeeId is required" }, { status: 400 });
-      if (status !== null && !STATUSES.has(status)) {
+      if (!STATUSES.has(status)) {
         return NextResponse.json({ error: "Invalid status" }, { status: 400 });
       }
+
+      // Once a day is ticked Present/Absent, it's locked — no further edits.
+      const existing = await hrfsPrisma.$queryRawUnsafe<{ status: string | null }[]>(
+        `SELECT status FROM public.manual_attendance WHERE branch = $1 AND work_date = $2::date AND employee_id = $3`,
+        branch, date, employeeId,
+      );
+      if (existing[0]?.status) {
+        return NextResponse.json({ error: "Already saved for this day — it can no longer be changed." }, { status: 409 });
+      }
+
       const person = await hrfsPrisma.branchStaff.findFirst({ where: { employeeId }, select: { name: true, role: true, branch: true } });
       if (!person) return NextResponse.json({ error: "Employee not found" }, { status: 404 });
 
@@ -295,14 +348,17 @@ export async function DELETE(req: NextRequest) {
     if (!id) return NextResponse.json({ error: "id is required" }, { status: 400 });
     await ensureTable();
 
-    const rows = await hrfsPrisma.$queryRawUnsafe<{ branch: string; is_adhoc: boolean }[]>(
-      `SELECT branch, is_adhoc FROM public.manual_attendance WHERE id = $1::bigint`,
+    const rows = await hrfsPrisma.$queryRawUnsafe<{ branch: string; is_adhoc: boolean; work_date: string }[]>(
+      `SELECT branch, is_adhoc, to_char(work_date, 'YYYY-MM-DD') AS work_date FROM public.manual_attendance WHERE id = $1::bigint`,
       id,
     );
     const target = rows[0];
     if (!target) return NextResponse.json({ error: "Not found" }, { status: 404 });
     const guard = branchGuard(session, target.branch);
     if (guard) return guard;
+    if (!canEditDate(session, target.work_date)) {
+      return NextResponse.json({ error: "Only Super Admin / HR can edit a previous day. Today's register is still open to you." }, { status: 403 });
+    }
     if (!target.is_adhoc) {
       return NextResponse.json({ error: "Only replacement/extra entries can be removed. Clear the status instead." }, { status: 400 });
     }

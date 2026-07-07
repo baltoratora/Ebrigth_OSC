@@ -45,6 +45,7 @@ interface AttendanceRecord {
   checkOutStatus: CheckOutStatus | null;
   scanCount: number; // total scans from device today
   scannerLocation: string | null;
+  isManual?: boolean; // ticked Present in Attendance Manual, not an actual scan
 }
 
 // ─── CSV Parser ───────────────────────────────────────────────────────────────
@@ -242,6 +243,32 @@ export default function AttendanceSummary() {
   // consistent with the Attendance Report, which is also history-aware.
   const [schedulesByDate, setSchedulesByDate] = useState<Record<string, unknown>>({});
 
+  // ── Attendance Manual ticks for this branch/date, keyed by employeeId ───────
+  // Attendance Manual is the paper-logbook register for branches without a
+  // scanner. Once someone is ticked Present/Absent there for the day, they're
+  // accounted for here too — no longer shown as Missing just because the
+  // scanner (which doesn't exist at their branch) has no record of them.
+  const [manualByEmpId, setManualByEmpId] = useState<Map<string, string>>(new Map());
+  const fetchManual = useCallback(() => {
+    if (selectedLocation === "HQ" || selectedLocation === "Subang Taipan") { setManualByEmpId(new Map()); return; }
+    // Attendance Manual keys rows by BranchStaff.branch, which is a short CODE
+    // ("KD", "AMP", …) — not the full display name this page's branch selector
+    // uses ("Kota Damansara"). branchStaff (already loaded for this location)
+    // carries that code on every row, so pull it from there rather than
+    // sending the display name straight through.
+    const branchCode = branchStaff.find(s => s.branch)?.branch;
+    if (!branchCode) { setManualByEmpId(new Map()); return; }
+    fetch(`/api/attendance-manual?branch=${encodeURIComponent(branchCode)}&date=${encodeURIComponent(selectedDate)}`)
+      .then(r => (r.ok ? r.json() : { staff: [] }))
+      .then((d: { staff?: { employeeId: string; status: string | null }[] }) => {
+        const m = new Map<string, string>();
+        (d.staff ?? []).forEach(s => { if (s.status) m.set(s.employeeId, s.status); });
+        setManualByEmpId(m);
+      })
+      .catch(() => setManualByEmpId(new Map()));
+  }, [selectedLocation, selectedDate, branchStaff]);
+  useEffect(() => { fetchManual(); }, [fetchManual]);
+
   // ── Attendance justifications for the selected date, keyed by empNo ──────────
   // HR/admin can justify a missing person with a reason and/or uploaded evidence.
   // A justified person leaves the Missing box and appears in the Justify box.
@@ -385,9 +412,10 @@ export default function AttendanceSummary() {
       fetchLeave();
       fetchSchedules();
       fetchJustifications();
+      fetchManual();
     }, 30_000);
     return () => clearInterval(id);
-  }, [fetchBranchStaff, fetchAllBranchStaff, fetchLeave, fetchSchedules, fetchJustifications]);
+  }, [fetchBranchStaff, fetchAllBranchStaff, fetchLeave, fetchSchedules, fetchJustifications, fetchManual]);
 
   // ── Poll /api/attendance-today every 5 seconds (reads from DB, written by office sync script) ──
   const fetchScans = useCallback(async () => {
@@ -589,7 +617,31 @@ export default function AttendanceSummary() {
     (selectedLocation === 'HQ' && (r.scannerLocation === null || r.scannerLocation === 'HQ'))
   );
 
-  const visibleLogs = branchFilteredLogs
+  // A "Present" tick in Attendance Manual counts as attended/clocked-in here
+  // too — synthesized as a row (no real scan times) for anyone at this branch
+  // who isn't already showing up via an actual scan.
+  const scannedEmpNosRaw = new Set(branchFilteredLogs.map(r => r.empNo).filter(Boolean));
+  const manualPresentRecords: AttendanceRecord[] = branchStaff
+    .filter(s => s.employeeId && manualByEmpId.get(s.employeeId) === "present" && !scannedEmpNosRaw.has(s.employeeId))
+    .map(s => ({
+      empNo: s.employeeId as string,
+      name: s.name || "—",
+      dept: s.department || s.branch || "—",
+      position: s.role || "—",
+      checkInTime: new Date(selectedDate + "T00:00:00"),
+      checkInStr: "Manual",
+      checkInStatus: null,
+      checkOutTime: null,
+      checkOutStr: null,
+      checkOutStatus: null,
+      scanCount: 0,
+      scannerLocation: selectedLocation,
+      isManual: true,
+    }));
+
+  const combinedFilteredLogs = [...branchFilteredLogs, ...manualPresentRecords];
+
+  const visibleLogs = combinedFilteredLogs
     .filter(r => {
       if (!searchQuery.trim()) return true;
       const q = searchQuery.toLowerCase();
@@ -608,8 +660,8 @@ export default function AttendanceSummary() {
     });
 
   // ── Stats ──────────────────────────────────────────────────────────────────
-  const checkedInCount = branchFilteredLogs.filter((r) => r.checkOutStr === null).length;
-  const checkedOutCount = branchFilteredLogs.filter((r) => r.checkOutStr !== null).length;
+  const checkedInCount = combinedFilteredLogs.filter((r) => r.checkOutStr === null).length;
+  const checkedOutCount = combinedFilteredLogs.filter((r) => r.checkOutStr !== null).length;
 
   // Missing = BranchStaff at selected location who didn't show up in today's scans.
   // Match strategy:
@@ -716,6 +768,9 @@ export default function AttendanceSummary() {
     if (leaveTypeOf(s)) return false;
     // A recorded justification moves them to the Justify box, not Missing.
     if (s.employeeId && justByEmpNo.has(s.employeeId)) return false;
+    // Ticked Present in Attendance Manual — treated the same as a real scan.
+    // Absent (or not yet ticked) still counts as Missing.
+    if (s.employeeId && manualByEmpId.get(s.employeeId) === "present") return false;
     // Live "today" view: not missing until their scheduled start time passes
     // (e.g. a 09:00 start only counts as missing after 09:00). Past dates are
     // always after start, so this check is skipped for them.
@@ -867,7 +922,7 @@ export default function AttendanceSummary() {
           >
             <StatCard
               label="Employees Scanned"
-              value={branchFilteredLogs.length}
+              value={combinedFilteredLogs.length}
               icon={Users}
               tone="blue"
               tooltip={`Total unique employees who have scanned in at ${selectedLocation} today.`}
@@ -967,7 +1022,7 @@ export default function AttendanceSummary() {
                       {isViewingToday ? "Today's Attendance" : `Attendance · ${prettyDateLabel(selectedDate)}`}
                     </h2>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      {selectedLocation} branch · {branchFilteredLogs.length} employee{branchFilteredLogs.length !== 1 ? "s" : ""}
+                      {selectedLocation} branch · {combinedFilteredLogs.length} employee{combinedFilteredLogs.length !== 1 ? "s" : ""}
                       {searchQuery && (
                         <span className="ml-1 text-blue-600">· {visibleLogs.length} matching</span>
                       )}
@@ -1074,6 +1129,12 @@ export default function AttendanceSummary() {
                             <td className="px-4 py-3.5">
                               <div className="flex items-center gap-2">
                                 <p className="text-sm font-semibold text-gray-900">{record.name}</p>
+                                {record.isManual && (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">
+                                    <Pencil className="w-3 h-3" />
+                                    Manual
+                                  </span>
+                                )}
                                 {(() => {
                                   // Rotating "BM list" staff are based at a branch but come to
                                   // HQ on some days. When they show up in the HQ view, flag them

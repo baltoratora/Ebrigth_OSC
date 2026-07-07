@@ -21,20 +21,19 @@ interface Person {
   role: string | null;
 }
 
-const STATUS_OPTIONS = [
-  { value: "", label: "— Not marked —" },
-  { value: "present", label: "Present" },
-  { value: "absent", label: "Absent" },
-  { value: "leave", label: "Leave" },
-  { value: "mia", label: "MIA" },
-  { value: "late", label: "Late" },
-];
 const STATUS_TONE: Record<string, string> = {
   present: "bg-emerald-100 text-emerald-700",
   absent: "bg-red-100 text-red-700",
   leave: "bg-indigo-100 text-indigo-700",
   mia: "bg-orange-100 text-orange-700",
   late: "bg-amber-100 text-amber-700",
+};
+const STATUS_LABEL: Record<string, string> = {
+  present: "Present",
+  absent: "Absent",
+  leave: "Leave",
+  mia: "MIA",
+  late: "Late",
 };
 
 function todayKL(): string {
@@ -46,6 +45,10 @@ export default function AttendanceManualPage() {
   const role = (session?.user as { role?: unknown } | undefined)?.role;
   const branchName = (session?.user as { branchName?: string | null } | undefined)?.branchName ?? null;
   const canSeeAllBranches = isAdmin(role) || isHOD(role) || isHR(role) || isAcademy(role);
+  // Super Admin / Admin / HR (isAdmin covers all three) can edit any day.
+  // Everyone else at the branch (BM, HOD) can only edit TODAY — older days
+  // are view-only for them, enforced again server-side.
+  const canEditAnyDate = isAdmin(role);
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [branches, setBranches] = useState<string[]>([]);
@@ -56,6 +59,9 @@ export default function AttendanceManualPage() {
   const [search, setSearch] = useState("");
   const [savingId, setSavingId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  // Local, unsaved pick per row (present/absent) — nothing is written until
+  // "Save" is clicked, and once saved a row locks for good (no further edits).
+  const [pending, setPending] = useState<Record<string, "present" | "absent">>({});
 
   // Add-employee (replacement) picker: pick a source branch, then a name.
   const [addOpen, setAddOpen] = useState(false);
@@ -69,6 +75,7 @@ export default function AttendanceManualPage() {
   const dateLabel = new Date(date + "T00:00:00").toLocaleDateString("en-GB", {
     weekday: "long", day: "2-digit", month: "long", year: "numeric",
   });
+  const canEdit = canEditAnyDate || date === todayKL();
 
   useEffect(() => {
     if (!canSeeAllBranches) return;
@@ -106,16 +113,24 @@ export default function AttendanceManualPage() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  async function setStatus(employeeId: string, status: string) {
+  function pick(employeeId: string, status: "present" | "absent") {
+    setPending((p) => ({ ...p, [employeeId]: status }));
+  }
+
+  async function saveStatus(employeeId: string) {
+    const status = pending[employeeId];
+    if (!status) return;
     setSavingId(employeeId);
     try {
       const res = await fetch("/api/attendance-manual", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "status", branch, date, employeeId, status: status || null }),
+        body: JSON.stringify({ action: "status", branch, date, employeeId, status }),
       });
       const d = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(d.error || "Failed to save");
+      setPending((p) => { const n = { ...p }; delete n[employeeId]; return n; });
+      setToast(`Saved as ${STATUS_LABEL[status]}`);
       load();
     } catch (err) {
       setToast(err instanceof Error ? err.message : "Failed to save");
@@ -234,7 +249,7 @@ export default function AttendanceManualPage() {
               onChange={(e) => setSearch(e.target.value)}
               className="border border-gray-300 rounded-lg px-3 py-2 text-sm flex-1 min-w-[160px] max-w-xs"
             />
-            {branch && (
+            {branch && canEdit && (
               <button
                 onClick={openAdd}
                 className="px-3 py-2 rounded-lg bg-white border border-gray-300 text-sm font-semibold text-gray-700 hover:bg-gray-50"
@@ -246,6 +261,12 @@ export default function AttendanceManualPage() {
               Independent from the scanner.
             </div>
           </div>
+
+          {branch && !canEdit && (
+            <div className="mb-4 px-4 py-2.5 rounded-xl bg-amber-50 border border-amber-200 text-xs font-semibold text-amber-700">
+              View only — only Super Admin / HR can edit a previous day. Today&apos;s register is still open to you.
+            </div>
+          )}
 
           {!branch ? (
             <div className="p-12 text-center text-sm text-gray-400 bg-white rounded-2xl border border-gray-200">
@@ -292,19 +313,48 @@ export default function AttendanceManualPage() {
                       </td>
                       <td className="px-4 py-3 text-gray-600">{s.role ?? "—"}</td>
                       <td className="px-4 py-3">
-                        <select
-                          value={s.status ?? ""}
-                          disabled={savingId === s.employeeId}
-                          onChange={(e) => setStatus(s.employeeId, e.target.value)}
-                          className={`border-0 rounded-lg px-2.5 py-1.5 text-xs font-semibold ${s.status ? STATUS_TONE[s.status] : "bg-gray-100 text-gray-500"}`}
-                        >
-                          {STATUS_OPTIONS.map((o) => (
-                            <option key={o.value} value={o.value}>{o.label}</option>
-                          ))}
-                        </select>
+                        {s.status ? (
+                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold ${STATUS_TONE[s.status] ?? "bg-gray-100 text-gray-500"}`}>
+                            🔒 {STATUS_LABEL[s.status] ?? s.status}
+                          </span>
+                        ) : !canEdit ? (
+                          <span className="text-xs text-gray-400">— Not marked —</span>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => pick(s.employeeId, "present")}
+                              disabled={savingId === s.employeeId}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-semibold border ${
+                                pending[s.employeeId] === "present"
+                                  ? "bg-emerald-600 text-white border-emerald-600"
+                                  : "bg-white text-emerald-700 border-emerald-300 hover:bg-emerald-50"
+                              }`}
+                            >
+                              Present
+                            </button>
+                            <button
+                              onClick={() => pick(s.employeeId, "absent")}
+                              disabled={savingId === s.employeeId}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-semibold border ${
+                                pending[s.employeeId] === "absent"
+                                  ? "bg-red-600 text-white border-red-600"
+                                  : "bg-white text-red-700 border-red-300 hover:bg-red-50"
+                              }`}
+                            >
+                              Absent
+                            </button>
+                            <button
+                              onClick={() => saveStatus(s.employeeId)}
+                              disabled={!pending[s.employeeId] || savingId === s.employeeId}
+                              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-900 text-white disabled:opacity-30"
+                            >
+                              {savingId === s.employeeId ? "Saving…" : "Save"}
+                            </button>
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        {s.isAdhoc && s.rowId && (
+                        {s.isAdhoc && s.rowId && canEdit && (
                           <button
                             onClick={() => removeAdhoc(s.rowId as string, s.name)}
                             title="Remove from this day's list"
