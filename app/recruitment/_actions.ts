@@ -14,6 +14,9 @@ import {
   GENDERS, type Gender,
   EDUCATION_LEVELS, type EducationLevel,
 } from "@/lib/recruitment/employment";
+import {
+  HQ_BRANCH, PLACEMENT_BRANCHES, HQ_DEPARTMENTS, isHqBranch,
+} from "@/lib/recruitment/placement";
 
 const ALLOWED = new Set<string>([ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD]);
 
@@ -214,6 +217,99 @@ export async function createRecruit(
   }
 }
 
+// ─── Edit lead details (detail modal) ───────────────────────────────────────
+
+export interface UpdateRecruitInput {
+  name?: string;
+  phone?: string | null;
+  email?: string | null;
+  source?: string | null;
+  branch?: string | null;
+  position?: string | null;
+  city?: string | null;
+  gender?: string | null;
+  educationLevel?: string | null;
+}
+
+/**
+ * Edit a candidate's details from the detail modal. Writes the board card
+ * (rec_recruit) AND mirrors into the canonical career_applications row so the
+ * other systems reading that table stay in sync. Only fields present in `patch`
+ * are touched; gender / education_level are only written when they're one of the
+ * constrained values (career_applications_gender_check / _education_level_check).
+ */
+export async function updateRecruitDetail(
+  recruitId: string,
+  patch: UpdateRecruitInput,
+): Promise<MoveResult> {
+  try {
+    await requireAccess();
+    const rec = await prisma.recRecruit.findFirst({
+      where: { id: recruitId, deletedAt: null },
+      select: { id: true, applicationId: true },
+    });
+    if (!rec) return { ok: false, error: "Recruit not found" };
+
+    // ── Board card (rec_recruit) ──
+    const cardData: Record<string, unknown> = {};
+    if (patch.name !== undefined) {
+      const n = patch.name.trim();
+      if (!n) return { ok: false, error: "Name can't be empty" };
+      cardData.name = n;
+    }
+    if (patch.phone !== undefined) cardData.phone = patch.phone?.trim() || null;
+    if (patch.email !== undefined) cardData.email = patch.email?.trim() || null;
+    if (patch.source !== undefined) cardData.source = patch.source?.trim() || null;
+    if (patch.branch !== undefined) cardData.branch = patch.branch?.trim() || null;
+    if (patch.position !== undefined) cardData.position = patch.position?.trim() || null;
+    if (Object.keys(cardData).length) {
+      await prisma.recRecruit.update({ where: { id: recruitId }, data: cardData });
+    }
+
+    // ── Canonical store (career_applications) — best-effort, keyed by link ──
+    if (rec.applicationId != null) {
+      try {
+        await ensurePlacementColumns(); // branch column may not exist yet
+        const sets: string[] = [];
+        const vals: unknown[] = [];
+        let i = 1;
+        const put = (col: string, v: unknown) => { sets.push(`${col} = $${i++}`); vals.push(v); };
+        // Text columns are NOT NULL with '' default — write '' rather than null.
+        if (patch.name !== undefined && patch.name.trim()) put("name", patch.name.trim());
+        if (patch.phone !== undefined) put("phone", patch.phone?.trim() ?? "");
+        if (patch.email !== undefined) put("email", patch.email?.trim() ?? "");
+        if (patch.source !== undefined) put("source", patch.source?.trim() ?? "");
+        if (patch.branch !== undefined) put("branch", patch.branch?.trim() ?? "");
+        if (patch.position !== undefined) put("position", patch.position?.trim() ?? "");
+        if (patch.city !== undefined) put("city", patch.city?.trim() ?? "");
+        // Constrained columns: only write a valid enum value; skip otherwise so
+        // we never trip the CHECK constraint by writing '' or a stray value.
+        if (patch.gender != null && (GENDERS as readonly string[]).includes(patch.gender)) put("gender", patch.gender);
+        if (patch.educationLevel != null && (EDUCATION_LEVELS as readonly string[]).includes(patch.educationLevel)) {
+          put("education_level", patch.educationLevel);
+        }
+        if (sets.length) {
+          sets.push(`updated_at = now()`);
+          vals.push(rec.applicationId);
+          await prisma.$executeRawUnsafe(
+            `UPDATE public.career_applications SET ${sets.join(", ")} WHERE id = $${i}`,
+            ...vals,
+          );
+        }
+      } catch (e) {
+        console.warn("[recruitment] career_applications detail update failed:", (e as Error).message);
+      }
+    }
+
+    revalidatePath("/recruitment/opportunity");
+    revalidatePath("/recruitment/contacts");
+    revalidatePath("/recruitment/dashboard");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Update failed" };
+  }
+}
+
 /** Move a recruit to a new stage (kanban drag) + record the transition. */
 export async function moveRecruit(recruitId: string, toStageId: string): Promise<MoveResult> {
   try {
@@ -255,6 +351,197 @@ export async function moveRecruit(recruitId: string, toStageId: string): Promise
     }
 
     // Mirror the new stage into the canonical career_applications store.
+    await mirrorStageToCareerApplications([recruit.applicationId], toStage.shortCode, toStage.name);
+
+    revalidatePath("/recruitment/opportunity");
+    revalidatePath("/recruitment/dashboard");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Move failed" };
+  }
+}
+
+// ─── Placement popup (Branch / Department / Position) ───────────────────────
+// Shown when a card is dragged into a placement stage (Trial, Probation,
+// Intern, Full Time, Part Timer, Hired). The picked detail is written to BOTH
+// the board card (rec_recruit) and the canonical career_applications row, so
+// the Trial/Probation HR card — which flips board_stage without touching other
+// columns — carries the placement over on auto-advance.
+
+export interface PlacementOptions {
+  branches: string[];
+  departments: string[];
+  positions: string[];
+}
+
+/**
+ * Options for the placement popup. Branch + department are fixed lists (HQ on
+ * top of the branch codes); positions are the distinct positions of existing
+ * employees (BranchStaff.position), cleaned + sorted. Position load is
+ * best-effort — an empty list just means the modal falls back to free text.
+ */
+export async function getPlacementOptions(): Promise<PlacementOptions> {
+  await requireAccess();
+  let positions: string[] = [];
+  try {
+    const rows = await prisma.branchStaff.findMany({
+      where: { position: { not: null } },
+      select: { position: true },
+      distinct: ["position"],
+    });
+    positions = Array.from(
+      new Set(rows.map((r) => (r.position ?? "").replace(/\s+/g, " ").trim()).filter(Boolean)),
+    ).sort((a, b) => a.localeCompare(b));
+  } catch (e) {
+    console.warn("[recruitment] position options load failed:", (e as Error).message);
+  }
+  return {
+    branches: [HQ_BRANCH, ...PLACEMENT_BRANCHES],
+    departments: HQ_DEPARTMENTS,
+    positions,
+  };
+}
+
+export interface RecruitPlacement {
+  branch: string | null;
+  department: string | null;
+  position: string | null;
+}
+
+/**
+ * Current branch / department / position for prefilling the placement popup —
+ * so a manual Trial → Probation move (or re-opening a placed card) starts from
+ * what's already set. Prefers the canonical career_applications row; falls back
+ * to the board card when the app row / columns aren't available.
+ */
+export async function getRecruitPlacement(
+  recruitId: string,
+): Promise<{ ok: boolean } & RecruitPlacement> {
+  try {
+    await requireAccess();
+    const rec = await prisma.recRecruit.findFirst({
+      where: { id: recruitId, deletedAt: null },
+      select: { branch: true, position: true, applicationId: true },
+    });
+    if (!rec) return { ok: false, branch: null, department: null, position: null };
+    let branch = rec.branch ?? null;
+    let position = rec.position ?? null;
+    let department: string | null = null;
+    if (rec.applicationId != null) {
+      try {
+        const rows = await prisma.$queryRawUnsafe<
+          { branch: string | null; department: string | null; position: string | null }[]
+        >(
+          `SELECT branch, department, position FROM public.career_applications WHERE id = $1 LIMIT 1`,
+          rec.applicationId,
+        );
+        if (rows[0]) {
+          branch = rows[0].branch ?? branch;
+          department = rows[0].department ?? null;
+          position = rows[0].position ?? position;
+        }
+      } catch {
+        /* branch/department columns may not exist yet — fall back to card values */
+      }
+    }
+    return { ok: true, branch, department, position };
+  } catch {
+    return { ok: false, branch: null, department: null, position: null };
+  }
+}
+
+/** Self-provision the branch/department columns on career_applications (position
+ *  already exists). Mirrors the ensureColumns pattern used by the HR
+ *  trial-probation card so no separate migration is required. */
+async function ensurePlacementColumns(): Promise<void> {
+  await prisma.$executeRawUnsafe(`
+    ALTER TABLE public.career_applications
+      ADD COLUMN IF NOT EXISTS branch text,
+      ADD COLUMN IF NOT EXISTS department text`);
+}
+
+export interface PlacementInput {
+  branch: string;
+  department?: string | null;
+  position: string;
+}
+
+/**
+ * Move a recruit into a placement stage while capturing branch / department /
+ * position. Department is only kept for HQ (blanked otherwise). Writes the
+ * detail to the card and the canonical application row, records history, and
+ * mirrors the coarse stage + exact board_stage — same as a normal move.
+ */
+export async function setPlacementAndMove(
+  recruitId: string,
+  toStageId: string,
+  input: PlacementInput,
+): Promise<MoveResult> {
+  try {
+    const { userId } = await requireAccess();
+
+    const branch = input.branch?.trim();
+    const position = input.position?.trim();
+    if (!branch) return { ok: false, error: "Choose a branch" };
+    if (!position) return { ok: false, error: "Choose a position" };
+    const department = isHqBranch(branch) ? (input.department?.trim() || "") : "";
+    if (isHqBranch(branch) && !department) return { ok: false, error: "Choose a department for HQ" };
+
+    const recruit = await prisma.recRecruit.findFirst({
+      where: { id: recruitId, deletedAt: null },
+      select: { id: true, stageId: true, applicationId: true },
+    });
+    if (!recruit) return { ok: false, error: "Recruit not found" };
+
+    const toStage = await prisma.recStage.findUnique({
+      where: { id: toStageId },
+      select: { id: true, shortCode: true, name: true },
+    });
+    if (!toStage) return { ok: false, error: "Stage not found" };
+
+    const enteringTraining = isTrainingCode(toStage.shortCode);
+    // Primary write: stage change + placement on the board card. History is
+    // best-effort so it can never roll back a successful move (see moveRecruit).
+    await prisma.recRecruit.update({
+      where: { id: recruitId },
+      data: {
+        stageId: toStageId,
+        branch,
+        position,
+        trainingEnteredAt: enteringTraining ? new Date() : undefined,
+        trainingConfirmedAt: enteringTraining ? null : undefined,
+        rescheduleAt: null,
+        rescheduleReturnCode: null,
+      },
+    });
+    try {
+      await prisma.recStageHistory.create({
+        data: {
+          recruitId, fromStageId: recruit.stageId, toStageId, changedBy: userId,
+          note: `Placed: ${branch}${department ? " / " + department : ""} / ${position}`,
+        },
+      });
+    } catch (e) {
+      console.warn("[recruitment] placement stage-history write failed (move still applied):", (e as Error).message);
+    }
+
+    // Canonical store: branch / department / position on career_applications so
+    // the Trial/Probation HR card carries them over on auto-advance.
+    if (recruit.applicationId != null) {
+      try {
+        await ensurePlacementColumns();
+        await prisma.$executeRawUnsafe(
+          `UPDATE public.career_applications
+             SET branch = $1, department = $2, position = $3, updated_at = now()
+           WHERE id = $4`,
+          branch, department, position, recruit.applicationId,
+        );
+      } catch (e) {
+        console.warn("[recruitment] career_applications placement write failed:", (e as Error).message);
+      }
+    }
+
+    // Mirror coarse stage + exact board_stage, exactly like a normal move.
     await mirrorStageToCareerApplications([recruit.applicationId], toStage.shortCode, toStage.name);
 
     revalidatePath("/recruitment/opportunity");

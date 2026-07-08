@@ -53,10 +53,13 @@ export async function GET(req: NextRequest) {
             workingHours: true,
           },
         });
-        if (!self || normalizeLocation(self.location) !== location) {
+        // "self" bypasses the location match entirely — used by self-service
+        // pages (e.g. Attendance Report for FT/PT) that just want "my own
+        // record", regardless of which branch that happens to be.
+        if (location !== "self" && (!self || normalizeLocation(self.location) !== location)) {
           return NextResponse.json({ staff: [] });
         }
-        return NextResponse.json({ staff: [self] });
+        return NextResponse.json({ staff: self ? [self] : [] });
       }
       // BM and other non-admins: must match own branch.
       // We treat `branchName` and the `location` query as both running through

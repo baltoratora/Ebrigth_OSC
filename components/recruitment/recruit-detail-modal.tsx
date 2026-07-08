@@ -3,10 +3,16 @@
 import { useEffect, useState } from "react";
 import {
   X, UserRoundCheck, Loader2, Clock, CalendarDays, FileText,
-  Phone, Mail, MapPin, GraduationCap, Users, Briefcase, Globe, Download,
+  Phone, Mail, MapPin, GraduationCap, Users, Briefcase, Globe, Download, Pencil,
 } from "lucide-react";
-import { getRecruitDetail, moveRecruit, type RecruitDetail } from "@/app/recruitment/_actions";
+import { getRecruitDetail, moveRecruit, updateRecruitDetail, type RecruitDetail } from "@/app/recruitment/_actions";
+import { GENDERS, EDUCATION_LEVELS } from "@/lib/recruitment/employment";
 import { formTypeLabel, sourceLabel } from "@/lib/recruitment/labels";
+
+interface EditForm {
+  name: string; phone: string; email: string; source: string;
+  branch: string; position: string; city: string; gender: string; educationLevel: string;
+}
 
 function fmt(iso: string | null) {
   if (!iso) return "—";
@@ -38,6 +44,30 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h3 className="mb-3 text-[11px] font-bold uppercase tracking-wider text-slate-400">{children}</h3>;
 }
 
+const EDIT_INPUT =
+  "w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-800 dark:text-white";
+
+function EditText({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">{label}</span>
+      <input type="text" value={value} onChange={(e) => onChange(e.target.value)} className={EDIT_INPUT} />
+    </label>
+  );
+}
+
+function EditSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: readonly string[] }) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">{label}</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)} className={EDIT_INPUT}>
+        <option value="">—</option>
+        {options.map((o) => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </label>
+  );
+}
+
 // Shared recruit detail drawer. Pass a recruitId to open; null closes it.
 export function RecruitDetailModal({
   recruitId,
@@ -65,6 +95,51 @@ export function RecruitDetailModal({
   const [err, setErr] = useState<string | null>(null);
   const [moving, setMoving] = useState(false);
 
+  // ── Edit mode ──
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+  const [form, setForm] = useState<EditForm | null>(null);
+
+  function startEdit() {
+    if (!detail) return;
+    setForm({
+      name: detail.name ?? "",
+      phone: detail.phone ?? "",
+      email: detail.email ?? "",
+      source: detail.source ?? "",
+      branch: detail.branch ?? "",
+      position: detail.position ?? "",
+      city: detail.hrfs?.city ?? "",
+      gender: detail.hrfs?.gender ?? "",
+      educationLevel: detail.hrfs?.educationLevel ?? "",
+    });
+    setSaveErr(null);
+    setEditing(true);
+  }
+  function cancelEdit() {
+    setEditing(false);
+    setSaveErr(null);
+  }
+  async function save() {
+    if (!recruitId || !form) return;
+    if (!form.name.trim()) { setSaveErr("Name can't be empty."); return; }
+    setSaving(true);
+    setSaveErr(null);
+    const res = await updateRecruitDetail(recruitId, {
+      name: form.name, phone: form.phone, email: form.email, source: form.source,
+      branch: form.branch, position: form.position, city: form.city,
+      gender: form.gender || null, educationLevel: form.educationLevel || null,
+    });
+    if (!res.ok) { setSaving(false); setSaveErr(res.error ?? "Update failed"); return; }
+    // Re-fetch so the modal reflects the canonical values (incl. hrfs fields).
+    const refreshed = await getRecruitDetail(recruitId);
+    setSaving(false);
+    if (refreshed.ok && refreshed.detail) setDetail(refreshed.detail);
+    setEditing(false);
+    onMoved?.(); // refresh the board so card name / branch / position update
+  }
+
   async function handleMove(toStageId: string) {
     if (!recruitId || !toStageId) return;
     setMoving(true);
@@ -85,6 +160,8 @@ export function RecruitDetailModal({
     setLoading(true);
     setErr(null);
     setDetail(null);
+    setEditing(false);
+    setSaveErr(null);
     // Race the action against a timeout so a rejected OR hung server action
     // surfaces an error instead of an endless "Loading recruit…" spinner.
     Promise.race([
@@ -138,6 +215,15 @@ export function RecruitDetailModal({
           >
             <X className="h-4 w-4" />
           </button>
+          {detail && !editing && (
+            <button
+              onClick={startEdit}
+              title="Edit details"
+              className="absolute right-12 top-4 inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-slate-500 transition hover:bg-white/60 hover:text-slate-800 dark:hover:bg-slate-800 dark:hover:text-white"
+            >
+              <Pencil className="h-3.5 w-3.5" /> Edit
+            </button>
+          )}
           <div className="flex items-center gap-4">
             <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-linear-to-br from-emerald-500 to-teal-600 text-lg font-bold text-white shadow-sm">
               {detail ? initials(detail.name) : "…"}
@@ -207,29 +293,58 @@ export function RecruitDetailModal({
 
           {detail && (
             <div className="space-y-6">
-              {/* Contact */}
-              <section>
-                <SectionTitle>Contact</SectionTitle>
-                <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <Field icon={Phone} label="Phone" value={detail.phone} />
-                  <Field icon={Mail} label="Email" value={detail.email} />
-                  <Field icon={MapPin} label="City" value={detail.hrfs?.city} />
-                  <Field icon={Globe} label="Source" value={sourceLabel(detail.source)} />
-                </dl>
-              </section>
+              {editing && form ? (
+                /* ── Edit form (replaces Contact + Application) ── */
+                <section>
+                  <SectionTitle>Edit details</SectionTitle>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <EditText label="Name" value={form.name} onChange={(v) => setForm({ ...form, name: v })} />
+                    <EditText label="Phone" value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} />
+                    <EditText label="Email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} />
+                    <EditText label="City" value={form.city} onChange={(v) => setForm({ ...form, city: v })} />
+                    <EditText label="Branch" value={form.branch} onChange={(v) => setForm({ ...form, branch: v })} />
+                    <EditText label="Position" value={form.position} onChange={(v) => setForm({ ...form, position: v })} />
+                    <EditText label="Source" value={form.source} onChange={(v) => setForm({ ...form, source: v })} />
+                    <EditSelect label="Gender" value={form.gender} onChange={(v) => setForm({ ...form, gender: v })} options={GENDERS} />
+                    <EditSelect label="Education level" value={form.educationLevel} onChange={(v) => setForm({ ...form, educationLevel: v })} options={EDUCATION_LEVELS} />
+                  </div>
+                  {saveErr && <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">{saveErr}</p>}
+                  <div className="mt-4 flex justify-end gap-2">
+                    <button onClick={cancelEdit} disabled={saving} className="rounded-lg px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 disabled:opacity-50 dark:text-slate-300 dark:hover:bg-slate-800">
+                      Cancel
+                    </button>
+                    <button onClick={save} disabled={saving} className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-1.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
+                      {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Save changes
+                    </button>
+                  </div>
+                </section>
+              ) : (
+                <>
+                  {/* Contact */}
+                  <section>
+                    <SectionTitle>Contact</SectionTitle>
+                    <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <Field icon={Phone} label="Phone" value={detail.phone} />
+                      <Field icon={Mail} label="Email" value={detail.email} />
+                      <Field icon={MapPin} label="City" value={detail.hrfs?.city} />
+                      <Field icon={Globe} label="Source" value={sourceLabel(detail.source)} />
+                    </dl>
+                  </section>
 
-              {/* Application */}
-              <section className="border-t border-slate-100 pt-5 dark:border-slate-800">
-                <SectionTitle>Application</SectionTitle>
-                <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <Field icon={FileText} label="Type of form" value={formTypeLabel(detail.hrfs?.formType)} />
-                  <Field icon={GraduationCap} label="Education level" value={detail.hrfs?.educationLevel} />
-                  <Field icon={Users} label="Gender" value={detail.hrfs?.gender} />
-                  <Field icon={UserRoundCheck} label="Matched staff" value={detail.branchStaffId ? `BranchStaff #${detail.branchStaffId}` : "Not matched"} />
-                  <Field icon={Clock} label="Submitted" value={fmt(detail.hrfs?.createdAt ?? detail.ghlCreatedAt ?? detail.createdAt)} />
-                  <Field icon={Clock} label="Last updated" value={fmt(detail.hrfs?.updatedAt ?? detail.updatedAt)} />
-                </dl>
-              </section>
+                  {/* Application */}
+                  <section className="border-t border-slate-100 pt-5 dark:border-slate-800">
+                    <SectionTitle>Application</SectionTitle>
+                    <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <Field icon={FileText} label="Type of form" value={formTypeLabel(detail.hrfs?.formType)} />
+                      <Field icon={GraduationCap} label="Education level" value={detail.hrfs?.educationLevel} />
+                      <Field icon={Users} label="Gender" value={detail.hrfs?.gender} />
+                      <Field icon={UserRoundCheck} label="Matched staff" value={detail.branchStaffId ? `BranchStaff #${detail.branchStaffId}` : "Not matched"} />
+                      <Field icon={Clock} label="Submitted" value={fmt(detail.hrfs?.createdAt ?? detail.ghlCreatedAt ?? detail.createdAt)} />
+                      <Field icon={Clock} label="Last updated" value={fmt(detail.hrfs?.updatedAt ?? detail.updatedAt)} />
+                    </dl>
+                  </section>
+                </>
+              )}
 
               {/* Interview */}
               {detail.interview && (

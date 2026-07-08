@@ -8,6 +8,13 @@ import {
 } from '@/lib/roles';
 import { isValidEmployeeId } from '@/lib/employeeId';
 import { COACH_ROLES_WITH_LEGACY } from '@/lib/constants';
+import { syncEmployeeToDataSet } from '@/lib/hrms/employee-dataset-sync';
+
+// Fire-and-forget push of one employee to the Process Street data set. Never
+// blocks or fails the employee request (best-effort; no-ops if PS unconfigured).
+function pushToProcessStreet(branchStaffId: number): void {
+  void syncEmployeeToDataSet(branchStaffId).catch(() => {});
+}
 
 // Map BranchStaff DB row → Employee shape expected by the frontend
 function toEmployee(s: Record<string, unknown>) {
@@ -209,6 +216,7 @@ export async function POST(request: Request) {
       },
     });
 
+    pushToProcessStreet(newStaff.id);
     return NextResponse.json(
       { message: 'Employee registered successfully', data: toEmployee(newStaff as Record<string, unknown>) },
       { status: 201 }
@@ -351,6 +359,7 @@ export async function PUT(request: Request) {
       },
     });
 
+    pushToProcessStreet(updated.id);
     return NextResponse.json({
       message: 'Employee updated successfully',
       data: toEmployee(updated as Record<string, unknown>),
@@ -385,6 +394,8 @@ export async function DELETE(request: Request) {
 
     const deleted = await hrfsPrisma.branchStaff.delete({ where: { id: parseInt(id) } });
 
+    // Employee is gone from the DB → this removes their Process Street row.
+    pushToProcessStreet(parseInt(id));
     return NextResponse.json({
       message: 'Employee deleted successfully',
       data: toEmployee(deleted as Record<string, unknown>),

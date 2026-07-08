@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { canSeeKey } from "@/lib/dashboard-access";
 import { useMyPermissions } from "@/lib/use-my-permissions";
+import { isEmployee } from "@/lib/roles";
 
 interface DashboardCard {
   id: string;
@@ -125,6 +126,14 @@ export default function DashboardDetail({ id }: DashboardDetailProps) {
 
   const isItemEnabled = (key: string) => canSeeKey(role, key, overrides);
 
+  // FT/PT share the "Attendance" tile's unlock (hrms.attendance) so it isn't
+  // greyed out for them, but they don't get the /attendance hub itself
+  // (Summary/Appeal/Leave show other staff's data) — send them straight to
+  // their own self-scoped Report page instead. See middleware.ts, which only
+  // allowlists /attendance/report for FT/PT, never bare /attendance.
+  const resolveHref = (item: { key: string; href: string }) =>
+    item.key === "hrms.attendance" && isEmployee(role) ? "/attendance/report" : item.href;
+
   if (!dashboard) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -171,7 +180,7 @@ export default function DashboardDetail({ id }: DashboardDetailProps) {
             );
           }
           return (
-            <Link key={item.name} href={item.href}>
+            <Link key={item.name} href={resolveHref(item)}>
               <div className="bg-white rounded-2xl shadow-sm border border-slate-200 hover:border-blue-400 hover:shadow-md transition-all cursor-pointer p-8 h-full flex flex-col items-center justify-center text-center">
                 <span className="text-5xl mb-4">{item.icon}</span>
                 <h2 className="text-lg font-black text-slate-800 uppercase tracking-tight">{item.name}</h2>
