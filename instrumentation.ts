@@ -87,4 +87,22 @@ export async function register() {
       runTrainingReconcile().catch(err => console.error('[rec-training] Run error:', err));
     }, REC_INTERVAL_MS);
   }
+
+  // ── Process Street employee data-set reconcile ────────────────────────────
+  // Safety net for the real-time employee → Process Street sync (app/api/
+  // employees). Periodically reconciles active BranchStaff into the "HRMS
+  // Employees" data set — add new, update changed, delete departed — so a
+  // missed real-time push self-heals. Gated on PROCESS_STREET_API_KEY.
+  if (process.env.PROCESS_STREET_API_KEY) {
+    const { reconcileEmployeeDataSet } = await import('@/lib/hrms/employee-dataset-sync');
+    const PS_INTERVAL_MS = 6 * 60 * 60_000; // every 6 hours
+    console.log(`[ps-sync] Employee data-set reconcile ON — every ${PS_INTERVAL_MS / 3_600_000}h`);
+    const run = () => reconcileEmployeeDataSet()
+      .then(r => console.log(`[ps-sync] reconcile: +${r.created} ~${r.updated} -${r.deleted}`))
+      .catch(err => console.error('[ps-sync] reconcile error:', err.message));
+    run();
+    setInterval(run, PS_INTERVAL_MS);
+  } else {
+    console.log('[ps-sync] Disabled (set PROCESS_STREET_API_KEY to enable).');
+  }
 }
