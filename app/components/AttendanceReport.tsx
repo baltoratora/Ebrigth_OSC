@@ -2,13 +2,16 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { motion } from "framer-motion";
 import {
   ArrowLeft, MapPin, Calendar, User, Briefcase, Building2, Hash,
   CheckCircle2, AlertCircle, RefreshCw, Loader2, Users, CalendarX, Timer,
+  X, Send, Clock3, ShieldCheck, ShieldX,
 } from "lucide-react";
 
 import Sidebar from "./Sidebar";
+import { isEmployee } from "@/lib/roles";
 import StatCard from "./ui/StatCard";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "./ui/Tooltip";
 import {
@@ -62,6 +65,14 @@ interface DayRow {
   isManual: boolean;
 }
 
+interface Justification {
+  date: string;
+  reason: string | null;
+  evidenceUrl: string | null;
+  status: "pending" | "approved" | "rejected";
+  reviewedBy: string | null;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -108,6 +119,11 @@ function padDate(n: number): string {
 export default function AttendanceReport() {
   const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const { data: session } = useSession();
+  const role = (session?.user as { role?: unknown } | undefined)?.role;
+  // FT/PT viewing their OWN report: no branch/name picker — just their record,
+  // and they can submit a reason on a No Record day for HR to review.
+  const selfMode = isEmployee(role);
 
   const now = new Date();
   const [selectedYear, setSelectedYear]   = useState(now.getFullYear());
@@ -130,7 +146,17 @@ export default function AttendanceReport() {
   // workingHours for every date (unchanged behaviour for staff without history).
   const [scheduleVersions, setScheduleVersions] = useState<ScheduleVersion[]>([]);
 
+  // Self-submitted No-Record justifications for the selected employee + month,
+  // keyed by YYYY-MM-DD. Only meaningful in selfMode.
+  const [justByDate, setJustByDate] = useState<Map<string, Justification>>(new Map());
+  const [justifyTarget, setJustifyTarget] = useState<string | null>(null); // date, or null when closed
+  const [justifyReason, setJustifyReason] = useState("");
+  const [justifyFile, setJustifyFile] = useState<File | null>(null);
+  const [justifySaving, setJustifySaving] = useState(false);
+  const [justifyError, setJustifyError] = useState<string | null>(null);
+
   useEffect(() => {
+    if (selfMode) return; // self-service skips the branch picker entirely
     fetch("/api/branch-locations")
       .then(r => r.json())
       .then(d => {
@@ -139,9 +165,24 @@ export default function AttendanceReport() {
         if (locs.length > 0) setSelectedLocation(locs[0]);
       })
       .catch(console.error);
-  }, []);
+  }, [selfMode]);
+
+  // Self-service: fetch just the caller's own BranchStaff record once.
+  useEffect(() => {
+    if (!selfMode) return;
+    fetch(`/api/branch-locations?location=self`)
+      .then(r => r.json())
+      .then(d => {
+        const members: BranchStaffMember[] = d.staff ?? [];
+        setStaff(members);
+        setSelectedStaffId(members[0]?.id ?? null);
+        setLogs([]);
+      })
+      .catch(console.error);
+  }, [selfMode]);
 
   useEffect(() => {
+    if (selfMode) return;
     if (!selectedLocation) return;
     fetch(`/api/branch-locations?location=${encodeURIComponent(selectedLocation)}`)
       .then(r => r.json())
@@ -152,7 +193,7 @@ export default function AttendanceReport() {
         setLogs([]);
       })
       .catch(console.error);
-  }, [selectedLocation]);
+  }, [selfMode, selectedLocation]);
 
   const selectedStaff = staff.find(s => s.id === selectedStaffId) ?? null;
 
@@ -207,6 +248,82 @@ export default function AttendanceReport() {
       .then((d: { versions?: ScheduleVersion[] }) => setScheduleVersions(d.versions ?? []))
       .catch(() => setScheduleVersions([]));
   }, [selectedStaff]);
+
+  // ── Self-service: pull this employee's justification submissions for the
+  //    month (pending/approved/rejected), keyed by date ───────────────────────
+  const fetchJustifications = useCallback(() => {
+    const empNo = selfMode ? selectedStaff?.employeeId : null;
+    if (!empNo) { setJustByDate(new Map()); return; }
+    fetch(`/api/attendance-justification?empNo=${encodeURIComponent(empNo)}&month=${selectedMonth}&year=${selectedYear}`)
+      .then(r => (r.ok ? r.json() : { justifications: [] }))
+      .then((d: { justifications?: Justification[] }) => {
+        const map = new Map<string, Justification>();
+        (d.justifications ?? []).forEach(j => map.set(j.date, j));
+        setJustByDate(map);
+      })
+      .catch(() => setJustByDate(new Map()));
+  }, [selfMode, selectedStaff, selectedMonth, selectedYear]);
+  useEffect(() => { fetchJustifications(); }, [fetchJustifications]);
+
+  const openJustify = useCallback((date: string) => {
+    if (!selfMode) return;
+    const existing = justByDate.get(date);
+    if (existing?.status === "approved") return; // already settled, nothing to do
+    setJustifyTarget(date);
+    setJustifyReason(existing?.reason ?? "");
+    setJustifyFile(null);
+    setJustifyError(null);
+  }, [selfMode, justByDate]);
+
+  const fileToBase64 = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error("Could not read the file"));
+      reader.readAsDataURL(file);
+    });
+
+  const submitJustification = useCallback(async () => {
+    if (!justifyTarget) return;
+    if (!justifyReason.trim() && !justifyFile) {
+      setJustifyError("Add a reason or attach evidence.");
+      return;
+    }
+    setJustifySaving(true);
+    setJustifyError(null);
+    try {
+      let evidenceBase64: string | undefined;
+      let evidenceName: string | undefined;
+      let evidenceMime: string | undefined;
+      if (justifyFile) {
+        evidenceBase64 = await fileToBase64(justifyFile);
+        evidenceName = justifyFile.name;
+        evidenceMime = justifyFile.type || "application/octet-stream";
+      }
+      const res = await fetch("/api/attendance-justification", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "self",
+          date: justifyTarget,
+          reason: justifyReason.trim() || null,
+          evidenceBase64, evidenceName, evidenceMime,
+        }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error((e as { error?: string }).error || "Failed to submit");
+      }
+      setJustifyTarget(null);
+      setJustifyReason("");
+      setJustifyFile(null);
+      fetchJustifications();
+    } catch (e) {
+      setJustifyError((e as Error).message);
+    } finally {
+      setJustifySaving(false);
+    }
+  }, [justifyTarget, justifyReason, justifyFile, fetchJustifications]);
 
   // ── Build day rows for entire month ────────────────────────────────────────
   const rows: DayRow[] = [];
@@ -371,13 +488,24 @@ export default function AttendanceReport() {
                   <div className="flex items-center gap-3">
                     <div className="w-1 h-6 bg-blue-500 rounded-full" />
                     <div>
-                      <h2 className="text-lg font-bold text-gray-900">Employee</h2>
-                      <p className="text-xs text-gray-500 mt-0.5">Pick the staff member and period</p>
+                      <h2 className="text-lg font-bold text-gray-900">{selfMode ? "Your Attendance" : "Employee"}</h2>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        {selfMode ? "Your own report — pick the period" : "Pick the staff member and period"}
+                      </p>
                     </div>
                   </div>
                 </div>
 
                 <div className="p-5 space-y-4">
+                  {selfMode ? (
+                    selectedStaff && (
+                      <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-blue-50 border border-blue-200">
+                        <User className="w-4 h-4 text-blue-500 shrink-0" />
+                        <span className="text-sm font-semibold text-gray-800">{selectedStaff.name}</span>
+                      </div>
+                    )
+                  ) : (
+                  <>
                   {/* Branch */}
                   <div>
                     <label className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
@@ -399,6 +527,8 @@ export default function AttendanceReport() {
                       {staff.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                     </select>
                   </div>
+                  </>
+                  )}
 
                   {/* Read-only details */}
                   {selectedStaff && (
@@ -521,6 +651,8 @@ export default function AttendanceReport() {
                           const isRestDayRow = row.attendance === "Rest Day" || row.attendance === "Off Day";
                           const isNoData     = row.attendance === "No Data";
                           const isToday      = row.date === todayStr;
+                          const just = selfMode ? justByDate.get(row.date) : undefined;
+                          const canClickToJustify = selfMode && isNoData && !row.leaveType && just?.status !== "approved";
                           return (
                             <Tooltip key={row.date}>
                               <TooltipTrigger asChild>
@@ -574,6 +706,32 @@ export default function AttendanceReport() {
                                       <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-violet-50 text-violet-700 ring-1 ring-violet-200">
                                         <Calendar className="w-3 h-3" /> {row.leaveType}
                                       </span>
+                                    ) : just?.status === "approved" ? (
+                                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">
+                                        <ShieldCheck className="w-3 h-3" /> Justified
+                                      </span>
+                                    ) : just?.status === "pending" ? (
+                                      <button
+                                        onClick={() => openJustify(row.date)}
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-700 ring-1 ring-amber-200 hover:bg-amber-100 transition-colors"
+                                      >
+                                        <Clock3 className="w-3 h-3" /> Pending review
+                                      </button>
+                                    ) : just?.status === "rejected" ? (
+                                      <button
+                                        onClick={() => openJustify(row.date)}
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-red-50 text-red-700 ring-1 ring-red-200 hover:bg-red-100 transition-colors"
+                                      >
+                                        <ShieldX className="w-3 h-3" /> Rejected — resubmit
+                                      </button>
+                                    ) : canClickToJustify ? (
+                                      <button
+                                        onClick={() => openJustify(row.date)}
+                                        title="Submit a reason for HR to review"
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-rose-50 text-rose-700 ring-1 ring-rose-200 hover:bg-rose-100 transition-colors"
+                                      >
+                                        <AlertCircle className="w-3 h-3" /> No Record
+                                      </button>
                                     ) : (
                                       <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-rose-50 text-rose-700 ring-1 ring-rose-200">
                                         <AlertCircle className="w-3 h-3" /> No Record
@@ -631,6 +789,85 @@ export default function AttendanceReport() {
           </motion.div>
         </main>
       </div>
+
+      {/* Self-service justify modal — FT/PT submitting a reason for a No
+          Record day. Goes to HR as "pending"; HR approves/rejects it. */}
+      {justifyTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={() => !justifySaving && setJustifyTarget(null)}
+        >
+          <div
+            className="w-full max-w-md bg-white rounded-2xl shadow-xl overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Send className="w-5 h-5 text-blue-600" />
+                <h3 className="text-base font-bold text-gray-900">Submit a reason</h3>
+              </div>
+              <button
+                onClick={() => !justifySaving && setJustifyTarget(null)}
+                className="p-1 rounded-md hover:bg-gray-100 text-gray-400 hover:text-gray-600"
+                aria-label="Close"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="px-5 py-4 space-y-4">
+              <div className="text-sm">
+                <p className="font-semibold text-gray-900">
+                  {new Date(justifyTarget + "T00:00:00").toLocaleDateString("en-GB", {
+                    weekday: "long", day: "2-digit", month: "long", year: "numeric",
+                  })}
+                </p>
+                <p className="text-xs text-gray-500">No scanner record found for this day.</p>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1">Reason</label>
+                <textarea
+                  value={justifyReason}
+                  onChange={e => setJustifyReason(e.target.value)}
+                  rows={3}
+                  placeholder="e.g. Forgot to scan, scanner was down, approved WFH…"
+                  className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:border-blue-400 focus:ring-2 focus:ring-blue-100 focus:outline-none resize-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1">Evidence (optional)</label>
+                <input
+                  type="file"
+                  accept="image/*,application/pdf"
+                  onChange={e => setJustifyFile(e.target.files?.[0] ?? null)}
+                  className="block w-full text-xs text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                />
+                {justifyFile && <p className="text-[11px] text-gray-500 mt-1 truncate">{justifyFile.name}</p>}
+              </div>
+              <p className="text-[11px] text-gray-400">
+                This goes to HR for approval — you&apos;ll see &quot;Pending review&quot; until they decide.
+              </p>
+              {justifyError && <p className="text-xs text-rose-600">{justifyError}</p>}
+            </div>
+            <div className="px-5 py-3 border-t border-gray-200 flex items-center justify-end gap-2">
+              <button
+                onClick={() => setJustifyTarget(null)}
+                disabled={justifySaving}
+                className="px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-lg disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={submitJustification}
+                disabled={justifySaving}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50"
+              >
+                {justifySaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                {justifySaving ? "Submitting…" : "Submit"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       </TooltipProvider>
     </div>
   );

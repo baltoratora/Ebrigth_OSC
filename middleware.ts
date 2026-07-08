@@ -49,6 +49,9 @@ export const runtime = "nodejs";
 //   ACADEMY        → keeps prior access (+ Inventory tile, client-side)
 //   FULL_TIME / PART_TIME → see EMPLOYEE_ALLOWED_PATHS below (very narrow)
 const ROLE_RULES: Array<{ prefix: string; allowed: readonly Role[] }> = [
+  // Listed before the (currently unrestricted) /attendance prefix so this
+  // more specific sub-path wins the "first matching prefix" rule above.
+  { prefix: "/attendance/field-activity",      allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.MARKETING] },
   { prefix: "/user-management",               allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.ACADEMY] },
   { prefix: "/account-management",            allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR] },
   { prefix: "/register-employee",             allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR] },
@@ -57,7 +60,12 @@ const ROLE_RULES: Array<{ prefix: string; allowed: readonly Role[] }> = [
   { prefix: "/manpower-schedule",             allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.BRANCH_MANAGER, ROLES.HOD] },
 
   { prefix: "/hr-dashboard",                  allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD] },
-  { prefix: "/attendance-manual",              allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD, ROLES.BRANCH_MANAGER] },
+  // MARKETING included so they can reach the Attendance Manual hub — the hub
+  // itself only shows them the Field Activity card (see
+  // app/attendance-manual/page.tsx), and the roster API (/api/attendance-manual)
+  // still gates on MANAGEMENT_ROLES, which MARKETING isn't part of, so they
+  // can never actually load a branch roster even by guessing the URL.
+  { prefix: "/attendance-manual",              allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD, ROLES.BRANCH_MANAGER, ROLES.MARKETING] },
   { prefix: "/recruitment",                   allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD] },
   { prefix: "/onboarding",                    allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD] },
   { prefix: "/offboarding",                   allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD] },
@@ -80,10 +88,20 @@ const EMPLOYEE_FALLBACK_PATH = "/manpower-cost-report";
 // redirects to EMPLOYEE_FALLBACK_PATH.
 const EMPLOYEE_ALLOWED_PATHS = [
   "/home",              // tile dashboard — non-HRMS tiles are locked client-side
-  "/dashboards/hrms",   // HRMS hub — only the two allowed tiles are enabled
+  "/dashboards/hrms",   // HRMS hub — only the allowed tiles are enabled
   "/manpower-cost-report",
   "/staff-directory",   // coaches may view the staff directory
   "/profile",           // standard self-service page
+  // Self-service Attendance Report ONLY — deliberately NOT the bare
+  // "/attendance" hub, because isEmployeeAllowed() matches by prefix
+  // ("/attendance/*"), which would also reopen /attendance/summary,
+  // /attendance/appeal, /attendance/leave (other staff's attendance data) to
+  // FT/PT. The HRMS dashboard's "Attendance" tile is pointed straight here
+  // for FT/PT instead of at the hub (see DashboardDetail.tsx). Self-service
+  // Attendance Report locks them to their own record only (session email →
+  // BranchStaff), and lets them submit a reason on a "No Record" day for HR
+  // to approve.
+  "/attendance/report",
 ];
 const EMPLOYEE_LOCKED_ROLES: readonly Role[] = [ROLES.FULL_TIME, ROLES.PART_TIME];
 

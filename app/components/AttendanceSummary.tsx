@@ -199,6 +199,13 @@ interface Justification {
   evidenceUrl: string | null;
   evidenceName: string | null;
   justifiedBy: string | null;
+  /** "pending" = FT/PT self-submitted, awaiting HR review. "approved" =
+   *  settled (either HR wrote it directly, or HR approved a self-submission).
+   *  "rejected" = HR declined a self-submission. Rows written before this
+   *  column existed default to "approved" server-side. */
+  status: "pending" | "approved" | "rejected";
+  submittedBy?: string | null;
+  reviewedBy?: string | null;
 }
 
 export default function AttendanceSummary() {
@@ -607,6 +614,25 @@ export default function AttendanceSummary() {
       );
       fetchJustifications();
     } catch { /* ignore — list re-pulls on the next poll */ }
+  }, [canJustify, selectedDate, fetchJustifications]);
+
+  // Approve/reject a FT/PT self-submitted ("pending") justification.
+  const reviewJustification = useCallback(async (empNo: string, decision: "approved" | "rejected") => {
+    if (!canJustify) return;
+    try {
+      const res = await fetch("/api/attendance-justification", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "review", empNo, date: selectedDate, decision }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error((e as { error?: string }).error || "Failed to review");
+      }
+      fetchJustifications();
+    } catch (e) {
+      setJustifyError(e instanceof Error ? e.message : "Failed to review");
+    }
   }, [canJustify, selectedDate, fetchJustifications]);
 
   // ── Filter logs to the selected branch ────────────────────────────────────
@@ -1480,7 +1506,19 @@ export default function AttendanceSummary() {
                         {display.charAt(0).toUpperCase()}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold text-gray-900 truncate">{display}</p>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <p className="text-sm font-semibold text-gray-900 truncate">{display}</p>
+                          {j?.status === "pending" && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide bg-amber-50 text-amber-700 ring-1 ring-amber-200">
+                              Pending
+                            </span>
+                          )}
+                          {j?.status === "rejected" && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide bg-red-50 text-red-700 ring-1 ring-red-200">
+                              Rejected
+                            </span>
+                          )}
+                        </div>
                         <div className="flex items-center gap-1.5 mt-0.5">
                           {s.role && <span className="text-[11px] text-gray-500 truncate">{s.role}</span>}
                           {s.role && label && <span className="text-gray-300 text-[11px]">·</span>}
@@ -1489,7 +1527,10 @@ export default function AttendanceSummary() {
                         {j?.reason && (
                           <p className="text-[11px] text-gray-600 mt-1 line-clamp-2">{j.reason}</p>
                         )}
-                        <div className="flex items-center gap-3 mt-1">
+                        {j?.status === "pending" && j?.submittedBy && (
+                          <p className="text-[10px] text-gray-400 mt-0.5">Submitted by {j.submittedBy}</p>
+                        )}
+                        <div className="flex items-center gap-3 mt-1 flex-wrap">
                           {j?.evidenceUrl && (
                             <a
                               href={j.evidenceUrl}
@@ -1500,6 +1541,24 @@ export default function AttendanceSummary() {
                               <Paperclip className="w-3 h-3" />
                               Evidence
                             </a>
+                          )}
+                          {canJustify && j?.status === "pending" && (
+                            <>
+                              <button
+                                onClick={() => s.employeeId && reviewJustification(s.employeeId, "approved")}
+                                className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-600 hover:text-emerald-800"
+                              >
+                                <ShieldCheck className="w-3 h-3" />
+                                Approve
+                              </button>
+                              <button
+                                onClick={() => s.employeeId && reviewJustification(s.employeeId, "rejected")}
+                                className="inline-flex items-center gap-1 text-[10px] font-semibold text-rose-500 hover:text-rose-700"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                                Reject
+                              </button>
+                            </>
                           )}
                           {canJustify && (
                             <>

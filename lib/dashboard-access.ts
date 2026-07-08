@@ -90,6 +90,14 @@ export const DASHBOARD_TREE: DashboardNode[] = [
           { key: "hrms.attendance.report",  label: "Report",  href: "/attendance/report" },
           { key: "hrms.attendance.appeal",  label: "Appeal",  href: "/attendance/appeal" },
           { key: "hrms.attendance.leave",   label: "Leave",   href: "/attendance/leave" },
+          // Deliberately NOT "hrms.attendance.field-activity" — that key
+          // string would be auto-granted to every role that already has
+          // "hrms.attendance" (HR, HOD via "hrms", Executive, Intern) via the
+          // prefix-match rule in resolveRoleDefault() below, regardless of
+          // where this node sits in the tree. Restricted-visibility features
+          // need their own standalone key so no existing broader grant
+          // accidentally covers them.
+          { key: "field-activity", label: "Field Activity", href: "/attendance/field-activity" },
         ],
       },
       { key: "hrms.attendance-manual", label: "Attendance Manual", href: "/attendance-manual" },
@@ -280,8 +288,12 @@ export const ROLE_ACCESS: Record<Role, readonly string[] | "*"> = {
   ],
 
   [ROLES.INTERN]:    ["home", "hrms.attendance", "hrms.claims", "library"],
-  [ROLES.FULL_TIME]: ["home", "hrms.manpower-cost"],
-  [ROLES.PART_TIME]: ["home", "hrms.manpower-cost"],
+  // "hrms.attendance" (not the narrower ".report" key) so the single shared
+  // "Attendance" tile unlocks — DashboardDetail.tsx points FT/PT at
+  // /attendance/report directly instead of the /attendance hub, so they never
+  // actually reach Summary/Appeal/Leave despite this broader-looking grant.
+  [ROLES.FULL_TIME]: ["home", "hrms.manpower-cost", "hrms.attendance"],
+  [ROLES.PART_TIME]: ["home", "hrms.manpower-cost", "hrms.attendance"],
 
   // Marketing department — full FA access (matches SessionSync's back-office
   // role rule). Same baseline tiles as Academy until requirements diverge.
@@ -290,6 +302,11 @@ export const ROLE_ACCESS: Record<Role, readonly string[] | "*"> = {
     "fa-system",
     "crm",
     "inventory",
+    "field-activity",
+    // Grants the "Attendance Manual" tile so Marketing can reach the hub —
+    // the hub itself only shows them the Field Activity card, never the
+    // branch roster (see app/attendance-manual/page.tsx).
+    "hrms.attendance-manual",
   ],
 };
 
