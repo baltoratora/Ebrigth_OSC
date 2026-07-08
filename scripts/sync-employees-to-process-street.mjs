@@ -23,20 +23,63 @@ const APPLY = process.env.PS_APPLY === "1" || process.argv.includes("--apply");
 const BASE = "https://public-api.process.st/api/v1.1";
 const DATA_SET_NAME = "HRMS Employees";
 
-// Data Set columns → BranchStaff column. "HRMS ID" (BranchStaff.id) is the
-// stable match key used to find a row for update/delete.
+// ── Value normalization ─────────────────────────────────────────────────────
+const clean = (v) => (v == null ? "" : String(v).replace(/\s+/g, " ").trim());
+const fmtTs = (v) => (v ? new Date(v).toISOString().slice(0, 19).replace("T", " ") : "");
+const asJson = (v) => (v == null ? "" : typeof v === "string" ? v : JSON.stringify(v));
+function normEmployment(v) {
+  const s = clean(v).toLowerCase();
+  if (!s) return "";
+  if (s.includes("intern")) return "Internship";
+  if (s.includes("full")) return "Full Time";
+  if (s.includes("part")) return "Part Time";
+  if (s.includes("3rd party") || s.includes("third party") || s.includes("service")) return "3rd Party Service";
+  if (s.includes("contract")) return "Contract";
+  return clean(v);
+}
+
+// Data Set column → BranchStaff column [, transform]. "HRMS ID" (BranchStaff.id)
+// is the stable match key. `role` and `biometricTemplate` are intentionally
+// excluded. Default transform is `clean` (trim + collapse whitespace).
 const COLUMNS = [
   ["HRMS ID", "id"],
   ["Employee ID", "employeeId"],
   ["Name", "name"],
+  ["Nickname", "nickname"],
   ["Email", "email"],
   ["Phone", "phone"],
+  ["Gender", "gender"],
+  ["DOB", "dob"],
+  ["Age", "age"],
+  ["Nationality", "nationality"],
+  ["NRIC", "nric"],
+  ["Home Address", "home_address"],
+  ["Residential", "residential"],
+  ["Emergency Name", "emergency_name"],
+  ["Emergency Phone", "emergency_phone"],
+  ["Emergency Relation", "emergency_relation"],
   ["Branch", "branch"],
   ["Department", "department"],
   ["Position", "position"],
-  ["Role", "role"],
-  ["Employment Type", "employment_type"],
+  ["Location", "location"],
+  ["Employment Type", "employment_type", normEmployment],
+  ["Status", "status"],
+  ["Access Status", "accessStatus"],
+  ["Contract", "contract"],
+  ["Probation", "probation"],
+  ["Rate", "rate"],
+  ["University", "university"],
+  ["Bank", "bank"],
+  ["Bank Name", "bank_name"],
+  ["Bank Account", "bank_account"],
+  ["Signed Date", "signed_date"],
   ["Start Date", "start_date"],
+  ["End Date", "endDate"],
+  ["Training Start Date", "trainingStartDate"],
+  ["Training End Date", "trainingEndDate"],
+  ["Created At", "createdAt", fmtTs],
+  ["Updated At", "updatedAt", fmtTs],
+  ["Working Hours", "workingHours", asJson],
 ];
 
 if (!API_KEY) { console.error("✗ PROCESS_STREET_API_KEY not set"); process.exit(1); }
@@ -92,11 +135,11 @@ async function ensureDataSet() {
 
 function cellsFor(emp, fieldIdByName) {
   const cells = [];
-  for (const [col, src] of COLUMNS) {
+  for (const [col, src, transform] of COLUMNS) {
     const fid = fieldIdByName[col];
     if (!fid) continue;
-    const v = emp[src];
-    cells.push({ fieldId: fid, value: v == null ? "" : String(v) });
+    const value = (transform || clean)(emp[src]);
+    cells.push({ fieldId: fid, value });
   }
   return cells;
 }
@@ -110,9 +153,11 @@ async function main() {
 
   const db = new Client({ connectionString: conn });
   await db.connect();
+  // Select exactly the mapped source columns (quoted for camelCase). Excludes
+  // role + biometricTemplate since they're not in COLUMNS.
+  const srcCols = [...new Set(COLUMNS.map(([, src]) => `"${src}"`))].join(", ");
   const { rows: employees } = await db.query(
-    `SELECT id, "employeeId", name, email, phone, branch, department, position, role, employment_type, start_date
-       FROM public."BranchStaff" WHERE status = 'Active' ORDER BY id`,
+    `SELECT ${srcCols} FROM public."BranchStaff" WHERE status = 'Active' ORDER BY id`,
   );
   await db.end();
   console.log(`active employees (status='Active'): ${employees.length}`);
