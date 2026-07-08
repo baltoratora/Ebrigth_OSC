@@ -50,7 +50,11 @@ export default function AttendanceManualPage() {
   // are view-only for them, enforced again server-side.
   const canEditAnyDate = isAdmin(role);
 
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Collapsed by default, same as every other dashboard page (Attendance
+  // Summary etc.) — starting it open also forced the mobile drawer open on
+  // load, which is what caused the "two shades of white" look on phones
+  // (white sidebar drawer sitting on top of the gray-50 page background).
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [branches, setBranches] = useState<string[]>([]);
   const [branch, setBranch] = useState<string>(canSeeAllBranches ? "" : (branchName ?? ""));
   const [date, setDate] = useState<string>(todayKL());
@@ -204,9 +208,9 @@ export default function AttendanceManualPage() {
       <Sidebar sidebarOpen={sidebarOpen} onToggle={() => setSidebarOpen((p) => !p)} />
       <div className="flex-1 flex flex-col">
         <header className="bg-slate-900 text-white shrink-0 relative">
-          <div className="relative flex justify-between items-center px-10 py-8">
+          <div className="relative flex flex-wrap justify-between items-center gap-3 pl-16 pr-4 py-6 sm:px-10 sm:py-8">
             <div>
-              <h1 className="text-3xl font-black tracking-tight uppercase">
+              <h1 className="text-2xl sm:text-3xl font-black tracking-tight uppercase">
                 Attendance <span className="text-green-400">Manual</span>
               </h1>
               <p className="text-slate-400 font-medium text-sm tracking-widest mt-0.5">{dateLabel.toUpperCase()}</p>
@@ -218,7 +222,7 @@ export default function AttendanceManualPage() {
           </div>
         </header>
 
-        <main className="max-w-5xl mx-auto w-full px-6 py-8">
+        <main className="max-w-5xl mx-auto w-full px-4 sm:px-6 py-8">
           <div className="mb-6 flex flex-wrap items-center gap-3">
             {canSeeAllBranches ? (
               <select

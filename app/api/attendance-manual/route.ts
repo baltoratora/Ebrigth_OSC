@@ -14,12 +14,22 @@ export const dynamic = "force-dynamic";
 // Scope: every branch EXCEPT HQ and ST (Subang Taipan).
 //
 // Model (paper-logbook style, not clock-in/out): each person gets ONE status
-// per day — Present / Absent / Leave / MIA / Late — picked from a dropdown.
-// The roster is computed live from BranchStaff (same source Staff Directory
-// reads) for the SELECTED date (any date, past/present/future):
+// per day — Present / Absent, toggled and then locked. The roster is computed
+// live from BranchStaff (same source Staff Directory reads) for the SELECTED
+// date (any date, past/present/future):
 //   - active, started on/before the date, not yet ended
-//   - has a working-hours slot for that weekday (or no schedule at all, in
-//     which case we show them anyway rather than guess they're off)
+//   - has a working-hours slot for that weekday, AND (for today only) the
+//     clock has passed that slot's scheduled start time. The weekly slot is
+//     resolved from BranchStaffSchedule (the dated history Staff Directory
+//     writes to) FIRST, for whichever version was in effect on that exact
+//     date; the single cached BranchStaff.workingHours column is only a
+//     fallback for staff with no dated history at all. Someone with NEITHER
+//     inherits the branch manager's schedule instead (mirrors Staff
+//     Directory's own "no schedule → show the BM's hours" display rule —
+//     without this, a PT coach who's never had hours entered directly would
+//     silently disappear here while still showing a schedule in Staff
+//     Directory). Still nothing resolved even after that → NOT shown; fix the
+//     schedule in Staff Directory rather than guessing here.
 // A row in manual_attendance exists only once someone has an actual status
 // set, OR was added as a replacement/extra for the day.
 
@@ -191,6 +201,31 @@ export async function GET(req: NextRequest) {
       versionsByStaff.set(r.branchStaffId, arr);
     }
 
+    // Resolve each person's own schedule for this date (history-first, cached
+    // column fallback) up front — needed both directly and for the BM
+    // inheritance step below.
+    const resolveOwnSchedule = (s: (typeof staff)[number]): unknown => {
+      const versions = versionsByStaff.get(s.id);
+      return versions && versions.length > 0 ? scheduleForDate(versions, date) : s.workingHours;
+    };
+
+    // Many staff have no working-hours of their own configured yet — Staff
+    // Directory's own card display (app/staff-directory/page.tsx) covers this
+    // by showing them the branch manager's schedule instead, so the two pages
+    // don't disagree about who's expected today. Mirror that exact rule here:
+    // the branch's BM (role "BM") is the fallback source for anyone else at
+    // the branch with no schedule of their own.
+    const isBmRole = (role: string | null) => {
+      const r = (role ?? "").trim().toUpperCase();
+      return r === "BM" || r.startsWith("BM ");
+    };
+    let bmSchedule: unknown = undefined;
+    for (const s of staff) {
+      if (!isBmRole(s.role)) continue;
+      const own = resolveOwnSchedule(s);
+      if (hasSchedule(own)) { bmSchedule = own; break; }
+    }
+
     // Only for TODAY: hold a person off the roster until their scheduled start
     // time actually arrives (an 11pm start shouldn't appear at 9pm). Past/future
     // dates aren't "live", so this clock-time gate doesn't apply to them.
@@ -202,12 +237,24 @@ export async function GET(req: NextRequest) {
       const end = parseLooseDate(s.endDate);
       if (end && end < date) return false; // already ended by this date
 
-      const versions = versionsByStaff.get(s.id);
-      const wh = versions && versions.length > 0 ? scheduleForDate(versions, date) : s.workingHours;
+      // BranchStaffSchedule (the dated history) is the source of truth for
+      // which weekly schedule was in effect on this exact date — read it
+      // FIRST. Only fall back to the single cached BranchStaff.workingHours
+      // column when the employee has no dated history at all. If NEITHER
+      // resolves anything, inherit the branch manager's schedule (matching
+      // Staff Directory's own display rule) rather than treating them as
+      // unscheduled.
+      const own = resolveOwnSchedule(s);
+      const wh = hasSchedule(own) ? own : (isBmRole(s.role) ? own : bmSchedule);
 
-      if (!hasSchedule(wh)) return true; // no schedule (at all, or for this date) → show anyway
+      // Follow the resolved schedule exactly — no open-ended "show anyway"
+      // leniency. That would bypass the shift-start-time gate below entirely
+      // (nothing to gate against), which is how someone could wrongly appear
+      // before their shift even starts. If nothing resolves even after BM
+      // inheritance, don't guess: fix the schedule in Staff Directory instead.
+      if (!hasSchedule(wh)) return false;
       const slot = slotForDate(wh, date);
-      if (!slot) return false; // day off on this date (or, defensively, no slot resolved)
+      if (!slot) return false; // day off on this date per their schedule
       if (nowSeconds !== null && nowSeconds < timeToSeconds(slot.start)) return false; // shift hasn't started yet today
       return true;
     });
