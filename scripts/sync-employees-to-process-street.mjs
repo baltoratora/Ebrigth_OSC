@@ -30,11 +30,21 @@ const asJson = (v) => (v == null ? "" : typeof v === "string" ? v : JSON.stringi
 function normEmployment(v) {
   const s = clean(v).toLowerCase();
   if (!s) return "";
-  if (s.includes("intern")) return "Internship";
+  // Positive classification first (so a partly-corrupt "…3rd Party ServiceType…"
+  // still maps correctly).
+  if (s.includes("intern") || s.includes("protege")) return "Internship";
   if (s.includes("full")) return "Full Time";
   if (s.includes("part")) return "Part Time";
-  if (s.includes("3rd party") || s.includes("third party") || s.includes("service")) return "3rd Party Service";
+  if (s.includes("service") || s.includes("3rd party") || s.includes("third party")) return "3rd Party Service";
   if (s.includes("contract")) return "Contract";
+  // Corrupted import artefacts (pandas Series reprs) → blank, not garbage text.
+  if (s.includes("dtype") || s.includes("nan")) return "";
+  return clean(v);
+}
+function normGender(v) {
+  const s = clean(v).toLowerCase();
+  if (s === "male" || s === "m") return "Male";
+  if (s === "female" || s === "f") return "Female";
   return clean(v);
 }
 
@@ -48,7 +58,7 @@ const COLUMNS = [
   ["Nickname", "nickname"],
   ["Email", "email"],
   ["Phone", "phone"],
-  ["Gender", "gender"],
+  ["Gender", "gender", normGender],
   ["DOB", "dob"],
   ["Age", "age"],
   ["Nationality", "nationality"],
