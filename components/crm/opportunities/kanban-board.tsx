@@ -402,7 +402,7 @@ interface BranchUser {
   email: string
 }
 
-export type WeekFilter = 'today' | 'yesterday' | 'this' | 'next' | 'last' | 'custom' | 'all'
+export type WeekFilter = 'today' | 'yesterday' | 'this' | 'next' | 'sat_sun' | 'last' | 'custom' | 'all'
 /** Which timestamp the day/week filter matches against:
  *  'created' = when the lead came in (createdAt),
  *  'updated' = when it was last moved/worked (lastStageChangeAt). */
@@ -454,6 +454,22 @@ function resolveRange(
       from: startOfWeek(d, { weekStartsOn: 1 }),
       to: endOfWeek(d, { weekStartsOn: 1 }),
     }
+  }
+  if (filter === 'sat_sun') {
+    // "Sat–Sun": the most recent Saturday through the SECOND Sunday — a fixed
+    // 9-day span (Saturday → Sunday-next-week) that rolls forward every
+    // Saturday. On a weekday you sit mid-window (last Saturday → next Sunday);
+    // cards have no future timestamps so the visible set is "last Saturday →
+    // today". Mirrors the dashboard 'sat_sun' preset (computed in local time
+    // here, matching the other kanban ranges).
+    const from = new Date(now)
+    const daysSinceSat = (from.getDay() + 1) % 7 // Sat→0, Sun→1, … Fri→6
+    from.setDate(from.getDate() - daysSinceSat)
+    from.setHours(0, 0, 0, 0)
+    const to = new Date(from)
+    to.setDate(to.getDate() + 8) // 9-day inclusive window: Sat + 8 = 2nd Sun
+    to.setHours(23, 59, 59, 999)
+    return { from, to }
   }
   // custom — inclusive range; guard against empty inputs
   if (!customFrom || !customTo) return null
@@ -597,6 +613,7 @@ function FiltersBar({
           <option value="yesterday">Yesterday</option>
           <option value="this">This week</option>
           <option value="next">Next week</option>
+          <option value="sat_sun">Sat–Sun</option>
           <option value="last">Last week</option>
           <option value="custom">Custom range…</option>
           <option value="all">All</option>

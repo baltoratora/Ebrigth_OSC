@@ -203,6 +203,21 @@ export function parseDateRange(sp: URLSearchParams): { from: Date; to: Date } {
       const nextMonMs = today.getTime() + (7 - daysSinceMon) * 24 * 3600 * 1000
       return { from: new Date(nextMonMs), to: new Date(nextMonMs + 7 * 24 * 3600 * 1000 - 1) }
     }
+    case 'sat_sun': {
+      // "Sat–Sun" window: the most recent Saturday (KL) through the SECOND
+      // Sunday — a fixed 9-day span (Saturday → Sunday-next-week) that rolls
+      // forward every Saturday. On a weekday you sit mid-window: the label
+      // runs from last Saturday to next Sunday, while NL / SU / ENR (which
+      // have no future-dated rows) naturally reflect "last Saturday → today",
+      // and CT can look ahead to trials booked this coming weekend — same
+      // forward-end convention as the This Week / Next Week presets.
+      const wall = new Date(today.getTime() + KL_OFFSET_MS)
+      const dow = wall.getUTCDay()               // 0=Sun … 6=Sat
+      const daysSinceSat = (dow + 1) % 7          // Sat→0, Sun→1, … Fri→6
+      const from = new Date(today.getTime() - daysSinceSat * 24 * 3600 * 1000)
+      const to = new Date(from.getTime() + 9 * 24 * 3600 * 1000 - 1)
+      return { from, to }
+    }
     case '30d': {
       const from = new Date(today.getTime() - 29 * 24 * 3600 * 1000)
       return { from, to: endOfToday }

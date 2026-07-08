@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   DragDropContext,
@@ -12,12 +12,15 @@ import { UserRoundCheck, Search, X, Trash2, ArrowRightLeft, CheckSquare, Archive
 import {
   moveRecruit, bulkMoveRecruits, bulkDeleteRecruits, deleteRecruit,
   archiveRecruits, unarchiveRecruits, archiveOrphanRecruits, getArchivedRecruits,
+  setPlacementAndMove, type PlacementInput,
   type ArchivedCard,
 } from "@/app/recruitment/_actions";
 import { sourceLabel } from "@/lib/recruitment/labels";
+import { isPlacementStage } from "@/lib/recruitment/placement";
 import { RecruitDetailModal } from "@/components/recruitment/recruit-detail-modal";
 import { InterviewScheduleModal } from "@/components/recruitment/interview-schedule-modal";
 import { ResumeUploadModal } from "@/components/recruitment/resume-upload-modal";
+import { PlacementModal } from "@/components/recruitment/placement-modal";
 import { AddOpportunityModal } from "@/components/recruitment/add-opportunity-modal";
 
 // Stages that intercept a drop with a popup before the move is committed.
@@ -100,9 +103,12 @@ export function RecruitmentBoard({
   // ── Add-opportunity modal ────────────────────────────────────────────────────
   const [showAdd, setShowAdd] = useState(false);
 
-  // ── Special-stage drop popups (Interview / Resume) ──────────────────────────
+  // ── Special-stage drop popups (Interview / Resume / Placement) ──────────────
   const [interviewFor, setInterviewFor] = useState<{ recruitId: string; name: string; fromStageId: string } | null>(null);
   const [resumeFor, setResumeFor] = useState<{ recruitId: string; name: string; fromStageId: string } | null>(null);
+  // Placement popup (Branch / Department / Position) for the Trial, Probation,
+  // Intern, Full Time, Part Timer and Hired stages — matched by stage name.
+  const [placementFor, setPlacementFor] = useState<{ recruitId: string; name: string; fromStageId: string; toStageId: string; toStageName: string } | null>(null);
 
   // ── Selection (bulk actions) ────────────────────────────────────────────────
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -206,7 +212,61 @@ export function RecruitmentBoard({
     router.refresh();
   }
 
+  // ── Edge auto-scroll during drag ────────────────────────────────────────────
+  // @hello-pangea/dnd's built-in auto-scroll doesn't drive this board's
+  // horizontal container (each column is its own vertical scroll parent, so the
+  // library never scrolls the outer x-axis). Drive it manually: while dragging,
+  // track the pointer and scroll the board when the cursor nears either edge.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const pointerXRef = useRef(0);
+  const rafRef = useRef<number | null>(null);
+  const moveCleanupRef = useRef<(() => void) | null>(null);
+
+  function startAutoScroll() {
+    const onMove = (e: MouseEvent | TouchEvent) => {
+      pointerXRef.current = "touches" in e ? e.touches[0]?.clientX ?? 0 : e.clientX;
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("touchmove", onMove);
+    moveCleanupRef.current = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("touchmove", onMove);
+    };
+    const EDGE = 90;   // px from an edge where scrolling kicks in
+    const MAX = 26;    // max px moved per frame (at the very edge)
+    const tick = () => {
+      const el = scrollRef.current;
+      if (el) {
+        const rect = el.getBoundingClientRect();
+        const x = pointerXRef.current;
+        if (x > 0) {
+          if (x < rect.left + EDGE) {
+            el.scrollLeft -= Math.ceil(MAX * Math.min(1, (rect.left + EDGE - x) / EDGE));
+          } else if (x > rect.right - EDGE) {
+            el.scrollLeft += Math.ceil(MAX * Math.min(1, (x - (rect.right - EDGE)) / EDGE));
+          }
+        }
+      }
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+  }
+  function stopAutoScroll() {
+    if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+    rafRef.current = null;
+    moveCleanupRef.current?.();
+    moveCleanupRef.current = null;
+    pointerXRef.current = 0;
+  }
+  // Safety net: tear down listeners/rAF if the board unmounts mid-drag.
+  useEffect(() => stopAutoScroll, []);
+
   // ── Drag → move (single) ─────────────────────────────────────────────────────
+  function handleDragEnd(result: DropResult) {
+    stopAutoScroll();
+    void onDragEnd(result);
+  }
+
   async function onDragEnd(result: DropResult) {
     const { source: src, destination, draggableId } = result;
     if (!destination || src.droppableId === destination.droppableId) return;
@@ -221,6 +281,19 @@ export function RecruitmentBoard({
       const ctx = { recruitId: draggableId, name: card.name, fromStageId: src.droppableId };
       if (destCode === INTERVIEW_CODE) setInterviewFor(ctx);
       else setResumeFor(ctx);
+      return;
+    }
+
+    // Placement stages (Trial / Probation / Intern / Full Time / Part Timer /
+    // Hired) intercept the drop with the Branch / Department / Position popup.
+    const destStage = columns.find((c) => c.id === destination.droppableId);
+    if (destStage && isPlacementStage(destStage.name)) {
+      const card = columns.find((c) => c.id === src.droppableId)?.recruits.find((r) => r.id === draggableId);
+      if (!card) return;
+      setPlacementFor({
+        recruitId: draggableId, name: card.name, fromStageId: src.droppableId,
+        toStageId: destStage.id, toStageName: destStage.name,
+      });
       return;
     }
 
@@ -339,6 +412,7 @@ export function RecruitmentBoard({
     if (fromCol.id === toStageId) { setDetailId(null); return; } // no-op
 
     const destCode = codeById.get(toStageId);
+    const destStage = columns.find((c) => c.id === toStageId);
     setDetailId(null);
     if (destCode === INTERVIEW_CODE || destCode === RESUME_CODE) {
       const ctx = { recruitId, name: rec.name, fromStageId: fromCol.id };
@@ -346,9 +420,28 @@ export function RecruitmentBoard({
       else setResumeFor(ctx);
       return;
     }
+    if (destStage && isPlacementStage(destStage.name)) {
+      setPlacementFor({
+        recruitId, name: rec.name, fromStageId: fromCol.id,
+        toStageId: destStage.id, toStageName: destStage.name,
+      });
+      return;
+    }
     const prev = columns;
     moveCardLocal(recruitId, fromCol.id, toStageId);
     const res = await moveRecruit(recruitId, toStageId);
+    if (!res.ok) { setColumns(prev); flash(res.error ?? "Move failed"); return; }
+    router.refresh();
+  }
+
+  // Placement popup confirmed → capture branch/dept/position and move the card.
+  async function onPlacementConfirm(input: PlacementInput) {
+    const ctx = placementFor;
+    setPlacementFor(null);
+    if (!ctx) return;
+    const prev = columns;
+    moveCardLocal(ctx.recruitId, ctx.fromStageId, ctx.toStageId);
+    const res = await setPlacementAndMove(ctx.recruitId, ctx.toStageId, input);
     if (!res.ok) { setColumns(prev); flash(res.error ?? "Move failed"); return; }
     router.refresh();
   }
@@ -490,8 +583,9 @@ export function RecruitmentBoard({
         <div className="mx-6 mt-1 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">{notice}</div>
       )}
 
-      <DragDropContext onDragEnd={onDragEnd}>
+      <DragDropContext onDragStart={startAutoScroll} onDragEnd={handleDragEnd}>
         <div
+          ref={scrollRef}
           className="flex-1 overflow-x-scroll p-6 pt-4 [scrollbar-width:auto] [&::-webkit-scrollbar]:h-2.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-300 hover:[&::-webkit-scrollbar-thumb]:bg-slate-400 dark:[&::-webkit-scrollbar-thumb]:bg-slate-600"
           title="Scroll sideways to reach more stages — or drag a card to the screen edge to auto-scroll"
         >
@@ -687,6 +781,15 @@ export function RecruitmentBoard({
           recruitName={resumeFor.name}
           onUploaded={onResumeUploaded}
           onCancelToBuffer={onResumeCancel}
+        />
+      )}
+      {placementFor && (
+        <PlacementModal
+          recruitId={placementFor.recruitId}
+          recruitName={placementFor.name}
+          stageName={placementFor.toStageName}
+          onConfirm={onPlacementConfirm}
+          onClose={() => setPlacementFor(null)}
         />
       )}
     </div>
