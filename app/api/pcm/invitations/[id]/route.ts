@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { deleteInvitationRow, updateInvitationRow } from "@pcm/_lib/events.server";
-import { InvitationStatus, InviteType, ArrivalWindow } from "@pcm/_types";
+import { InvitationStatus, InviteType, ArrivalWindow, PACKAGE_OPTIONS, PackageOption } from "@pcm/_types";
 import { requireSession } from "@/lib/auth";
 
 const ARRIVAL_WINDOWS: ArrivalWindow[] = ["before_class", "after_class", "during_class"];
@@ -28,6 +28,12 @@ export async function PATCH(
         ? (body.inviteType as InviteType)
         : undefined,
       paid: typeof body.paid === "boolean" ? body.paid : undefined,
+      package:
+        body.package === undefined
+          ? undefined
+          : (body.package === null
+              ? null
+              : (PACKAGE_OPTIONS.includes(body.package) ? (body.package as PackageOption) : undefined)),
       videoSentToParent:
         typeof body.videoSentToParent === "boolean" ? body.videoSentToParent : undefined,
       videoLink:

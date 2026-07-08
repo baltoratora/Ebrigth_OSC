@@ -18,6 +18,7 @@ import {
   Invitation,
   InvitationStatus,
   InviteType,
+  PackageOption,
   PcmReport,
   Session,
   SessionQuota,
@@ -137,8 +138,10 @@ interface FAStore {
   ) => Promise<void>;
   /** Flip an existing invitation between Progress and Renewal. */
   updateInviteType: (invitationId: string, inviteType: InviteType) => Promise<void>;
-  /** Mark an invitation as paid or unpaid. Independent of attendance. */
-  setInvitationPaid: (invitationId: string, paid: boolean) => Promise<void>;
+  /** Mark an invitation as paid or unpaid. Independent of attendance.
+   *  `pkg` is the renewal package (required when marking paid; pass null/omit
+   *  when marking unpaid — the server clears it automatically either way). */
+  setInvitationPaid: (invitationId: string, paid: boolean, pkg?: PackageOption | null) => Promise<void>;
   /** Mark whether the absence make-up video was sent to the parent (no_show). */
   setInvitationVideoSent: (invitationId: string, videoSentToParent: boolean) => Promise<void>;
   /** Save (or clear with null) the absence make-up video link for an invitation. */
@@ -541,10 +544,10 @@ export const useFAStore = create<FAStore>()(
         }));
       },
 
-      setInvitationPaid: async (id, paid) => {
+      setInvitationPaid: async (id, paid, pkg) => {
         const r = await apiJson<Invitation>(
           `/api/pcm/invitations/${encodeURIComponent(id)}`,
-          { method: "PATCH", body: JSON.stringify({ paid }) },
+          { method: "PATCH", body: JSON.stringify({ paid, package: paid ? (pkg ?? null) : null }) },
         );
         if (!r.ok) throw new Error(`Set paid failed (HTTP ${r.status})`);
         const updated = r.data;

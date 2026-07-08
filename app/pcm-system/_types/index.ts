@@ -411,6 +411,11 @@ export function arrivalLabel(window?: ArrivalWindow, time?: string): string {
   return w || t || "";
 }
 
+/** Renewal packages the academy sells, by duration in months. Picked when a
+ *  BM marks a renewal student as paid. */
+export const PACKAGE_OPTIONS = ["3M", "6M", "12M", "18M", "24M"] as const;
+export type PackageOption = typeof PACKAGE_OPTIONS[number];
+
 export interface Invitation {
   id: string;
   eventId: string;
@@ -432,6 +437,10 @@ export interface Invitation {
   /** Did the student pay for this slot? Independent of attendance —
    *  surfaced on dashboards as paid/unpaid/not-attended buckets. */
   paid: boolean;
+  /** Which renewal package the student paid for. Set together with `paid`
+   *  (the BM picks one the moment they mark a renewal student as paid);
+   *  cleared back to null if paid is undone. */
+  package?: PackageOption | null;
   /** Academy follow-up: was the absence make-up video sent to the parent?
    *  Only meaningful (and editable) while status = no_show. */
   videoSentToParent: boolean;

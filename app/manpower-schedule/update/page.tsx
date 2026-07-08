@@ -113,6 +113,126 @@ const SummaryTable = ({ title, data, theme = "blue", trainingMap = {} }: { title
   );
 };
 
+// --- HELPER COMPONENT: ATTENDANCE TABLE ---
+// Names are whatever the Adjusted hours table already tracks (planning roster
+// + any name added while editing Actual) — same list, no separate derivation.
+const AttendanceTable = ({
+  names, attendance, locked, onSetStatus, onConfirm, trainingMap = {}, newNames = new Set(),
+  homeBranchMap = {}, scheduleBranch, confirmingName = null,
+}: {
+  names: string[];
+  attendance: Record<string, "Present" | "Absent" | "Late">;
+  locked: Record<string, boolean>;
+  onSetStatus: (name: string, status: "Present" | "Absent" | "Late") => void;
+  onConfirm: (name: string) => void;
+  trainingMap?: Record<string, { start?: string; end?: string }>;
+  /** Names that appear in Actual for this day but weren't in Planning —
+   *  flagged with a "New" badge so the BM knows this person wasn't originally scheduled. */
+  newNames?: Set<string>;
+  /** Each staff member's home branch — lets us flag staff borrowed in from
+   *  elsewhere (Actual can pull in names outside the schedule's own branch). */
+  homeBranchMap?: Record<string, string>;
+  scheduleBranch?: string;
+  /** Name currently mid-save — disables its Save button so a slow request can't double-fire. */
+  confirmingName?: string | null;
+}) => {
+  const STATUSES: Array<"Present" | "Absent" | "Late"> = ["Present", "Absent", "Late"];
+  const toneFor = (status: "Present" | "Absent" | "Late", active: boolean) => {
+    if (!active) return "bg-white text-slate-400 border-slate-200 hover:bg-slate-50";
+    if (status === "Present") return "bg-emerald-600 text-white border-emerald-600";
+    if (status === "Absent") return "bg-red-600 text-white border-red-600";
+    return "bg-amber-500 text-white border-amber-500";
+  };
+
+  return (
+    <div className="mt-6 bg-white p-4 rounded-xl border border-slate-200 shadow-md">
+      <h2 className="text-sm font-black text-center uppercase tracking-widest text-slate-800 mb-4">🗓️ Attendance</h2>
+      <div className="overflow-hidden rounded-xl border border-slate-200 w-full">
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead className="bg-slate-100 text-slate-600 border-b">
+              <tr>
+                <th className="p-2 border-r text-left w-8">No.</th>
+                <th className="p-2 border-r text-left">Name</th>
+                <th className="p-2 text-center">Status</th>
+                <th className="p-2 text-center w-24">Confirm</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {names.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="p-4 text-center text-slate-400">No staff to mark yet — assign someone in Planning or Actual first.</td>
+                </tr>
+              ) : (
+                names.map((name, index) => {
+                  const isLocked = !!locked[name];
+                  const homeBranch = homeBranchMap[name];
+                  const isBorrowed = !!homeBranch && !!scheduleBranch && homeBranch !== scheduleBranch;
+                  return (
+                    <tr key={name} className="hover:bg-slate-50 transition-colors">
+                      <td className="p-2 border-r text-center text-slate-400 font-bold">{index + 1}</td>
+                      <td className="p-2 border-r font-black text-slate-700">
+                        {nameWithBadge(name, trainingMap[name])}
+                        {newNames.has(name) && (
+                          <span className="ml-1.5 px-1.5 py-0.5 rounded-md bg-fuchsia-100 text-fuchsia-700 text-[9px] font-black uppercase tracking-wide align-middle">New</span>
+                        )}
+                        {homeBranch && (
+                          <span
+                            className={`ml-1.5 px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wide align-middle ${
+                              isBorrowed ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-500"
+                            }`}
+                          >
+                            {isBorrowed ? `From ${homeBranch}` : homeBranch}
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-2">
+                        <div className="flex items-center justify-center gap-1.5">
+                          {STATUSES.map((status) => (
+                            <button
+                              key={status}
+                              type="button"
+                              disabled={isLocked}
+                              onClick={() => onSetStatus(name, status)}
+                              className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold uppercase tracking-wide transition-colors ${toneFor(status, attendance[name] === status)} ${isLocked ? "opacity-60 cursor-not-allowed" : ""}`}
+                            >
+                              {status}
+                            </button>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="p-2 text-center">
+                        {isLocked ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-200 bg-slate-50 text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                            ✓ Saved
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={!attendance[name] || confirmingName === name}
+                            onClick={() => onConfirm(name)}
+                            className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold uppercase tracking-wide transition-colors ${
+                              attendance[name] && confirmingName !== name
+                                ? "bg-[#2D3F50] text-white border-[#2D3F50] hover:bg-[#1f2c38]"
+                                : "bg-white text-slate-300 border-slate-200 cursor-not-allowed"
+                            }`}
+                          >
+                            {confirmingName === name ? "Saving…" : "Save"}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export default function UpdateSchedulePage() {
   const router = useRouter();
   const { data: session } = useSession();
@@ -121,6 +241,13 @@ export default function UpdateSchedulePage() {
   const [selectedRecord, setSelectedRecord] = useState<any>(null);
   const [updatedSelections, setUpdatedSelections] = useState<Record<string, string>>({});
   const [updatedNotes, setUpdatedNotes] = useState<Record<string, string>>({});
+  // BM attendance tick for the week: Present / Absent / Late per staff name.
+  // Names come from the same planning+actual union the Adjusted hours table
+  // already tracks (see calculateHoursForData) — nothing new to derive.
+  const [attendance, setAttendance] = useState<Record<string, "Present" | "Absent" | "Late">>({});
+  // Once a name is confirmed via the row's Save button, its status is locked
+  // in — the toggle buttons disable so it can't be silently changed later.
+  const [attendanceLocked, setAttendanceLocked] = useState<Record<string, boolean>>({});
   const [branchStaffData, setBranchStaffData] = useState<Record<string, string[]>>({});
   const [branchManagerData, setBranchManagerData] = useState<Record<string, string[]>>({});
   const [trainingMap, setTrainingMap] = useState<Record<string, { start?: string; end?: string }>>({});
@@ -275,8 +402,60 @@ export default function UpdateSchedulePage() {
     setSelectedRecord(record);
     setUpdatedSelections(sanitizeSelections(record.selections, record.branch));
     setUpdatedNotes({ ...record.notes });
+    setAttendance({ ...(record.attendance || {}) });
+    setAttendanceLocked({ ...(record.attendanceLocked || {}) });
     const days = getWorkingDaysForBranch(record.branch);
     if (days.length > 0) setSelectedDay(days[0]);
+  };
+
+  // Attendance is ticked per day, not for the whole week — key by
+  // `${day}::${name}` so marking Alya Present on Monday doesn't also mark
+  // her Present on Tuesday.
+  const attendanceKey = (day: string, name: string) => `${day}::${name}`;
+
+  const setAttendanceStatus = (name: string, status: "Present" | "Absent" | "Late") => {
+    const key = attendanceKey(selectedDay, name);
+    if (attendanceLocked[key]) return;
+    setAttendance((prev) => ({ ...prev, [key]: status }));
+  };
+
+  const [confirmingName, setConfirmingName] = useState<string | null>(null);
+
+  // Clicking Save on a row must persist immediately — the top "Save
+  // Adjustments" button only fires when the BM explicitly clicks it, and a
+  // locked-in attendance tick shouldn't depend on that separate action (the
+  // BM could navigate away right after ticking).
+  const confirmAttendance = async (name: string) => {
+    if (!selectedRecord) return;
+    const key = attendanceKey(selectedDay, name);
+    if (!attendance[key] || attendanceLocked[key]) return;
+
+    const nextLocked = { ...attendanceLocked, [key]: true };
+    setConfirmingName(name);
+    try {
+      const res = await fetch('/api/schedules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: selectedRecord.id,
+          branch: selectedRecord.branch,
+          startDate: selectedRecord.startDate,
+          endDate: selectedRecord.endDate,
+          attendance,
+          attendanceLocked: nextLocked,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { error?: string }).error || `HTTP ${res.status}`);
+      }
+      setAttendanceLocked(nextLocked);
+    } catch (err) {
+      console.error('confirmAttendance error:', err);
+      window.alert(`Could not save attendance: ${err instanceof Error ? err.message : 'please try again.'}`);
+    } finally {
+      setConfirmingName(null);
+    }
   };
 
   const handleActualNameSelect = (day: string, targetTime: string, colId: string, name: string) => {
@@ -423,6 +602,8 @@ export default function UpdateSchedulePage() {
       ...selectedRecord,
       selections: sanitizeSelections(updatedSelections),
       notes: updatedNotes,
+      attendance,
+      attendanceLocked,
       status: "Updated",
     };
 
@@ -813,6 +994,61 @@ export default function UpdateSchedulePage() {
                     <SummaryTable title="ADJUSTED" data={calculateHoursForData(updatedSelections, false)} theme="orange" trainingMap={trainingMap} />
                 </div>
               </div>
+
+              <AttendanceTable
+                names={(() => {
+                  // Only staff actually picked for a slot (including the
+                  // Manager column) — planning names plus any name newly
+                  // added in Actual. Unlike the Adjusted hours table above
+                  // (which tracks hourly staff only, so managers are
+                  // excluded there), Attendance should reflect every name
+                  // visible in the Planning/Actual tables, managers included.
+                  const planningData = sanitizeSelections(selectedRecord?.originalSelections || selectedRecord?.selections || {}, selectedRecord?.branch);
+                  const actualData = sanitizeSelections(updatedSelections, selectedRecord?.branch);
+                  const picked = new Set<string>();
+                  [planningData, actualData].forEach((data) => {
+                    Object.entries(data).forEach(([key, v]) => {
+                      // Only names assigned on the currently selected day tab.
+                      if (selectedDay && !key.startsWith(`${selectedDay}-`)) return;
+                      if (typeof v === "string" && v !== "None") picked.add(v);
+                    });
+                  });
+                  return Array.from(picked).sort();
+                })()}
+                newNames={(() => {
+                  // A name in Actual that never shows up anywhere in Planning
+                  // for this day wasn't originally scheduled — flag it "New".
+                  const planningData = sanitizeSelections(selectedRecord?.originalSelections || selectedRecord?.selections || {}, selectedRecord?.branch);
+                  const actualData = sanitizeSelections(updatedSelections, selectedRecord?.branch);
+                  const planningNamesForDay = new Set<string>();
+                  Object.entries(planningData).forEach(([key, v]) => {
+                    if (selectedDay && !key.startsWith(`${selectedDay}-`)) return;
+                    if (typeof v === "string" && v !== "None") planningNamesForDay.add(v);
+                  });
+                  const added = new Set<string>();
+                  Object.entries(actualData).forEach(([key, v]) => {
+                    if (selectedDay && !key.startsWith(`${selectedDay}-`)) return;
+                    if (typeof v === "string" && v !== "None" && !planningNamesForDay.has(v)) added.add(v);
+                  });
+                  return added;
+                })()}
+                attendance={Object.fromEntries(
+                  Object.entries(attendance)
+                    .filter(([key]) => key.startsWith(`${selectedDay}::`))
+                    .map(([key, v]) => [key.slice(`${selectedDay}::`.length), v]),
+                )}
+                locked={Object.fromEntries(
+                  Object.entries(attendanceLocked)
+                    .filter(([key]) => key.startsWith(`${selectedDay}::`))
+                    .map(([key, v]) => [key.slice(`${selectedDay}::`.length), v]),
+                )}
+                onSetStatus={setAttendanceStatus}
+                onConfirm={confirmAttendance}
+                trainingMap={trainingMap}
+                homeBranchMap={homeBranchMap}
+                scheduleBranch={selectedRecord?.branch}
+                confirmingName={confirmingName}
+              />
             </div>
           </div>
         </main>

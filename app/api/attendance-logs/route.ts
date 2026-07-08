@@ -35,12 +35,8 @@ interface RawScan {
 interface DayLog {
   date: string;
   empName: string;
-  clockInTime: string | null;
+  clockInTime: string;
   clockOutTime: string | null;
-  /** Set when this day's record came from Attendance Manual (the paper-
-   *  logbook feature for branches without a scanner) rather than a real
-   *  scan — 'present' | 'absent' | 'leave' | 'mia' | 'late'. */
-  manualStatus?: string | null;
 }
 
 // Condense chronologically-ordered scan rows into one row per calendar day:
@@ -61,42 +57,6 @@ function condenseByDay(rows: RawScan[]): DayLog[] {
       clockInTime: g.times[0],
       clockOutTime: g.times.length > 1 ? g.times[g.times.length - 1] : null,
     }));
-}
-
-// Merge in Attendance Manual entries for the month (branches without a
-// scanner use that feature instead of hikvision). A day already covered by a
-// real scan is left alone; a day with no scan but a manual status gets a
-// synthetic row so the Report reflects it too — same idea as the Attendance
-// Summary card already does live, just persisted here for the monthly view.
-async function mergeManualAttendance(days: DayLog[], empNo: string, firstOfMonth: string): Promise<DayLog[]> {
-  let manualRows: { work_date: string; status: string | null }[];
-  try {
-    manualRows = await hrfsPrisma.$queryRawUnsafe<{ work_date: string; status: string | null }[]>(
-      `SELECT to_char(work_date, 'YYYY-MM-DD') AS work_date, status
-         FROM public.manual_attendance
-        WHERE employee_id = $1
-          AND work_date >= $2::date
-          AND work_date <  ($2::date + interval '1 month')`,
-      empNo, firstOfMonth,
-    );
-  } catch {
-    return days; // table not provisioned yet (e.g. feature never used) — no-op
-  }
-  if (manualRows.length === 0) return days;
-
-  const byDate = new Map(days.map(d => [d.date, d]));
-  for (const m of manualRows) {
-    if (!m.status) continue;
-    const existing = byDate.get(m.work_date);
-    if (existing) {
-      existing.manualStatus = m.status;
-    } else {
-      const synthetic: DayLog = { date: m.work_date, empName: '', clockInTime: null, clockOutTime: null, manualStatus: m.status };
-      byDate.set(m.work_date, synthetic);
-      days.push(synthetic);
-    }
-  }
-  return days;
 }
 
 export async function GET(req: NextRequest) {
@@ -175,8 +135,7 @@ export async function GET(req: NextRequest) {
         .map(r => { const id = remapStScan(r.device_id, r.person_id, r.name);
                     return { ...r, person_id: id.personId, name: id.name }; })
         .filter(r => r.person_id === empNo);
-      const merged = await mergeManualAttendance(condenseByDay(remapped), empNo, firstOfMonth);
-      return NextResponse.json(merged);
+      return NextResponse.json(condenseByDay(remapped));
     }
 
     // ── Name-based lookup (fallback when a staff record has no employeeId) ───────

@@ -10,6 +10,8 @@ import {
   Invitation,
   InvitationStatus,
   InviteType,
+  PackageOption,
+  PACKAGE_OPTIONS,
   Session,
   SessionQuota,
 } from "@pcm/_types";
@@ -82,6 +84,7 @@ interface InvitationRow {
   coach_id: string | null;
   coach_name: string | null;
   paid: boolean;
+  package: string | null;
   video_sent_to_parent: boolean;
   video_link: string | null;
   arrival_window: string | null;
@@ -206,6 +209,7 @@ function rowToInvitation(r: InvitationRow): Invitation {
     coachId: r.coach_id ?? undefined,
     coachName: r.coach_name ?? undefined,
     paid: r.paid === true,
+    package: (r.package as PackageOption | null) ?? null,
     videoSentToParent: r.video_sent_to_parent === true,
     videoLink: r.video_link ?? null,
     arrivalWindow: (r.arrival_window as ArrivalWindow | null) ?? undefined,
@@ -227,6 +231,24 @@ function rowToInvitation(r: InvitationRow): Invitation {
 // Reads
 // ----------------------------------------------------------------------------
 
+// Self-provisioning column for the renewal-package picker — same pattern as
+// paid/video_link/arrival_window before it (see prisma/sql/2026-05-23-pcm-invitation-paid.sql
+// for the precedent). ADD COLUMN IF NOT EXISTS runs once per server process,
+// before any read/write touches the column, so no separate manual migration
+// step is required.
+let packageColumnEnsured: Promise<void> | null = null;
+function ensurePackageColumn(): Promise<void> {
+  if (!packageColumnEnsured) {
+    packageColumnEnsured = pool.query(`
+      ALTER TABLE pcm_invitations ADD COLUMN IF NOT EXISTS package text
+    `).then(() => undefined).catch((err) => {
+      packageColumnEnsured = null;
+      throw err;
+    });
+  }
+  return packageColumnEnsured;
+}
+
 export async function fetchAllEventData(): Promise<{
   events: FAEvent[];
   sessions: Session[];
@@ -234,6 +256,7 @@ export async function fetchAllEventData(): Promise<{
   invitations: Invitation[];
   overrides: EventBranchOverride[];
 }> {
+  await ensurePackageColumn();
   const [eventsRes, sessionsRes, quotasRes, invitationsRes, overridesRes] = await Promise.all([
     pool.query<EventRow>(
       `SELECT id, name, month, year, venue, start_date, end_date, number_of_days,
@@ -265,7 +288,7 @@ export async function fetchAllEventData(): Promise<{
       `SELECT i.id, i.event_id, i.session_id, i.student_id, i.branch, i.target_grade,
               i.status, i.invited_by, i.invited_at, i.confirmed_at,
               i.attendance_marked_at, i.attendance_marked_by, i.notes, i.invite_type,
-              i.coach_id, i.coach_name, i.paid, i.video_sent_to_parent, i.video_link,
+              i.coach_id, i.coach_name, i.paid, i.package, i.video_sent_to_parent, i.video_link,
               i.arrival_window, i.arrival_time,
               -- Name resolution, best first: the live studentrecords name, else
               -- the snapshot saved at invite time, else the archived_students
@@ -303,7 +326,7 @@ export async function fetchAllEventData(): Promise<{
       return pool.query<InvitationRow>(
         `SELECT id, event_id, session_id, student_id, branch, target_grade, status, invited_by,
                 invited_at, confirmed_at, attendance_marked_at, attendance_marked_by, notes,
-                invite_type, coach_id, coach_name, paid, video_sent_to_parent, video_link,
+                invite_type, coach_id, coach_name, paid, package, video_sent_to_parent, video_link,
                 arrival_window, arrival_time,
                 student_name_snapshot AS student_name,
                 NULL::text AS student_grade_chapter,
@@ -786,6 +809,9 @@ export async function updateInvitationRow(
     inviteType?: InviteType;
     /** Mark this slot as paid / unpaid. Independent of attendance. */
     paid?: boolean;
+    /** Which renewal package was paid for (null clears it — e.g. when paid
+     *  is set back to false). Validated against PACKAGE_OPTIONS. */
+    package?: PackageOption | null;
     /** Academy follow-up flag — absence make-up video sent to the parent. */
     videoSentToParent?: boolean;
     /** Absence make-up video link (null clears it). */
@@ -795,6 +821,7 @@ export async function updateInvitationRow(
     arrivalTime?: string | null;
   }
 ): Promise<Invitation | null> {
+  if (patch.package !== undefined) await ensurePackageColumn();
   const fields: string[] = [];
   const values: unknown[] = [];
   let i = 1;
@@ -841,7 +868,18 @@ export async function updateInvitationRow(
       fields.push(`paid_at = now()`);
     } else {
       fields.push(`paid_at = NULL`);
+      // Unmarking paid always clears the package too, even if the caller
+      // didn't explicitly pass package: null — "paid" and "which package"
+      // are meant to travel together.
+      if (patch.package === undefined) fields.push(`package = NULL`);
     }
+  }
+  if (patch.package !== undefined) {
+    if (patch.package !== null && !PACKAGE_OPTIONS.includes(patch.package)) {
+      throw new InvitationRejected(`Invalid package: ${patch.package}`);
+    }
+    fields.push(`package = $${i++}`);
+    values.push(patch.package);
   }
   if (patch.videoSentToParent !== undefined) {
     fields.push(`video_sent_to_parent = $${i++}`);
@@ -882,7 +920,7 @@ export async function updateInvitationRow(
   const { rows } = await pool.query<InvitationRow>(
     `UPDATE pcm_invitations SET ${fields.join(", ")} WHERE id = $${i++} AND tenant_id = $${i}
      RETURNING id, event_id, session_id, student_id, branch, target_grade, status, invited_by,
-               invited_at, confirmed_at, attendance_marked_at, attendance_marked_by, notes, invite_type, coach_id, coach_name, paid, video_sent_to_parent, video_link, arrival_window, arrival_time`,
+               invited_at, confirmed_at, attendance_marked_at, attendance_marked_by, notes, invite_type, coach_id, coach_name, paid, package, video_sent_to_parent, video_link, arrival_window, arrival_time`,
     values
   );
   if (!rows[0]) return null;

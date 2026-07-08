@@ -90,17 +90,8 @@ export const DASHBOARD_TREE: DashboardNode[] = [
           { key: "hrms.attendance.report",  label: "Report",  href: "/attendance/report" },
           { key: "hrms.attendance.appeal",  label: "Appeal",  href: "/attendance/appeal" },
           { key: "hrms.attendance.leave",   label: "Leave",   href: "/attendance/leave" },
-          // Deliberately NOT "hrms.attendance.field-activity" — that key
-          // string would be auto-granted to every role that already has
-          // "hrms.attendance" (HR, HOD via "hrms", Executive, Intern) via the
-          // prefix-match rule in resolveRoleDefault() below, regardless of
-          // where this node sits in the tree. Restricted-visibility features
-          // need their own standalone key so no existing broader grant
-          // accidentally covers them.
-          { key: "field-activity", label: "Field Activity", href: "/attendance/field-activity" },
         ],
       },
-      { key: "hrms.attendance-manual", label: "Attendance Manual", href: "/attendance-manual" },
       {
         key: "hrms.recruitment", label: "Recruitment", href: "/recruitment", contentless: true,
         children: [
@@ -229,7 +220,6 @@ export const ROLE_ACCESS: Record<Role, readonly string[] | "*"> = {
     "hrms.employee",
     "hrms.claims",
     "hrms.attendance",
-    "hrms.attendance-manual",
     "hrms.recruitment",
     "hrms.onboarding",
     "hrms.offboarding",
@@ -255,7 +245,6 @@ export const ROLE_ACCESS: Record<Role, readonly string[] | "*"> = {
     "home",
     "hrms.manpower-planning",
     "hrms.manpower-cost",         // branch-scoped cost report + Branch Team roster
-    "hrms.attendance-manual",     // manually clock in/out their own branch's staff
     "fa-system",
     "pcm-system",
     "crm",
@@ -302,11 +291,6 @@ export const ROLE_ACCESS: Record<Role, readonly string[] | "*"> = {
     "fa-system",
     "crm",
     "inventory",
-    "field-activity",
-    // Grants the "Attendance Manual" tile so Marketing can reach the hub —
-    // the hub itself only shows them the Field Activity card, never the
-    // branch roster (see app/attendance-manual/page.tsx).
-    "hrms.attendance-manual",
   ],
 };
 
