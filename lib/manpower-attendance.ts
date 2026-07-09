@@ -2,20 +2,29 @@
  * lib/manpower-attendance.ts
  *
  * Shared "who's Present/Absent/Late per branch, per day" logic for the
- * Manpower Schedule Attendance feature. Single source of truth for two
+ * Manpower Schedule Attendance feature. Single source of truth for three
  * consumers:
  *   - app/api/schedules/attendance/route.ts (Attendance Summary page)
  *   - lib/branch-missing-reminder.ts (the non-HQ missing-reminder email sweep)
+ *   - app/api/hr-dashboard/route.ts (MIA card's "Missing today" sub-list)
  *
- * "Missing" for a non-scanner branch = ticked Absent OR not ticked at all yet
- * (status defaults to 'Absent', tagged `ticked: false` so callers can tell
- * the two apart) — anyone expected that weekday (Planning ∪ Actual on the
- * ManpowerSchedule row) who isn't marked Present/Late.
+ * "Expected" that day = union of two sources:
+ *   1. Planning ∪ Actual on the ManpowerSchedule row (whoever the BM put in a
+ *      slot in the grid).
+ *   2. Anyone active at that branch whose configured BranchStaff.workingHours
+ *      marks that weekday as a working day (same working-hours check HQ/ST
+ *      already uses via lib/working-hours' slotForDate) — this catches staff
+ *      who are supposed to work that day but never got put in the schedule
+ *      grid at all.
+ * "Missing" = expected AND not ticked Present/Late — ticked Absent OR not
+ * ticked at all (status defaults to 'Absent', tagged `ticked: false` so
+ * callers can tell the two apart).
  */
 
 import { prisma } from '@/lib/prisma';
 import { hrfsPrisma } from '@/lib/hrfs';
-import { normalizeLocation } from '@/lib/constants';
+import { branchesMatch, normalizeLocation } from '@/lib/constants';
+import { slotForDate } from '@/lib/working-hours';
 
 type ScheduleRow = { id: string; branch: string; selections: unknown; originalSelections: unknown };
 export type ManpowerAttendanceEntry = {
@@ -43,6 +52,7 @@ function entriesForSchedule(
   attendance: Record<string, string>,
   locked: Record<string, boolean>,
   weekday: string,
+  workingHoursNames: Set<string> = new Set(),
 ): ManpowerAttendanceEntry[] {
   const prefix = `${weekday}::`;
   const tickedByName = new Map<string, { status: 'Present' | 'Absent' | 'Late'; locked: boolean }>();
@@ -55,6 +65,7 @@ function entriesForSchedule(
 
   const branch = normalizeLocation(schedule.branch);
   const expectedNames = expectedNamesForDay(schedule, `${weekday}-`);
+  workingHoursNames.forEach((name) => expectedNames.add(name));
   const entries: ManpowerAttendanceEntry[] = Array.from(expectedNames).map((name) => {
     const ticked = tickedByName.get(name);
     return {
@@ -89,6 +100,18 @@ export function ensureAttendanceTable(): Promise<void> {
   return attendanceTableEnsured;
 }
 
+type WorkingHoursStaffRow = { nickname: string; branch: string | null; workingHours: unknown };
+
+/** Active staff (any branch) with a nickname + configured working hours — used to
+ *  add "expected today per working hours" names on top of the schedule grid. */
+async function loadActiveStaffWorkingHours(): Promise<WorkingHoursStaffRow[]> {
+  return hrfsPrisma.$queryRawUnsafe<WorkingHoursStaffRow[]>(
+    `SELECT nickname, branch, "workingHours" FROM "BranchStaff"
+      WHERE COALESCE(NULLIF(TRIM(status), ''), 'Active') ILIKE 'Active'
+        AND nickname IS NOT NULL AND TRIM(nickname) <> ''`,
+  );
+}
+
 /** Every non-HQ/ST branch's attendance entries for that date — HQ/ST are scanner-covered and not included. */
 export async function getAllBranchAttendanceEntries(date: string): Promise<ManpowerAttendanceEntry[]> {
   const candidates = await prisma.manpowerSchedule.findMany({
@@ -110,23 +133,44 @@ export async function getAllBranchAttendanceEntries(date: string): Promise<Manpo
 
   await ensureAttendanceTable();
   const ids = schedules.map((s) => s.id);
-  const rows = await hrfsPrisma.$queryRawUnsafe<{ scheduleId: string; attendance: unknown; attendanceLocked: unknown }[]>(
-    `SELECT "scheduleId", attendance, "attendanceLocked" FROM public."ManpowerScheduleAttendance" WHERE "scheduleId" = ANY($1::text[])`,
-    ids,
-  );
+  const [rows, staffRows] = await Promise.all([
+    hrfsPrisma.$queryRawUnsafe<{ scheduleId: string; attendance: unknown; attendanceLocked: unknown }[]>(
+      `SELECT "scheduleId", attendance, "attendanceLocked" FROM public."ManpowerScheduleAttendance" WHERE "scheduleId" = ANY($1::text[])`,
+      ids,
+    ),
+    loadActiveStaffWorkingHours(),
+  ]);
   const rowById = new Map(rows.map((r) => [r.scheduleId, r]));
 
   return schedules.flatMap((schedule) => {
     const row = rowById.get(schedule.id);
     const attendance = (row?.attendance ?? {}) as Record<string, string>;
     const locked = (row?.attendanceLocked ?? {}) as Record<string, boolean>;
-    return entriesForSchedule(schedule, attendance, locked, weekday);
+    // Branch match is loose (branchesMatch), same reasoning as
+    // getBranchAttendanceEntries below — BranchStaff.branch stores short
+    // codes ("RBY") while ManpowerSchedule.branch stores the Manpower
+    // Schedule module's own naming ("Rimbayu"), and neither is guaranteed to
+    // equal the other exactly.
+    const workingHoursNames = new Set(
+      staffRows
+        .filter((s) => branchesMatch(s.branch, schedule.branch))
+        .filter((s) => {
+          const slot = slotForDate(s.workingHours, date);
+          return slot !== undefined && slot !== null; // has a working slot today
+        })
+        .map((s) => s.nickname),
+    );
+    return entriesForSchedule(schedule, attendance, locked, weekday, workingHoursNames);
   });
 }
 
 /** Single branch's attendance entries (loose branch match — short code vs. full name). */
 export async function getBranchAttendanceEntries(date: string, branch: string): Promise<ManpowerAttendanceEntry[]> {
   const all = await getAllBranchAttendanceEntries(date);
-  const wanted = normalizeLocation(branch);
-  return all.filter((e) => e.branch === wanted);
+  // Loose match, not strict equality on normalizeLocation() alone — that
+  // function only maps short CODES to full names (e.g. "rby" -> "Bandar
+  // Rimbayu"), not full-name variants missing a prefix (e.g. "Rimbayu" vs
+  // "Bandar Rimbayu", which ManpowerSchedule.branch vs. the branch dropdown
+  // disagree on). branchesMatch's substring-containment fallback catches that.
+  return all.filter((e) => branchesMatch(e.branch, branch));
 }
