@@ -578,7 +578,65 @@ export async function GET(req: NextRequest) {
       selectableBranches = all.map((b) => ({ branchId: b.id, branchName: b.name }))
     }
 
+    // ── Marketing catch-all queue ────────────────────────────────────────────
+    // A date-independent snapshot of leads currently parked on the "Ebright
+    // Marketing" branch — website/other leads whose branch didn't resolve, which
+    // Marketing needs to transfer to the correct branch. Shown ONLY to the
+    // Marketing account (isMarketing): never to super/agency admins or to
+    // ordinary branch managers, so it stays off every other user's dashboard.
+    let marketingCatchAll:
+      | { count: number; leads: Array<{ opportunityId: string; contactId: string; name: string; phone: string | null; source: string | null; createdAt: string }> }
+      | null = null
+    if (isMarketing) {
+      const mkBranch = await prisma.crm_branch.findFirst({
+        where: { tenantId, name: 'Ebright Marketing' },
+        select: { id: true },
+      })
+      if (mkBranch) {
+        const where = {
+          tenantId,
+          deletedAt: null,
+          contact: { deletedAt: null },
+          branchId: mkBranch.id,
+        }
+        const [count, rows] = await Promise.all([
+          prisma.crm_opportunity.count({ where }),
+          prisma.crm_opportunity.findMany({
+            where,
+            select: {
+              id: true,
+              contactId: true,
+              createdAt: true,
+              contact: {
+                select: {
+                  firstName: true, lastName: true, parentFullName: true, phone: true,
+                  leadSource: { select: { name: true } },
+                },
+              },
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 500,
+          }),
+        ])
+        marketingCatchAll = {
+          count,
+          leads: rows.map((o) => ({
+            opportunityId: o.id,
+            contactId: o.contactId,
+            name:
+              o.contact?.parentFullName?.trim() ||
+              `${o.contact?.firstName ?? ''} ${o.contact?.lastName ?? ''}`.trim() ||
+              '—',
+            phone: o.contact?.phone ?? null,
+            source: o.contact?.leadSource?.name ?? null,
+            createdAt: o.createdAt.toISOString(),
+          })),
+        }
+      }
+    }
+
     return NextResponse.json({
+      marketingCatchAll,
       range: { from: from.toISOString(), to: to.toISOString() },
       main,
       regions: elevated
