@@ -226,6 +226,9 @@ export async function computeMissingCandidates(): Promise<MissingCandidate[]> {
 export async function sendMissingReminders(): Promise<{ sent: number; alreadySent: number }> {
   await ensureLogTable();
   const date = todayKL();
+  const displayDate = new Date(date + 'T00:00:00').toLocaleDateString('en-GB', {
+    day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kuala_Lumpur',
+  });
   const hrEmail = process.env.HR_JUSTIFY_EMAIL || undefined;
   const candidates = await computeMissingCandidates();
 
@@ -234,7 +237,8 @@ export async function sendMissingReminders(): Promise<{ sent: number; alreadySen
   for (const c of candidates) {
     if (await claim(c.code, date)) {
       try {
-        await sendMissingReminderEmail(c.email, c.name, hrEmail);
+        // Scope is HQ only for now (see file header) — branch is always "HQ".
+        await sendMissingReminderEmail(c.email, c.name, { branch: 'HQ', date: displayDate, hrEmail });
         sent++;
       } catch (e) {
         await unclaim(c.code, date);

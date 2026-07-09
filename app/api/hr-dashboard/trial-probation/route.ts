@@ -15,28 +15,71 @@ export const dynamic = "force-dynamic";
 // The 4 status/feedback columns are added on demand (ADD COLUMN IF NOT
 // EXISTS) so no separate migration is needed — same self-provisioning idea
 // as flagged_action_log.
+// trial_date: the Trial-period warning/end date. Unlike Probation (which
+// already has BranchStaff.probation to read from), there's no existing source
+// for this on the recruitment side — self-provisioned here, NULL until
+// something populates it, so the read path is ready the moment it is.
 async function ensureColumns(): Promise<void> {
   await hrfsPrisma.$executeRawUnsafe(`
     ALTER TABLE public.career_applications
-      ADD COLUMN IF NOT EXISTS feedback1 text,
-      ADD COLUMN IF NOT EXISTS feedback2 text,
-      ADD COLUMN IF NOT EXISTS status1   text,
-      ADD COLUMN IF NOT EXISTS status2   text`);
+      ADD COLUMN IF NOT EXISTS feedback1  text,
+      ADD COLUMN IF NOT EXISTS feedback2  text,
+      ADD COLUMN IF NOT EXISTS status1    text,
+      ADD COLUMN IF NOT EXISTS status2    text,
+      ADD COLUMN IF NOT EXISTS trial_date text`);
 }
 
 const SELECT_COLS =
-  `id, name, position, board_stage, feedback1, feedback2, status1, status2`;
+  `id, name, position, board_stage, feedback1, feedback2, status1, status2, trial_date`;
+
+// Malaysian Indian naming carries a relationship infix — "A/P"/"D/O" (daughter
+// of) and "A/L"/"S/O" (son of) are the same thing spelled two ways, and
+// career_applications vs BranchStaff often disagree on which. Strip it from
+// both sides before comparing so they still match as the same person. Same
+// helper as app/api/hr-dashboard/route.ts (kept local — each API route in
+// this app owns its own small SQL helpers rather than sharing one).
+const stripHonorific = (col: string) =>
+  `TRIM(REGEXP_REPLACE(REGEXP_REPLACE(UPPER(TRIM(${col})), '(A/L|A/P|S/O|D/O)', '', 'g'), '\\s+', ' ', 'g'))`;
 
 // GET → applications currently on the Trial or Probation board stage.
+//   role / branch / department shown on the card come from BranchStaff (the
+//   HR Employee Management / "Employee Dashboard" record) whenever the
+//   applicant is matched there — email match first (most reliable), falling
+//   back to the honorific-tolerant name match. Once someone is actually hired
+//   and in BranchStaff, this ensures the card always follows the canonical
+//   record instead of the (possibly stale) recruitment-application snapshot.
+//   Falls back to the application's own position/branch/department only when
+//   no BranchStaff record exists yet (still pre-hire).
+//
+//   warning_date is the "this person's stage ends around here" date shown on
+//   the card: for Probation it's BranchStaff.probation (already populated —
+//   the Employee Dashboard's own probation-end field); for Trial it's
+//   career_applications.trial_date, which is currently always NULL until
+//   something populates it — the read path is wired up ahead of that.
 export async function GET() {
   const { error } = await requireRole(MANAGEMENT_ROLES);
   if (error) return error;
   try {
     await ensureColumns();
     const rows = await hrfsPrisma.$queryRawUnsafe<Record<string, unknown>[]>(
-      `SELECT ${SELECT_COLS} FROM public.career_applications
-        WHERE LOWER(board_stage) IN ('trial', 'probation')
-        ORDER BY board_stage, name`
+      `SELECT ca.id, ca.name, ca.board_stage, ca.feedback1, ca.feedback2, ca.status1, ca.status2,
+              COALESCE(bs.role, ca.position)                         AS position,
+              COALESCE(NULLIF(TRIM(bs.branch), ''), NULLIF(TRIM(ca.branch), ''))         AS branch,
+              COALESCE(NULLIF(TRIM(bs.department), ''), NULLIF(TRIM(ca.department), '')) AS department,
+              CASE WHEN LOWER(ca.board_stage) = 'probation' THEN NULLIF(TRIM(bs.probation), '')
+                   ELSE NULLIF(TRIM(ca.trial_date), '')
+              END AS warning_date
+         FROM public.career_applications ca
+         LEFT JOIN LATERAL (
+           SELECT role, branch, department, email, probation
+             FROM "BranchStaff" bs
+            WHERE (ca.email IS NOT NULL AND TRIM(ca.email) <> '' AND LOWER(TRIM(bs.email)) = LOWER(TRIM(ca.email)))
+               OR ${stripHonorific('bs.name')} = ${stripHonorific('ca.name')}
+            ORDER BY (LOWER(TRIM(bs.email)) = LOWER(TRIM(ca.email))) DESC NULLS LAST
+            LIMIT 1
+         ) bs ON true
+        WHERE LOWER(ca.board_stage) IN ('trial', 'probation')
+        ORDER BY ca.board_stage, ca.name`
     );
     return NextResponse.json({ entries: rows });
   } catch (err) {

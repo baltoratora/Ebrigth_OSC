@@ -359,7 +359,25 @@ function TPEntry({ entry, stage, onChanged }: { entry: any; stage: TPStage; onCh
   return (
     <div style={{ padding: "10px 16px", borderBottom: `1px solid ${C.border}` }}>
       <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{entry.name || "—"}</div>
-      {entry.position && <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>{entry.position}</div>}
+      {(entry.position || entry.branch || entry.department) && (
+        <div style={{ fontSize: 11, color: C.muted, marginBottom: entry.warning_date ? 2 : 6, display: "flex", flexWrap: "wrap", gap: 4 }}>
+          {[entry.position, entry.department, entry.branch].filter(Boolean).map((part, i, arr) => (
+            <span key={i}>{part}{i < arr.length - 1 ? " ·" : ""}</span>
+          ))}
+        </div>
+      )}
+      {entry.warning_date && (() => {
+        const days = daysFromNow(entry.warning_date);
+        const overdue = days !== null && days < 0;
+        return (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+            <span style={{ fontSize: 10, fontWeight: 700, color: overdue ? C.brand : C.warning, background: overdue ? C.brandLight : C.warningLight, padding: "1px 8px", borderRadius: 999 }}>
+              {isTrial ? "Trial ends" : "Probation ends"} {fmtDate(entry.warning_date)}
+            </span>
+            <DaysLabel days={days} />
+          </div>
+        );
+      })()}
       <label style={{ fontSize: 10, fontWeight: 600, color: s.color, textTransform: "uppercase", letterSpacing: "0.03em" }}>
         {isTrial ? "Feedback 1 (trial)" : "Feedback 2 (probation)"}
       </label>

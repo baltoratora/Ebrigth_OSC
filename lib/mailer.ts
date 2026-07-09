@@ -141,37 +141,63 @@ export async function sendClockInEmail(to: string, name: string, time: string): 
  * Daily "you're marked missing today" reminder, asking the employee to email
  * HR to justify their absence. NOT a clock-in/out email — sent by the
  * missing-reminder sweep once a person is 15 min past their scheduled start
- * without having clocked in. `hrEmail` (optional) makes the HR address a
- * clickable mailto; if absent the body just says "the HR department".
+ * without having clocked in.
  */
-export async function sendMissingReminderEmail(to: string, name: string, hrEmail?: string): Promise<void> {
-  const hrTarget = hrEmail
-    ? `<a href="mailto:${hrEmail}" style="color:#b45309;"><strong>${hrEmail}</strong></a>`
-    : `the <strong>HR department</strong>`;
+export async function sendMissingReminderEmail(
+  to: string,
+  name: string,
+  opts: { branch: string; date: string; hrEmail?: string; deadline?: string },
+): Promise<void> {
+  const hrEmail = opts.hrEmail || 'hr@ebright.my';
+  const deadline = opts.deadline || '6:00 PM';
+  const hrLink = `<a href="mailto:${hrEmail}" style="color:#b45309;">${hrEmail}</a>`;
   await safeSend({
-    from: `"Ebright Attendance" <${process.env.SMTP_USER}>`,
+    from: `"Ebright HR" <${process.env.SMTP_USER}>`,
     to,
-    subject: `⚠️ Attendance Reminder — please justify today's absence`,
+    subject: `Action Required: Attendance Justification for ${opts.date}`,
     html: `
-      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px;">
-        <div style="background:#b45309;border-radius:8px;padding:16px 24px;margin-bottom:24px;">
-          <h1 style="color:white;margin:0;font-size:20px;">Ebright Attendance</h1>
-        </div>
-        <p style="font-size:16px;color:#111827;">Hi <strong>${name}</strong>,</p>
-        <p style="font-size:15px;color:#374151;">
-          Our records show you have <strong style="color:#b45309;">not clocked in</strong> today,
-          and your shift start time has already passed.
+      <div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px;color:#111827;">
+        <p style="font-size:15px;">Dear <strong>${name}</strong>,</p>
+
+        <p style="font-size:15px;">
+          Please be informed that we are missing your biometric clock-in record for the following shift:
         </p>
-        <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:16px;margin:20px 0;">
-          <p style="margin:0;font-size:14px;color:#92400e;">
-            📩 Please email ${hrTarget} to justify why you did not use the scanner or were late today.
-          </p>
-        </div>
+
+        <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:14px;">
+          <tr>
+            <td style="padding:6px 0;color:#6b7280;width:160px;">Affected Branch:</td>
+            <td style="padding:6px 0;"><strong>${opts.branch}</strong></td>
+          </tr>
+          <tr>
+            <td style="padding:6px 0;color:#6b7280;">Timeline / Date:</td>
+            <td style="padding:6px 0;"><strong>${opts.date}</strong></td>
+          </tr>
+        </table>
+
+        <p style="font-size:15px;">
+          To ensure company compliance and protect your monthly payroll from errors, you must justify this
+          missing log. Please reply to this email or contact us at ${hrLink} before
+          <strong>${deadline}</strong> today with your status update:
+        </p>
+
+        <p style="font-size:14px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;margin:16px 0;">
+          <strong>Scenario A (Working):</strong> I was at work at the branch but missed the scan because
+          [Provide Reason: Forgot / System Error] and my true arrival time was [Insert Time].
+        </p>
+
+        <p style="font-size:14px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;margin:16px 0;">
+          <strong>Scenario B (Not Working):</strong> I was absent from the branch because
+          [Provide Reason: Sick Leave / Rest Day / Leave].
+        </p>
+
         <p style="font-size:13px;color:#6b7280;">
-          If you have already clocked in or are on approved leave, please ignore this message.
+          Please ignore this automated notice if you are on prior approved leave or have already corrected
+          your attendance log.
         </p>
-        <p style="font-size:13px;color:#9ca3af;margin-top:24px;">
-          This is an automated message from the Ebright HR System. Please do not reply.
+
+        <p style="font-size:14px;margin-top:24px;">
+          Sincerely,<br />
+          The HR Attendance Desk
         </p>
       </div>
     `,
