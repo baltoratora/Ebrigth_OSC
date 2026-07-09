@@ -7,8 +7,10 @@ import { AppShell } from "@fa/_components/shared/AppShell";
 import { ConfirmProofModal } from "@fa/_components/fa/ConfirmProofModal";
 import { SchedulePracticeModal } from "@fa/_components/fa/SchedulePracticeModal";
 import { BRANCHES, BranchCode, Invitation, resolveStudentById } from "@fa/_types";
-import { CalendarClock, Search, Video, Image as ImageIcon, Pencil, Phone } from "lucide-react";
+import { CalendarClock, Search, Video, Image as ImageIcon, Pencil, Phone, Copy, Download, Check } from "lucide-react";
 import { format, parseISO } from "date-fns";
+
+type ExportFormat = "text" | "csv";
 
 /**
  * "Practice" — every CONFIRMED student across all events/sessions, in one
@@ -43,6 +45,7 @@ export default function PracticePage() {
   const [search, setSearch] = useState("");
   const [editProofFor, setEditProofFor] = useState<{ inv: Invitation; name: string } | null>(null);
   const [schedulingFor, setSchedulingFor] = useState<{ inv: Invitation; name: string } | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const eventById = useMemo(() => new Map(events.map(e => [e.id, e])), [events]);
   const sessionById = useMemo(() => new Map(sessions.map(s => [s.id, s])), [sessions]);
@@ -78,6 +81,99 @@ export default function PracticePage() {
   );
 
   const scheduledCount = rows.filter(r => r.practiceDate).length;
+  const proofCount = rows.filter(r => r.videoLink && r.proofUrl).length;
+
+  // ─── Export helpers ────────────────────────────────────────────────
+
+  function buildText(): string {
+    const lines: string[] = [];
+    lines.push("📋 Practice sessions");
+    if (eventId !== "all") {
+      const ev = eventById.get(eventId);
+      if (ev) lines.push(ev.name);
+    }
+    if (effectiveBranchFilter !== "all") lines.push(`Branch: ${effectiveBranchFilter}`);
+    lines.push("");
+    // Group by branch so a WhatsApp message reads "AMP: …" per branch.
+    let lastBranch = "";
+    let idx = 0;
+    for (const inv of rows) {
+      const student = resolveStudentById(students, inv.studentId);
+      const name = student?.name ?? inv.studentNameSnapshot ?? "(unknown)";
+      if (inv.branch !== lastBranch) {
+        if (lastBranch) lines.push("");
+        lines.push(`▸ ${inv.branch}`);
+        lastBranch = inv.branch;
+        idx = 0;
+      }
+      idx++;
+      const grade = `G${inv.targetGrade || student?.grade || "?"}`;
+      const practice = inv.practiceDate
+        ? `${format(parseISO(inv.practiceDate), "d MMM")}${inv.practiceTime ? ` ${inv.practiceTime}` : ""}`
+        : "not scheduled";
+      const proof = inv.videoLink && inv.proofUrl ? "✅ submitted" : "⏳ pending";
+      lines.push(`  ${idx}. ${name} (${grade}) · Practice: ${practice} · ${proof}`);
+    }
+    if (rows.length === 0) lines.push("(no confirmed students match these filters)");
+    return lines.join("\n");
+  }
+
+  function buildCsv(): string {
+    const header = [
+      "Event", "Branch", "Student ID", "Student Name", "Grade",
+      "Parent Name", "Parent Phone", "Practice Date", "Practice Time",
+      "Video Link", "Proof URL", "Proof Status",
+    ];
+    const escape = (s: string) => {
+      const needsQuote = /[",\n]/.test(s);
+      return needsQuote ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [header.join(",")];
+    for (const inv of rows) {
+      const student = resolveStudentById(students, inv.studentId);
+      const event = eventById.get(inv.eventId);
+      lines.push([
+        event?.name ?? "",
+        inv.branch,
+        inv.studentId,
+        student?.name ?? inv.studentNameSnapshot ?? "(unknown)",
+        `G${inv.targetGrade || student?.grade || "?"}`,
+        student?.parentName ?? "",
+        student?.parentPhone ?? "",
+        inv.practiceDate ?? "",
+        inv.practiceTime ?? "",
+        inv.videoLink ?? "",
+        inv.proofUrl ?? "",
+        inv.videoLink && inv.proofUrl ? "Submitted" : "Pending",
+      ].map(escape).join(","));
+    }
+    return lines.join("\n");
+  }
+
+  async function handleCopy() {
+    if (typeof navigator === "undefined" || !navigator.clipboard) return;
+    await navigator.clipboard.writeText(buildText());
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1800);
+  }
+
+  function handleDownload(fmt: ExportFormat) {
+    const content = fmt === "csv" ? buildCsv() : buildText();
+    const mime = fmt === "csv" ? "text/csv;charset=utf-8" : "text/plain;charset=utf-8";
+    const ext = fmt === "csv" ? "csv" : "txt";
+    const eventLabel = eventId !== "all" ? (eventById.get(eventId)?.name ?? "event") : "all-events";
+    const safeName = eventLabel.replace(/[^a-z0-9_-]+/gi, "_").slice(0, 60);
+    const fname = `fa-practice-${safeName}.${ext}`;
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
 
   return (
     <AppShell>
@@ -90,7 +186,7 @@ export default function PracticePage() {
         </div>
         <h1 className="text-3xl font-bold tracking-tight">Practice</h1>
         <p className="text-white/80 text-sm mt-1.5">
-          {rows.length} confirmed student{rows.length !== 1 ? "s" : ""} · {scheduledCount} with a practice scheduled
+          {rows.length} confirmed student{rows.length !== 1 ? "s" : ""} · {scheduledCount} with a practice scheduled · {proofCount} with proof submitted
           {!canEdit && <> · view only</>}
         </p>
       </div>
@@ -133,6 +229,43 @@ export default function PracticePage() {
             onChange={e => setSearch(e.target.value)}
           />
         </div>
+      </div>
+
+      {/* Export bar */}
+      <div className="rounded-xl bg-white border border-ivory-300 shadow-sm p-3 mb-4 flex flex-wrap items-center gap-2">
+        <span className="fa-mono text-[10px] uppercase text-ink-500 mr-1" style={{ letterSpacing: "0.12em" }}>
+          Export
+        </span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          disabled={rows.length === 0}
+          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-violet-200 bg-violet-50 text-violet-700 text-xs font-semibold hover:bg-violet-100 hover:border-violet-400 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+        >
+          {copied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+          {copied ? "Copied!" : "Copy as text"}
+        </button>
+        <button
+          type="button"
+          onClick={() => handleDownload("text")}
+          disabled={rows.length === 0}
+          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-cyan-200 bg-cyan-50 text-cyan-700 text-xs font-semibold hover:bg-cyan-100 hover:border-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+        >
+          <Download className="w-3.5 h-3.5" />
+          Download .txt
+        </button>
+        <button
+          type="button"
+          onClick={() => handleDownload("csv")}
+          disabled={rows.length === 0}
+          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 text-xs font-semibold hover:bg-emerald-100 hover:border-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+        >
+          <Download className="w-3.5 h-3.5" />
+          Download .csv
+        </button>
+        <span className="ml-auto text-[11px] text-ink-400">
+          Text format is grouped by branch — paste straight into a WhatsApp group.
+        </span>
       </div>
 
       {/* List */}
