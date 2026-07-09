@@ -52,6 +52,17 @@ async function loadAutocountMap(): Promise<Map<string, AutocountEntry>> {
 
 const ISO_DATE = String.raw`^\d{4}-\d{2}-\d{2}$`;
 
+// Malaysian Indian naming carries a relationship infix — "A/P" (Anak
+// Perempuan, Malay) and "D/O" (Daughter Of, English) are the SAME thing,
+// likewise "A/L" and "S/O" for sons — but different source systems spell it
+// differently (BranchStaff vs LeaveTransaction/Autocount often disagree).
+// An exact-string name match then silently fails and the raw, wrong-honorific
+// name leaks through instead of the canonical BranchStaff one. Strip the
+// infix from both sides before comparing so "KIRTIKHA A/P NARAYANAN" and
+// "KIRTIKHA D/O NARAYANAN" match as the same person.
+const stripHonorific = (col: string) =>
+  `TRIM(REGEXP_REPLACE(REGEXP_REPLACE(UPPER(TRIM(${col})), '(A/L|A/P|S/O|D/O)', '', 'g'), '\\s+', ' ', 'g'))`;
+
 // BranchStaff projection used by onboarding/offboarding.
 const STAFF_COLS = `
   id, name,
@@ -105,7 +116,7 @@ const RESOLVED_LEAVE_FROM = `
     ORDER BY m."createdAt" DESC NULLS LAST LIMIT 1
   ) ml ON true
   LEFT JOIN "BranchStaff" bs
-    ON UPPER(TRIM(bs.name)) = UPPER(TRIM(COALESCE(NULLIF(TRIM(lt."EmployeeName"), ''), nl."EmployeeName")))`;
+    ON ${stripHonorific('bs.name')} = ${stripHonorific(`COALESCE(NULLIF(TRIM(lt."EmployeeName"), ''), nl."EmployeeName")`)}`;
 
 const RESOLVED_NAME = `COALESCE(bs.name, NULLIF(TRIM(lt."EmployeeName"), ''), nl."EmployeeName", ml.name, lt."EmployeeCode")`;
 
@@ -255,16 +266,22 @@ export async function GET(req: NextRequest) {
 
   try {
     // Autocount code → name bridge (matches the internal dashboard). Applied to
-    // every leave card below so part-timers whose LeaveTransaction.EmployeeName
-    // is NULL show their real name instead of a raw code (e.g. "EBPT216").
+    // every leave card below, and given TOP priority over whatever name the SQL
+    // query resolved via string-matching — the EmployeeCode → BranchStaff bridge
+    // is authoritative (an explicit ID mapping), while the SQL join is a fuzzy
+    // name-string match that can still be fooled by spelling variants the
+    // honorific-stripping doesn't cover (typos, "BINTI"/"BT", missing initials,
+    // etc). This guarantees every displayed name is the exact canonical name
+    // from BranchStaff / HR Employee Management (the "IC name"), not a raw
+    // variant pulled from the leave/payroll export, whenever the code is mapped.
     const autocountMap = await loadAutocountMap();
     const resolveRow = <T extends { code?: string | null; name?: string | null; position?: string | null; department_branch?: string | null }>(row: T): T => {
       const code = row.code ? String(row.code).trim().toUpperCase() : "";
-      if (code && (!row.name || row.name.trim() === "" || row.name === row.code) && autocountMap.has(code)) {
-        const a = autocountMap.get(code)!;
-        row.name = a.name;
-        if (!row.position) row.position = a.role;
-        if (!row.department_branch) row.department_branch = a.branch;
+      const mapped = code ? autocountMap.get(code) : undefined;
+      if (mapped) {
+        row.name = mapped.name;
+        if (!row.position) row.position = mapped.role;
+        if (!row.department_branch) row.department_branch = mapped.branch;
       }
       return row;
     };
@@ -473,7 +490,7 @@ export async function GET(req: NextRequest) {
     const leaveNameRows = await hrfsPrisma.$queryRawUnsafe<{ code: string }[]>(
       `SELECT DISTINCT bs."employeeId" AS code
          FROM "LeaveTransaction" lt
-         JOIN "BranchStaff" bs ON UPPER(TRIM(bs.name)) = UPPER(TRIM(lt."EmployeeName"))
+         JOIN "BranchStaff" bs ON ${stripHonorific('bs.name')} = ${stripHonorific('lt."EmployeeName"')}
         WHERE lt."ApplyStatus" = 'A' AND lt."LeaveDate"::date = $1::date
           AND bs."employeeId" IS NOT NULL`,
       todayKL,
