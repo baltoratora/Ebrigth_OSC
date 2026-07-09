@@ -37,6 +37,17 @@ function timeToSeconds(t: string): number {
   return (h || 0) * 3600 + (m || 0) * 60 + (s || 0);
 }
 
+/** "09:00" (24h) -> "9:00 AM" for display (emails, etc). Falls back to the
+ *  raw value if unparseable. */
+export function formatStartTime(hhmm: string | undefined): string | undefined {
+  if (!hhmm) return undefined;
+  const [h, m] = hhmm.split(":").map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return hhmm;
+  const period = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2, "0")} ${period}`;
+}
+
 /** True when the schedule object has at least one configured working day. */
 export function hasSchedule(wh: unknown): wh is WeekSchedule {
   if (!wh || typeof wh !== "object") return false;

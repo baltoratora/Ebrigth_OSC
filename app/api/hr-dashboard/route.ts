@@ -4,6 +4,9 @@ import { hrfsPrisma } from "@/lib/hrfs";
 import { requireRole } from "@/lib/auth";
 import { MANAGEMENT_ROLES } from "@/lib/roles";
 import { remapStScan } from "@/lib/scan-identity";
+import { getAllBranchAttendanceEntries } from "@/lib/manpower-attendance";
+import { slotForDate } from "@/lib/working-hours";
+import { assignedBranchForDate } from "@/lib/visiting-staff";
 
 export const dynamic = "force-dynamic";
 
@@ -456,17 +459,40 @@ export async function GET(req: NextRequest) {
       code: string; name: string; position: string | null; department_branch: string | null;
       working_hours: WeekHours; start_date: string | null; end_date: string | null;
     }
-    const staffRows = await hrfsPrisma.$queryRawUnsafe<StaffRow[]>(
+    // "Expected at HQ/ST today" = home HQ/ST staff, UNION anyone rotation-
+    // assigned to HQ today per the BM rotation sheet (lib/visiting-staff) even
+    // though their home branch is elsewhere — same two-source union the
+    // Attendance Summary page's scanner Missing panel already uses. Without
+    // the rotation half, rotating BMs/coaches who are genuinely expected at
+    // HQ today never show up here, which is exactly why this list used to
+    // disagree with Attendance Summary's count.
+    const allActiveStaffRows = await hrfsPrisma.$queryRawUnsafe<(StaffRow & { branch: string | null })[]>(
       `SELECT "employeeId" AS code, name, role AS position,
               COALESCE(NULLIF(TRIM(department), ''), branch) AS department_branch,
+              branch,
               "workingHours" AS working_hours,
               NULLIF(TRIM(start_date), '') AS start_date,
               NULLIF(TRIM("endDate"), '')  AS end_date
          FROM "BranchStaff"
         WHERE COALESCE(NULLIF(TRIM(status), ''), 'Active') ILIKE 'Active'
-          AND "employeeId" IS NOT NULL AND "employeeId" <> ''
-          AND branch IN ('HQ', 'ST')`,
+          AND "employeeId" IS NOT NULL AND "employeeId" <> ''`,
     );
+    const isWorkingDay = (wh: WeekHours) => {
+      const slot = slotForDate(wh, todayKL);
+      return slot !== null && slot !== undefined;
+    };
+    const homeStaffRows = allActiveStaffRows.filter(s => (s.branch === "HQ" || s.branch === "ST") && isWorkingDay(s.working_hours));
+    // assignedBranchForDate returns the rotation sheet's own branch codes
+    // ("HQ", "ST", …), not full display names — compare against those directly.
+    const rotationStaffRows = allActiveStaffRows.filter(s => {
+      if (s.branch === "HQ" || s.branch === "ST") return false; // already counted as home staff
+      const assigned = assignedBranchForDate(s.code, todayKL);
+      if (assigned !== "HQ" && assigned !== "ST") return false;
+      return isWorkingDay(s.working_hours);
+    });
+    const staffRowsById = new Map<string, StaffRow>();
+    for (const s of [...homeStaffRows, ...rotationStaffRows]) staffRowsById.set(s.code, s);
+    const staffRows = Array.from(staffRowsById.values());
     const scanRows = await hrfsPrisma.$queryRawUnsafe<{ person_id: string; device_id: string | null }[]>(
       `SELECT DISTINCT person_id, device_id
          FROM public.hikvision_attendance_all
@@ -539,11 +565,56 @@ export async function GET(req: NextRequest) {
       code: s.code, name: s.name, position: s.position, department_branch: s.department_branch,
     }));
 
+    // Every other branch (no scanner) — "missing" comes from the BM's manual
+    // Present/Absent/Late tick on the Manpower Schedule Update page instead
+    // of a scan, same source as the Attendance Summary page's Missing panel
+    // and the branch-missing-reminder email sweep. Shown live, with no extra
+    // grace period (that 30-min delay only applies to when the reminder EMAIL
+    // fires, not to this dashboard reflecting current state) — anyone ticked
+    // Absent or not yet ticked at all counts as missing right now.
+    let branchMissingToday: { code: string; name: string; position: string | null; department_branch: string | null }[] = [];
+    try {
+      const branchEntries = await getAllBranchAttendanceEntries(todayKL);
+      const branchMissingRaw = branchEntries.filter(e => e.status === "Absent");
+      if (branchMissingRaw.length) {
+        const nicknameRows = await hrfsPrisma.$queryRawUnsafe<{ nickname: string; employeeId: string | null; role: string | null; department_branch: string | null }[]>(
+          `SELECT nickname, "employeeId",
+                  role,
+                  COALESCE(NULLIF(TRIM(department), ''), branch) AS department_branch
+             FROM "BranchStaff"
+            WHERE COALESCE(NULLIF(TRIM(status), ''), 'Active') ILIKE 'Active'
+              AND nickname IS NOT NULL AND TRIM(nickname) <> ''`,
+        );
+        const nicknameMap = new Map(nicknameRows.map(r => [r.nickname.trim().toUpperCase(), r]));
+        branchMissingToday = branchMissingRaw
+          .map(e => {
+            const staff = nicknameMap.get(e.name.trim().toUpperCase());
+            // Names on the Manpower Schedule are nicknames, not tied 1:1 to a
+            // BranchStaff row in every case — fall back to a synthetic code
+            // (never collides with a real numeric employeeId) so the person
+            // still shows up instead of being silently dropped.
+            return {
+              code: staff?.employeeId || `manual:${e.branch}:${e.name}`,
+              // Prefer the canonical IC name persisted at save time (see
+              // NAME_INFO_NOTES_KEY) over the raw nickname — same "always
+              // follow the Employee Dashboard name" rule as the rest of this
+              // dashboard's leave/MC cards.
+              name: e.fullName ?? e.name,
+              position: staff?.role ?? null,
+              department_branch: staff?.department_branch ?? e.branch,
+            };
+          })
+          .filter(r => !HIDDEN_EMPLOYEE_IDS.has(r.code));
+      }
+    } catch (e) {
+      console.error("[hr-dashboard] branch missing-today merge failed:", (e as Error).message);
+    }
+
     // "Missing today" only makes sense for the current month — when the MIA card
     // is viewing a past/other month, there's no "today" inside it.
     const currentYM = todayKL.slice(0, 7);
     const miaMonth = useMiaMonth ? miaMonthParam : currentYM;
-    const miaMissingTodayOut = miaMonth === currentYM ? miaMissingToday : [];
+    const miaMissingTodayOut = miaMonth === currentYM ? [...miaMissingToday, ...branchMissingToday] : [];
 
     return NextResponse.json({
       onboarding, offboarding, signedCounts, signedStaff,

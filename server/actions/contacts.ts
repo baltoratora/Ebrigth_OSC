@@ -61,17 +61,30 @@ export async function createContact(
     // Normalize phone
     const normalizedPhone = input.phone ? normalizePhone(input.phone) : undefined
 
-    // Check for duplicates by phone or email within this tenant
+    // Duplicate guard — only reject an EXACT match on name + phone + email.
+    // Siblings deliberately share a phone/email (one parent contact, a generated
+    // per-branch email) but have DIFFERENT names, so a phone/email match alone
+    // must not block — the name is what distinguishes them. Only when the name,
+    // phone AND email are all identical is this a true re-entry of the same
+    // person. (Was: OR(phone,email), which wrongly blocked siblings.)
     if (normalizedPhone || (input.email && input.email !== '')) {
-      const orClauses: Array<{ phone?: string; email?: string }> = []
-      if (normalizedPhone) orClauses.push({ phone: normalizedPhone })
-      if (input.email && input.email !== '') orClauses.push({ email: input.email })
+      const emailNorm = input.email && input.email !== '' ? input.email : null
+      const firstName = (input.firstName ?? '').trim()
+      const lastName = (input.lastName ?? '').trim()
 
       const existing = await prisma.crm_contact.findFirst({
         where: {
           ...scope.whereOnly(),
           deletedAt: null,
-          OR: orClauses,
+          firstName: { equals: firstName, mode: 'insensitive' },
+          // lastName is nullable; treat missing as null-or-empty.
+          ...(lastName
+            ? { lastName: { equals: lastName, mode: 'insensitive' } }
+            : { OR: [{ lastName: null }, { lastName: '' }] }),
+          // `?? null` makes an absent value match IS NULL (not "ignore filter"),
+          // so all three must genuinely line up.
+          phone: normalizedPhone ?? null,
+          email: emailNorm,
         },
         select: { id: true, firstName: true, lastName: true },
       })
@@ -79,7 +92,7 @@ export async function createContact(
       if (existing) {
         return {
           success: false,
-          error: `Duplicate contact: ${existing.firstName}${existing.lastName ? ' ' + existing.lastName : ''} already exists with this phone/email.`,
+          error: `Duplicate contact: ${existing.firstName}${existing.lastName ? ' ' + existing.lastName : ''} already exists with the same name, phone and email.`,
         }
       }
     }

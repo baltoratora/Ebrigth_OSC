@@ -252,7 +252,7 @@ export default function AttendanceSummary() {
   // ── Manual attendance (BM tick), for branches with no scanner ───────────────
   // Sourced from the Attendance table on the Manpower Schedule Update page —
   // the BM's Present/Absent/Late tick for that branch's weekday, keyed by name.
-  const [manualAttendance, setManualAttendance] = useState<{ name: string; branch?: string; status: "Present" | "Absent" | "Late"; locked: boolean; ticked: boolean }[]>([]);
+  const [manualAttendance, setManualAttendance] = useState<{ name: string; fullName?: string; branch?: string; homeBranch?: string; status: "Present" | "Absent" | "Late"; locked: boolean; ticked: boolean }[]>([]);
   const [manualAttendanceLoading, setManualAttendanceLoading] = useState(false);
 
   const fetchManualAttendance = useCallback(() => {
@@ -264,7 +264,7 @@ export default function AttendanceSummary() {
     const branchParam = isAllBranches ? "ALL" : selectedLocation;
     fetch(`/api/schedules/attendance?branch=${encodeURIComponent(branchParam)}&date=${encodeURIComponent(selectedDate)}`)
       .then(r => (r.ok ? r.json() : { entries: [] }))
-      .then((d: { entries?: { name: string; branch?: string; status: "Present" | "Absent" | "Late"; locked: boolean; ticked: boolean }[] }) => setManualAttendance(d.entries ?? []))
+      .then((d: { entries?: { name: string; fullName?: string; branch?: string; homeBranch?: string; status: "Present" | "Absent" | "Late"; locked: boolean; ticked: boolean }[] }) => setManualAttendance(d.entries ?? []))
       .catch(() => setManualAttendance([]))
       .finally(() => setManualAttendanceLoading(false));
   }, [isScannerBranch, isAllBranches, selectedLocation, selectedDate]);
@@ -952,9 +952,12 @@ export default function AttendanceSummary() {
         </header>
 
         <main className="max-w-7xl mx-auto px-4 py-8 w-full">
-        {!isScannerBranch && (() => {
+        {!isScannerBranch && !isAllBranches && (() => {
           const statusMatches = (s: "Present" | "Absent" | "Late") => manualStatusFilter === "all" || manualStatusFilter === s;
-          const presentRows = manualAttendance.filter(r => (r.status === "Present" || r.status === "Late") && statusMatches(r.status));
+          // Only count a manual tick once the BM has actually confirmed it
+          // (hit Save on that row) — an unconfirmed tick is still provisional
+          // and shouldn't show up here as if it were final.
+          const presentRows = manualAttendance.filter(r => (r.status === "Present" || r.status === "Late") && r.locked && statusMatches(r.status));
           const absentRows = manualAttendance.filter(r => r.status === "Absent" && statusMatches("Absent"));
           return (
           <>
@@ -1017,7 +1020,7 @@ export default function AttendanceSummary() {
             <div className="flex flex-col lg:flex-row gap-6 items-stretch">
               <div className="flex-1 min-w-0">
                 {/* ── Attendance Table (Present / Late) ── */}
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-visible">
                   <div className="px-6 py-4 border-b border-gray-200">
                     <div className="flex items-center gap-3">
                       <div className="w-1 h-6 bg-blue-500 rounded-full" />
@@ -1037,20 +1040,29 @@ export default function AttendanceSummary() {
                       <p className="text-sm font-medium text-gray-700">No one ticked Present/Late yet</p>
                     </div>
                   ) : (
-                    <div className="overflow-x-auto">
+                    <div className="overflow-x-auto overflow-y-auto max-h-[80vh]">
                       <table className="w-full">
-                        <thead>
+                        <thead className="sticky-thead">
                           <tr className="bg-gray-50 border-b border-gray-200">
-                            <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Employee</th>
-                            {isAllBranches && <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Branch</th>}
-                            <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Status</th>
-                            <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Confirmed</th>
+                            <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">Employee</th>
+                            {isAllBranches && <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">Branch</th>}
+                            <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">Status</th>
                           </tr>
                         </thead>
                         <tbody>
                           {presentRows.map((row) => (
                             <tr key={`${row.branch ?? ""}-${row.name}`} className="border-b border-gray-100 last:border-0 hover:bg-gray-50">
-                              <td className="px-4 py-3 text-sm font-semibold text-gray-900">{row.name}</td>
+                              <td className="px-4 py-3 text-sm font-semibold text-gray-900">
+                                {row.fullName ?? row.name}
+                                {row.fullName && row.fullName !== row.name && (
+                                  <span className="ml-1 text-xs font-normal text-gray-400">({row.name})</span>
+                                )}
+                                {row.homeBranch && (
+                                  <span className="ml-1.5 inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-amber-50 text-amber-700 ring-1 ring-amber-200" title={`Home branch: ${row.homeBranch}`}>
+                                    From {row.homeBranch}
+                                  </span>
+                                )}
+                              </td>
                               {isAllBranches && <td className="px-4 py-3 text-sm text-gray-500">{row.branch ?? "—"}</td>}
                               <td className="px-4 py-3">
                                 <span className={`inline-flex px-2.5 py-1 rounded-md text-[11px] font-bold uppercase tracking-wide ${
@@ -1060,15 +1072,6 @@ export default function AttendanceSummary() {
                                 }`}>
                                   {row.status}
                                 </span>
-                              </td>
-                              <td className="px-4 py-3 text-xs text-gray-500">
-                                {row.locked ? (
-                                  <span className="inline-flex items-center gap-1 text-emerald-600 font-semibold">
-                                    <CheckCircle2 className="w-3.5 h-3.5" /> Confirmed
-                                  </span>
-                                ) : (
-                                  <span className="text-gray-400">Pending confirm</span>
-                                )}
                               </td>
                             </tr>
                           ))}
@@ -1081,7 +1084,7 @@ export default function AttendanceSummary() {
 
               <div className="shrink-0 lg:w-[360px]">
                 {/* ── Missing (Absent-ticked) ── */}
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-visible">
                   <div className="px-6 py-4 flex items-center justify-between gap-3 border-b border-gray-200">
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="w-1 h-6 bg-red-500 rounded-full shrink-0" />
@@ -1113,12 +1116,20 @@ export default function AttendanceSummary() {
                       {absentRows.map((row) => (
                         <div key={`${row.branch ?? ""}-${row.name}`} className="px-6 py-3 flex items-center gap-3">
                           <div className="w-9 h-9 rounded-full bg-rose-50 text-rose-600 ring-1 ring-rose-100 flex items-center justify-center font-bold text-sm shrink-0">
-                            {row.name.charAt(0).toUpperCase()}
+                            {(row.fullName ?? row.name).charAt(0).toUpperCase()}
                           </div>
                           <div className="min-w-0 flex-1">
                             <p className="text-sm font-semibold text-gray-900 truncate">
-                              {row.name}
+                              {row.fullName ?? row.name}
+                              {row.fullName && row.fullName !== row.name && (
+                                <span className="ml-1 text-xs font-normal text-gray-400">({row.name})</span>
+                              )}
                               {isAllBranches && row.branch && <span className="ml-1.5 text-xs font-normal text-gray-400">· {row.branch}</span>}
+                              {row.homeBranch && (
+                                <span className="ml-1.5 inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-amber-50 text-amber-700 ring-1 ring-amber-200" title={`Home branch: ${row.homeBranch}`}>
+                                  From {row.homeBranch}
+                                </span>
+                              )}
                             </p>
                             <p className="text-xs text-gray-500">
                               {row.ticked
@@ -1136,7 +1147,263 @@ export default function AttendanceSummary() {
           </>
           );
         })()}
-        {(isScannerBranch || isAllBranches) && (
+        {isAllBranches && (() => {
+          // ── Combined view: scanner (HQ/ST) + manual (everyone else) merged
+          // into one table and one Missing panel, instead of two stacked
+          // sections — a single "All branches" picture.
+          const scannerRows = visibleLogs.map(r => ({
+            // empNo alone isn't unique here — the same person can have a
+            // separate row per scanner location (e.g. scanned at both HQ and
+            // ST the same day), so the key must include scannerLocation too.
+            key: `s-${r.empNo}-${r.scannerLocation ?? ""}`,
+            name: r.name,
+            branch: r.scannerLocation ?? "HQ",
+            statusLabel: r.checkInStatus === "Late" ? "Late" : "On Time",
+            tone: r.checkInStatus === "Late" ? "late" as const : "present" as const,
+            detail: `In ${r.checkInStr}${r.checkOutStr ? ` · Out ${r.checkOutStr}` : " · Currently In"}`,
+            source: "Scanner" as const,
+          }));
+          // Only count a manual tick once the BM has actually confirmed it
+          // (hit Save on that row) — an unconfirmed tick is still provisional
+          // and shouldn't show up here as if it were final.
+          const manualPresentRows = manualAttendance
+            .filter(r => (r.status === "Present" || r.status === "Late") && r.locked)
+            .map(r => ({
+              key: `m-${r.branch}-${r.name}`,
+              name: r.fullName ?? r.name,
+              nickname: r.fullName && r.fullName !== r.name ? r.name : undefined,
+              branch: r.branch ?? "—",
+              homeBranch: r.homeBranch,
+              statusLabel: r.status,
+              tone: r.status === "Late" ? "late" as const : "present" as const,
+              // Every manual row here is already confirmed (see the .locked
+              // filter above) — "Confirmed" on every single row said nothing,
+              // so leave it blank; only Scanner rows use this column now, for
+              // their real check-in/out detail.
+              detail: "",
+              source: "Manual" as const,
+            }));
+          const combinedRows = [...scannerRows.map(r => ({ ...r, nickname: undefined as string | undefined, homeBranch: undefined as string | undefined })), ...manualPresentRows];
+
+          const combinedMissing = [
+            ...missingEmployees.map(s => ({
+              key: `s-${s.id}`,
+              name: s.name ?? "—",
+              nickname: undefined as string | undefined,
+              branch: s.branch === "HQ" ? (s.department || s.branch) : s.branch,
+              homeBranch: undefined as string | undefined,
+              reason: "Not yet scanned",
+              source: "Scanner" as const,
+            })),
+            ...manualAttendance.filter(r => r.status === "Absent").map(r => ({
+              key: `m-${r.branch}-${r.name}`,
+              name: r.fullName ?? r.name,
+              nickname: r.fullName && r.fullName !== r.name ? r.name : undefined,
+              branch: r.branch ?? "—",
+              homeBranch: r.homeBranch,
+              reason: r.ticked ? `Marked Absent${r.locked ? " · Confirmed" : ""}` : "Not ticked yet by the BM",
+              source: "Manual" as const,
+            })),
+          ];
+
+          const manualPresentCount = manualAttendance.filter(r => r.status === "Present" && r.locked).length;
+          const manualLateCount = manualAttendance.filter(r => r.status === "Late" && r.locked).length;
+          const manualAbsentCount = manualAttendance.filter(r => r.status === "Absent").length;
+          const combinedPresentCount = branchFilteredLogs.length + manualPresentCount;
+          const combinedLateCount = branchFilteredLogs.filter(r => r.checkInStatus === "Late").length + manualLateCount;
+          const combinedMissingCount = missingEmployees.length + manualAbsentCount;
+
+          return (
+          <>
+            {/* ── Stat Cards ── */}
+            <motion.div
+              className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, ease: "easeOut" }}
+            >
+              <StatCard
+                label="Present"
+                value={combinedPresentCount}
+                icon={Users}
+                tone="blue"
+                tooltip="Scanned at HQ/ST + ticked Present at every other branch, combined."
+              />
+              <StatCard
+                label="Currently In"
+                value={checkedInCount}
+                icon={UserCheck}
+                tone="green"
+                tooltip="Scanner branches only — checked in but not yet checked out."
+              />
+              <StatCard
+                label="Late"
+                value={combinedLateCount}
+                icon={Clock}
+                tone="orange"
+                tooltip="Late check-in at HQ/ST + ticked Late everywhere else, combined."
+              />
+              <StatCard
+                label="Missing"
+                value={combinedMissingCount}
+                icon={UserX}
+                tone="red"
+                tooltip="Not yet scanned at HQ/ST + absent or not-yet-ticked everywhere else, combined."
+              />
+            </motion.div>
+
+            <div className="mb-6 px-4 py-3 bg-white border border-gray-200 rounded-xl flex items-center gap-3 shadow-sm flex-wrap">
+              <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center shrink-0">
+                <Info className="w-4 h-4 text-indigo-500" />
+              </div>
+              <p className="text-xs text-gray-600 leading-relaxed flex-1 min-w-[200px]">
+                <span className="font-semibold text-gray-900">All branches combined.</span>{" "}
+                HQ/Subang Taipan come from the live scanner; every other branch comes from the BM's manual tick.
+              </p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    placeholder="Search name, ID, dept…"
+                    className="pl-9 pr-3 py-2 text-sm bg-gray-50 border border-gray-200 rounded-lg focus:bg-white focus:border-blue-400 focus:outline-none w-56"
+                  />
+                </div>
+                {(manualAttendanceLoading || scannerStatus === "idle") && <Loader2 className="w-4 h-4 text-gray-400 animate-spin shrink-0" />}
+              </div>
+            </div>
+
+            <div className="flex flex-col lg:flex-row gap-6 items-stretch">
+              <div className="flex-1 min-w-0">
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-visible">
+                  <div className="px-6 py-4 border-b border-gray-200">
+                    <div className="flex items-center gap-3">
+                      <div className="w-1 h-6 bg-blue-500 rounded-full" />
+                      <div>
+                        <h2 className="text-lg font-bold text-gray-900">
+                          {isViewingToday ? "Today's Attendance" : `Attendance · ${prettyDateLabel(selectedDate)}`}
+                        </h2>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          All branches · {combinedRows.length} record{combinedRows.length !== 1 ? "s" : ""}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  {combinedRows.length === 0 ? (
+                    <div className="px-6 py-16 flex flex-col items-center gap-3 text-center">
+                      <Users className="w-10 h-10 text-gray-300" />
+                      <p className="text-sm font-medium text-gray-700">No attendance recorded yet</p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto overflow-y-auto max-h-[80vh]">
+                      <table className="w-full">
+                        <thead className="sticky-thead">
+                          <tr className="bg-gray-50 border-b border-gray-200">
+                            <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">Employee</th>
+                            <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">Branch</th>
+                            <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">Source</th>
+                            <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">Status</th>
+                            <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">Detail</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {combinedRows.map((row) => (
+                            <tr key={row.key} className="border-b border-gray-100 last:border-0 hover:bg-gray-50">
+                              <td className="px-4 py-3 text-sm font-semibold text-gray-900">
+                                {row.name}
+                                {row.nickname && <span className="ml-1 text-xs font-normal text-gray-400">({row.nickname})</span>}
+                              </td>
+                              <td className="px-4 py-3 text-sm text-gray-500">
+                                {row.branch}
+                                {row.homeBranch && (
+                                  <span className="ml-1.5 inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-amber-50 text-amber-700 ring-1 ring-amber-200" title={`Home branch: ${row.homeBranch}`}>
+                                    From {row.homeBranch}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3">
+                                <span className={`inline-flex px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wide ${
+                                  row.source === "Scanner" ? "bg-blue-50 text-blue-700 ring-1 ring-blue-200" : "bg-purple-50 text-purple-700 ring-1 ring-purple-200"
+                                }`}>
+                                  {row.source}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3">
+                                <span className={`inline-flex px-2.5 py-1 rounded-md text-[11px] font-bold uppercase tracking-wide ${
+                                  row.tone === "late" ? "bg-yellow-50 text-yellow-700 ring-1 ring-yellow-200" : "bg-green-50 text-green-700 ring-1 ring-green-200"
+                                }`}>
+                                  {row.statusLabel}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">{row.detail}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="shrink-0 lg:w-[360px]">
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-visible">
+                  <div className="px-6 py-4 flex items-center justify-between gap-3 border-b border-gray-200">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-1 h-6 bg-red-500 rounded-full shrink-0" />
+                      <div className="min-w-0">
+                        <h2 className="text-lg font-bold text-gray-900">
+                          {isViewingToday ? "Missing Today" : `Missing on ${prettyDateLabel(selectedDate)}`}
+                        </h2>
+                        <p className="text-xs text-gray-500 mt-0.5 truncate">All branches combined</p>
+                      </div>
+                    </div>
+                    {combinedMissing.length > 0 && (
+                      <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-red-50 text-red-700 ring-1 ring-red-200 shrink-0">
+                        <AlertTriangle className="w-3.5 h-3.5" />
+                        <span className="text-sm font-bold">{combinedMissing.length}</span>
+                      </div>
+                    )}
+                  </div>
+                  {combinedMissing.length === 0 ? (
+                    <div className="px-6 py-12 flex flex-col items-center gap-3 text-center">
+                      <div className="w-12 h-12 rounded-full bg-emerald-50 ring-4 ring-emerald-100 flex items-center justify-center">
+                        <CheckCircle2 className="w-6 h-6 text-emerald-600" />
+                      </div>
+                      <p className="text-sm font-semibold text-gray-900">All clear</p>
+                    </div>
+                  ) : (
+                    <div className="max-h-[680px] overflow-y-auto divide-y divide-gray-100">
+                      {combinedMissing.map((row) => (
+                        <div key={row.key} className="px-6 py-3 flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-full bg-rose-50 text-rose-600 ring-1 ring-rose-100 flex items-center justify-center font-bold text-sm shrink-0">
+                            {row.name.charAt(0).toUpperCase()}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-semibold text-gray-900 truncate">
+                              {row.name}
+                              {row.nickname && <span className="ml-1 text-xs font-normal text-gray-400">({row.nickname})</span>}
+                              <span className="ml-1.5 text-xs font-normal text-gray-400">· {row.branch}</span>
+                              {row.homeBranch && (
+                                <span className="ml-1.5 inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-amber-50 text-amber-700 ring-1 ring-amber-200" title={`Home branch: ${row.homeBranch}`}>
+                                  From {row.homeBranch}
+                                </span>
+                              )}
+                            </p>
+                            <p className="text-xs text-gray-500">{row.reason}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </>
+          );
+        })()}
+        {isScannerBranch && (
         <>
           {/* ── Stat Cards ── */}
           <motion.div
@@ -1231,13 +1498,13 @@ export default function AttendanceSummary() {
           {/* ── Two-column: Today's Attendance + Missing Today ── */}
           <motion.div
             className="flex flex-col lg:flex-row gap-6 items-stretch"
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
             transition={{ duration: 0.4, ease: "easeOut", delay: 0.2 }}
           >
           <div className="flex-1 min-w-0">
           {/* ── Attendance Table ── */}
-          <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-visible">
             <div className="px-6 py-4 border-b border-gray-200">
               <div className="flex items-center justify-between gap-4 mb-3">
                 <div className="flex items-center gap-3">
@@ -1302,33 +1569,33 @@ export default function AttendanceSummary() {
               </div>
             </div>
 
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto overflow-y-auto max-h-[80vh]">
               <table className="w-full">
-                <thead>
+                <thead className="sticky-thead">
                   <tr className="bg-gray-50 border-b border-gray-200">
-                    <th className="px-4 py-3 text-left">
+                    <th className="px-4 py-3 text-left bg-gray-50">
                       <button onClick={() => toggleSort("name")} className="inline-flex items-center gap-1 text-[11px] font-semibold text-gray-500 uppercase tracking-wider hover:text-gray-900 transition-colors group">
                         Employee
                         <ArrowUpDown className={`w-3 h-3 transition-opacity ${sortKey === "name" ? "opacity-100 text-blue-500" : "opacity-30 group-hover:opacity-60"}`} />
                       </button>
                     </th>
-                    <th className="px-4 py-3 text-left">
+                    <th className="px-4 py-3 text-left bg-gray-50">
                       <button onClick={() => toggleSort("dept")} className="inline-flex items-center gap-1 text-[11px] font-semibold text-gray-500 uppercase tracking-wider hover:text-gray-900 transition-colors group">
                         Dept / Role
                         <ArrowUpDown className={`w-3 h-3 transition-opacity ${sortKey === "dept" ? "opacity-100 text-blue-500" : "opacity-30 group-hover:opacity-60"}`} />
                       </button>
                     </th>
-                    <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Date</th>
-                    <th className="px-4 py-3 text-left">
+                    <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">Date</th>
+                    <th className="px-4 py-3 text-left bg-gray-50">
                       <button onClick={() => toggleSort("checkIn")} className="inline-flex items-center gap-1 text-[11px] font-semibold text-gray-500 uppercase tracking-wider hover:text-gray-900 transition-colors group">
                         Check In
                         <ArrowUpDown className={`w-3 h-3 transition-opacity ${sortKey === "checkIn" ? "opacity-100 text-blue-500" : "opacity-30 group-hover:opacity-60"}`} />
                       </button>
                     </th>
-                    <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider">In Status</th>
-                    <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Check Out</th>
-                    <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Out Status</th>
-                    <th className="px-4 py-3 text-center text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Scans</th>
+                    <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">In Status</th>
+                    <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">Check Out</th>
+                    <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">Out Status</th>
+                    <th className="px-4 py-3 text-center text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">Scans</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1513,7 +1780,7 @@ export default function AttendanceSummary() {
               )}
             </div>
           ) : (
-          <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-visible">
             <div className="px-6 py-4 flex items-center justify-between gap-3 border-b border-gray-200">
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-1 h-6 bg-red-500 rounded-full shrink-0" />
@@ -1805,7 +2072,7 @@ export default function AttendanceSummary() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.4, ease: "easeOut", delay: 0.25 }}
           >
-            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-visible">
               <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="w-1 h-6 bg-amber-500 rounded-full" />
@@ -1872,20 +2139,20 @@ export default function AttendanceSummary() {
               <div className="flex-1 h-px bg-gray-200" />
             </div>
             <div className="space-y-2">
-              <details className="bg-white/60 border border-gray-200 rounded-lg overflow-hidden">
+              <details className="bg-white/60 border border-gray-200 rounded-lg overflow-visible">
                 <summary className="px-4 py-2.5 text-xs font-medium text-gray-500 hover:text-gray-700 cursor-pointer hover:bg-gray-50 select-none flex items-center gap-2">
                   <ChevronRight className="w-3 h-3 transition-transform [details[open]_&]:rotate-90" />
                   Registered Employees ({employees.length})
                 </summary>
-                <div className="overflow-x-auto border-t border-gray-100">
+                <div className="overflow-x-auto overflow-y-auto max-h-[60vh] border-t border-gray-100">
                   <table className="w-full">
-                    <thead>
+                    <thead className="sticky-thead">
                       <tr className="bg-gray-50">
-                        <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Computed ID</th>
-                        <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Name</th>
-                        <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Dept</th>
-                        <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Position</th>
-                        <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Matched Today</th>
+                        <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide bg-gray-50">Computed ID</th>
+                        <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide bg-gray-50">Name</th>
+                        <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide bg-gray-50">Dept</th>
+                        <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide bg-gray-50">Position</th>
+                        <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide bg-gray-50">Matched Today</th>
                       </tr>
                     </thead>
                     <tbody>

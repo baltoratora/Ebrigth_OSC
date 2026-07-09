@@ -1,8 +1,9 @@
 /**
  * lib/branch-missing-reminder.ts
  *
- * "You're marked missing today" reminder email for every branch EXCEPT HQ and
- * Subang Taipan (those have a scanner and are handled by lib/missing-reminder.ts).
+ * "You're marked missing today" reminder email — scoped to exactly these six
+ * branches: Setia Alam, Putrajaya, Cyberjaya, Ampang, Kota Damansara, Klang
+ * (not every non-HQ/ST branch — deliberately narrow, see REMINDER_BRANCHES).
  * These branches have no scanner — "missing" instead comes from the BM's
  * manual Present/Absent/Late tick on the Manpower Schedule Update page (the
  * same source the Attendance Summary page's "Missing" panel reads), via
@@ -15,15 +16,33 @@
  * per person+branch+day). Same claim-before-send email dedup pattern as the
  * HQ version, in its own log table.
  *
- * Names on the Manpower Schedule are BranchStaff.nickname (not the full
- * legal name) — matched case-insensitively to resolve an email address.
+ * Names on the Manpower Schedule are BranchStaff.nickname — resolved to the
+ * full legal name (BranchStaff.name) via ManpowerAttendanceEntry.fullName
+ * (see lib/manpower-attendance.ts) before it goes in the email; nickname is
+ * only used to match against BranchStaff for the email address + working
+ * hours. The email's "Timeline / Date" also carries that person's own
+ * scheduled start time for today (BranchStaff.workingHours via slotForDate),
+ * not a fixed company-wide time.
  */
 
 import { hrfsPrisma } from '@/lib/hrfs';
 import { getAllBranchAttendanceEntries } from '@/lib/manpower-attendance';
 import { sendMissingReminderEmail } from '@/lib/mailer';
+import { slotForDate, formatStartTime } from '@/lib/working-hours';
 
 const WARNING_DELAY_MS = 30 * 60_000; // 30 min after first appearing in the Missing box
+
+// Exactly these six branches — see file header. Matches the full-name form
+// ManpowerAttendanceEntry.branch already normalizes to (normalizeLocation in
+// lib/constants.ts), not the short BranchStaff.branch codes.
+const REMINDER_BRANCHES = new Set([
+  'Setia Alam',
+  'Putrajaya',
+  'Cyberjaya',
+  'Ampang',
+  'Kota Damansara',
+  'Klang',
+]);
 
 function todayKL(): string {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kuala_Lumpur' });
@@ -83,42 +102,51 @@ async function unclaimEmailSent(name: string, branch: string, date: string): Pro
   );
 }
 
-async function loadNicknameToStaff(): Promise<Map<string, { email: string | null }>> {
-  const rows = await hrfsPrisma.$queryRawUnsafe<{ nickname: string; email: string | null }[]>(
-    `SELECT nickname, email FROM "BranchStaff"
+async function loadNicknameToStaff(): Promise<Map<string, { email: string | null; workingHours: unknown }>> {
+  const rows = await hrfsPrisma.$queryRawUnsafe<{ nickname: string; email: string | null; workingHours: unknown }[]>(
+    `SELECT nickname, email, "workingHours" FROM "BranchStaff"
       WHERE COALESCE(NULLIF(TRIM(status), ''), 'Active') ILIKE 'Active'
         AND nickname IS NOT NULL AND TRIM(nickname) <> ''`,
   );
-  const m = new Map<string, { email: string | null }>();
-  for (const r of rows) m.set(r.nickname.trim().toUpperCase(), { email: r.email });
+  const m = new Map<string, { email: string | null; workingHours: unknown }>();
+  for (const r of rows) m.set(r.nickname.trim().toUpperCase(), { email: r.email, workingHours: r.workingHours });
   return m;
 }
 
 export interface BranchMissingCandidate {
   name: string;
+  /** Full legal name (BranchStaff.name via ManpowerAttendanceEntry.fullName)
+   *  — what actually goes in the email. Falls back to `name` (the nickname)
+   *  if it was never resolved (see lib/manpower-attendance.ts). */
+  fullName: string;
   branch: string;
   firstSeenAt: Date;
   email: string | null;
+  /** This person's own scheduled start time today (BranchStaff.workingHours),
+   *  formatted for the email — e.g. "9:00 AM". Undefined if they have no
+   *  configured working hours for today. */
+  startTime?: string;
 }
 
 /**
- * Who is currently "missing" at a non-HQ/ST branch, with their first-seen
- * timestamp and resolved email (if any). Pure computation — claims a
- * first-seen row (so the 30-min clock starts), but sends nothing. Safe to
- * call from a preview endpoint.
+ * Who is currently "missing" at one of the six reminder branches, with their
+ * first-seen timestamp and resolved email (if any). Pure computation —
+ * claims a first-seen row (so the 30-min clock starts), but sends nothing.
+ * Safe to call from a preview endpoint.
  */
 export async function computeBranchMissingCandidates(): Promise<BranchMissingCandidate[]> {
   await ensureTables();
   const date = todayKL();
   const entries = await getAllBranchAttendanceEntries(date);
-  const missing = entries.filter((e) => e.status === 'Absent'); // explicit Absent OR never ticked
+  const missing = entries.filter((e) => REMINDER_BRANCHES.has(e.branch) && e.status === 'Absent'); // explicit Absent OR never ticked
   const staffMap = await loadNicknameToStaff();
 
   const out: BranchMissingCandidate[] = [];
   for (const m of missing) {
     const firstSeenAt = await claimFirstSeen(m.name, m.branch, date);
-    const email = staffMap.get(m.name.trim().toUpperCase())?.email ?? null;
-    out.push({ name: m.name, branch: m.branch, firstSeenAt, email });
+    const staff = staffMap.get(m.name.trim().toUpperCase());
+    const startTime = formatStartTime(slotForDate(staff?.workingHours, date)?.start);
+    out.push({ name: m.name, fullName: m.fullName ?? m.name, branch: m.branch, firstSeenAt, email: staff?.email ?? null, startTime });
   }
   return out;
 }
@@ -141,13 +169,16 @@ export async function sendBranchMissingReminders(): Promise<{ sent: number; alre
     if (elapsedMs < WARNING_DELAY_MS) { notYetDue++; continue; }
     if (!c.email) { skippedNoEmail++; continue; }
 
+    // Dedup is keyed by nickname (c.name) — the stable identity already used
+    // throughout this file's tracking tables; fullName/startTime are only
+    // for the email body.
     if (await claimEmailSent(c.name, c.branch, date)) {
       try {
-        await sendMissingReminderEmail(c.email, c.name, { branch: c.branch, date: display, hrEmail });
+        await sendMissingReminderEmail(c.email, c.fullName, { branch: c.branch, date: display, hrEmail, startTime: c.startTime });
         sent++;
       } catch (e) {
         await unclaimEmailSent(c.name, c.branch, date);
-        console.error(`[branch-missing-reminder] send failed (${c.name} @ ${c.branch}):`, (e as Error).message);
+        console.error(`[branch-missing-reminder] send failed (${c.fullName} @ ${c.branch}):`, (e as Error).message);
       }
     } else {
       alreadySent++;

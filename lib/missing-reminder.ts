@@ -24,6 +24,7 @@ import { Pool } from 'pg';
 import { hrfsPrisma } from '@/lib/hrfs';
 import { sendMissingReminderEmail } from '@/lib/mailer';
 import { remapStScan } from '@/lib/scan-identity';
+import { formatStartTime } from '@/lib/working-hours';
 
 const GRACE_SECONDS = 15 * 60; // email 15 min after the scheduled start time
 
@@ -238,7 +239,7 @@ export async function sendMissingReminders(): Promise<{ sent: number; alreadySen
     if (await claim(c.code, date)) {
       try {
         // Scope is HQ only for now (see file header) — branch is always "HQ".
-        await sendMissingReminderEmail(c.email, c.name, { branch: 'HQ', date: displayDate, hrEmail });
+        await sendMissingReminderEmail(c.email, c.name, { branch: 'HQ', date: displayDate, hrEmail, startTime: formatStartTime(c.start) });
         sent++;
       } catch (e) {
         await unclaim(c.code, date);

@@ -75,6 +75,12 @@ interface MetricsResponse {
   /** Branches the caller may switch the dashboard to (super/agency + Marketing).
    *  Null = no picker. Drives the dashboard branch dropdown. */
   selectableBranches?: Array<{ branchId: string; branchName: string }> | null
+  /** Marketing-only: leads parked on the "Ebright Marketing" catch-all branch
+   *  (unresolved-branch leads to transfer). Null for every non-Marketing user. */
+  marketingCatchAll?: {
+    count: number
+    leads: Array<{ opportunityId: string; contactId: string; name: string; phone: string | null; source: string | null; createdAt: string }>
+  } | null
 }
 
 type Preset = 'today' | 'yesterday' | 'last_week' | 'this_week' | 'next_week' | 'sat_sun' | '30d' | 'custom'
@@ -235,6 +241,8 @@ export function DashboardClient() {
         </div>
       ) : (
         <>
+          {data.marketingCatchAll && <MarketingCatchAllPanel data={data.marketingCatchAll} />}
+
           {(() => {
             const mainTitle = data.elevated === false ? (data.scopedBranchName ?? 'Your branch') : 'Main'
             return (
@@ -359,6 +367,79 @@ export function DashboardClient() {
           branchId={branchId}
           onClose={() => setDrill(null)}
         />
+      )}
+    </div>
+  )
+}
+
+// ─── Marketing catch-all queue (Marketing account only) ───────────────────────
+// Leads parked on the "Ebright Marketing" branch because their branch didn't
+// resolve — Marketing's queue to transfer each to the right branch. Rendered
+// only when the API returns marketingCatchAll (Marketing account), so it never
+// appears on any other user's dashboard.
+function MarketingCatchAllPanel({
+  data,
+}: {
+  data: NonNullable<MetricsResponse['marketingCatchAll']>
+}) {
+  const fmtDate = (iso: string) =>
+    new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+
+  return (
+    <div className="rounded-xl border border-amber-200 bg-amber-50 p-5 shadow-sm dark:border-amber-900/50 dark:bg-amber-950/20">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div>
+          <h2 className="text-base font-bold text-amber-800 dark:text-amber-300">
+            Leads to transfer · Ebright Marketing
+          </h2>
+          <p className="mt-0.5 text-xs text-amber-700/80 dark:text-amber-400/80">
+            Incoming leads whose branch wasn’t set — assign each to the correct branch.
+          </p>
+        </div>
+        <span className="shrink-0 rounded-full bg-amber-600 px-2.5 py-1 text-sm font-bold text-white">
+          {data.count}
+        </span>
+      </div>
+
+      {data.leads.length === 0 ? (
+        <p className="py-4 text-center text-sm text-amber-700/70 dark:text-amber-400/70">
+          No unassigned leads right now. 🎉
+        </p>
+      ) : (
+        <div className="max-h-72 overflow-y-auto rounded-lg border border-amber-200 bg-white dark:border-amber-900/40 dark:bg-slate-900">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 border-b border-amber-100 bg-amber-50 text-left text-[11px] uppercase tracking-wider text-amber-700 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-400">
+              <tr>
+                <th className="px-3 py-2">Name</th>
+                <th className="px-3 py-2">Phone</th>
+                <th className="px-3 py-2">Source</th>
+                <th className="px-3 py-2">Received</th>
+                <th className="px-3 py-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.leads.map((l) => (
+                <tr
+                  key={l.opportunityId}
+                  className="border-b border-slate-100 text-slate-800 last:border-0 hover:bg-amber-50/50 dark:border-slate-800 dark:text-slate-200 dark:hover:bg-amber-950/20"
+                >
+                  <td className="px-3 py-2 font-medium">{l.name}</td>
+                  <td className="px-3 py-2 font-mono text-xs text-slate-600 dark:text-slate-400">{l.phone ?? '—'}</td>
+                  <td className="px-3 py-2 text-slate-600 dark:text-slate-400">{l.source ?? '—'}</td>
+                  <td className="px-3 py-2 whitespace-nowrap text-slate-500 dark:text-slate-400">{fmtDate(l.createdAt)}</td>
+                  <td className="px-3 py-2 text-right">
+                    <a
+                      href={`/crm/contacts/${l.contactId}`}
+                      className="inline-block rounded-md bg-amber-600 px-2.5 py-1 text-xs font-semibold text-white transition hover:bg-amber-700"
+                    >
+                      Open
+                    </a>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   )
