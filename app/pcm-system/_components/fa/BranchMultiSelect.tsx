@@ -31,9 +31,19 @@ interface Props {
  *   • Each region has a "Select all" checkbox + per-branch checkboxes
  *   • Top of popover has "Clear all" / "Select all" shortcuts
  */
+const POPOVER_WIDTH = 540;
+const VIEWPORT_MARGIN = 16;
+
 export function BranchMultiSelect({ selected, onChange }: Props) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  // Which edge the 540px popover anchors from. Whichever page embeds this
+  // button can sit anywhere in the row — right-anchoring clips off the left
+  // edge of the screen when the button is near the left (Reports page),
+  // left-anchoring clips off the right edge when the button is near the
+  // right (Invitations page). Measured against the viewport on open instead
+  // of hardcoded, so both placements stay fully visible.
+  const [align, setAlign] = useState<"left" | "right">("right");
 
   // Close the popover when the user clicks outside.
   useEffect(() => {
@@ -50,6 +60,18 @@ export function BranchMultiSelect({ selected, onChange }: Props) {
       document.removeEventListener("mousedown", onDocClick);
       document.removeEventListener("keydown", onEsc);
     };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const el = wrapperRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const fitsRight = rect.right - POPOVER_WIDTH >= VIEWPORT_MARGIN;
+    const fitsLeft = rect.left + POPOVER_WIDTH <= window.innerWidth - VIEWPORT_MARGIN;
+    // Prefer right-anchor (the original default) whenever it actually fits;
+    // only fall back to left-anchor when right-anchoring would run off-screen.
+    setAlign(fitsRight ? "right" : fitsLeft ? "left" : "right");
   }, [open]);
 
   // Summarise current selection for the button label.
@@ -121,12 +143,9 @@ export function BranchMultiSelect({ selected, onChange }: Props) {
       </button>
 
       {open && (
-        // Anchor right-aligned so the popover never gets clipped by the page
-        // edge when the button sits at the far right of a filter row. The
-        // earlier left-anchored version cut off Region C on narrow screens.
         <div
-          className="absolute z-20 mt-1 right-0 rounded-xl bg-white border border-ivory-300 shadow-xl"
-          style={{ width: 540, padding: 12 }}
+          className={`absolute z-20 mt-1 ${align === "right" ? "right-0" : "left-0"} rounded-xl bg-white border border-ivory-300 shadow-xl`}
+          style={{ width: POPOVER_WIDTH, padding: 12 }}
         >
           {/* Header bar */}
           <div className="flex items-center justify-between gap-3 pb-2 mb-2 border-b border-ivory-300">

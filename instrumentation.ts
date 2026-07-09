@@ -70,6 +70,18 @@ export async function register() {
     setInterval(() => {
       sendMissingReminders().catch(err => console.error('[missing-reminder] Run error:', err));
     }, MISSING_INTERVAL_MS);
+
+    // ── Missing-today reminder emails (every other branch) ──────────────────
+    // Same feature, same env gate, but for branches with no scanner: "missing"
+    // comes from the Manpower Schedule Attendance tick instead of a scan, and
+    // the trigger is 30 min after the person first appears in the Attendance
+    // Summary page's Missing box (not a scheduled-start-time offset).
+    const { sendBranchMissingReminders } = await import('@/lib/branch-missing-reminder');
+    console.log(`[branch-missing-reminder] ON — checking every ${MISSING_INTERVAL_MS / 60000}min (non-HQ/ST)`);
+    sendBranchMissingReminders().catch(err => console.error('[branch-missing-reminder] Initial run error:', err));
+    setInterval(() => {
+      sendBranchMissingReminders().catch(err => console.error('[branch-missing-reminder] Run error:', err));
+    }, MISSING_INTERVAL_MS);
   } else {
     console.log('[missing-reminder] Disabled (set MISSING_REMINDER_EMAIL=on to enable).');
   }

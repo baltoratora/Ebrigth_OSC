@@ -67,6 +67,28 @@ model ManpowerSchedule {
   originalAuthor     String
 }
 
+// BM's Present/Absent/Late attendance tick for a schedule week, keyed by
+// `${day}::${name}` inside the two JSON blobs. Deliberately a SEPARATE real
+// table, not columns on ManpowerSchedule — that model is a view backed by a
+// foreign table (FDW into ebright_hrfs; see the ON CONFLICT comment on
+// POST /api/schedules), so it can't take ALTER TABLE ADD COLUMN.
+//
+// Lives in ebright_hrfs itself (via hrfsPrisma, see lib/hrfs.ts), NOT in the
+// crm database this schema.prisma's datasource points at — same reasoning as
+// the BranchStaff writes in lib/hrfs.ts: a genuine table in ebright_hrfs
+// supports plain CREATE TABLE / INSERT ... ON CONFLICT, unlike the FDW view.
+// This model is declared here purely for documentation (the `db` datasource
+// above is crm, not hrfs) — it self-provisions at runtime (see
+// ensureAttendanceTable in app/api/schedules/route.ts) and is read/written
+// via raw SQL through hrfsPrisma, never the typed client generated from this
+// schema, so `prisma generate` / `prisma migrate` are not involved.
+model ManpowerScheduleAttendance {
+  scheduleId       String   @id
+  attendance       Json     @default("{}")
+  attendanceLocked Json     @default("{}")
+  updatedAt        DateTime @default(now())
+}
+
 model Employee {
   id        Int      @id @default(autoincrement())
   name      String

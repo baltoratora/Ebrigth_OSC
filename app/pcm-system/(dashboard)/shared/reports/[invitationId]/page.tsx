@@ -63,6 +63,18 @@ const RUBRIC = [
 type ScoreKey = typeof RUBRIC[number]["key"];
 type Scores = Record<ScoreKey, number>;
 
+// A session's actual calendar date = event.startDate + (dayNumber - 1) days —
+// NOT just the event's overall startDate, which is only correct for day 1.
+// Multi-day events (dayNumber 2, 3, ...) need the offset applied or every
+// session after the first shows the wrong date on the report/certificate.
+function sessionDate(eventStartDate: string | undefined, dayNumber: number | undefined): string {
+  if (!eventStartDate) return "";
+  if (!dayNumber || dayNumber <= 1) return eventStartDate.slice(0, 10);
+  const d = new Date(eventStartDate.slice(0, 10) + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + (dayNumber - 1));
+  return d.toISOString().slice(0, 10);
+}
+
 export default function CoachReportFormPage() {
   const { invitationId } = useParams<{ invitationId: string }>();
   const router = useRouter();
@@ -100,9 +112,10 @@ export default function CoachReportFormPage() {
 
   // Hydrate once the invitation/report data is available.
   useEffect(() => {
-    // Date of Assessment = the date the student joined the event (the event's
-    // start date), filled automatically. Coaches no longer pick it.
-    const joinDate = event?.startDate ? event.startDate.slice(0, 10) : "";
+    // Date of Assessment = the date of the SESSION the student attended
+    // (event.startDate offset by the session's dayNumber), filled
+    // automatically. Coaches no longer pick it.
+    const joinDate = sessionDate(event?.startDate, session?.dayNumber);
     if (existing) {
       setScores({
         confidence: existing.confidenceScore,
@@ -122,7 +135,7 @@ export default function CoachReportFormPage() {
       setAssessmentDate(joinDate || new Date().toISOString().slice(0, 10));
       setPreparedBy(invitation.coachName ?? "");
     }
-  }, [existing, invitation, event, events]);
+  }, [existing, invitation, event, events, session]);
 
   if (!user) return null;
 

@@ -58,12 +58,12 @@ function DashCard({ title, subtitle, color, lightColor, records, dateField, date
   const dense = !!(extraCounts && extraCounts.length);
   return (
     <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
-      <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+      <div className="dashCardHeader" style={{ padding: "14px 20px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
         <div>
           <div style={{ fontWeight: 700, fontSize: 15, color, letterSpacing: "0.5px" }}>{title}</div>
           <div style={{ fontSize: 10, color: C.muted, marginTop: 2, textTransform: "uppercase", letterSpacing: "0.3px" }}>{subtitle}</div>
         </div>
-        <div style={{ display: "flex", gap: dense ? 6 : 12, alignItems: "center" }}>
+        <div className="dashCardStats" style={{ display: "flex", gap: dense ? 6 : 12, alignItems: "center" }}>
           {monthSelector && (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2, marginRight: 4 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 2, border: `1px solid ${C.border}`, borderRadius: 6, overflow: "hidden" }}>
@@ -152,12 +152,12 @@ const td: React.CSSProperties = { padding: "12px 16px", borderBottom: "1px solid
 
 function DetailHeader({ title, color, subtitle, onBack }: any) {
   return (
-    <div style={{ background: `linear-gradient(135deg, ${color}, color-mix(in srgb, ${color} 70%, black))`, color: "#fff", borderRadius: 12, padding: "20px 24px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center", boxShadow: "0 4px 12px rgba(0,0,0,0.15)" }}>
-      <div>
+    <div className="detailHeader" style={{ background: `linear-gradient(135deg, ${color}, color-mix(in srgb, ${color} 70%, black))`, color: "#fff", borderRadius: 12, padding: "20px 24px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, boxShadow: "0 4px 12px rgba(0,0,0,0.15)" }}>
+      <div style={{ minWidth: 0 }}>
         <div style={{ fontSize: 20, fontWeight: 700 }}>{title}</div>
         <div style={{ fontSize: 12, opacity: 0.85, marginTop: 4 }}>{subtitle}</div>
       </div>
-      <button onClick={onBack} style={{ background: "rgba(255,255,255,0.2)", color: "#fff", border: "none", padding: "7px 14px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>← Back</button>
+      <button onClick={onBack} style={{ background: "rgba(255,255,255,0.2)", color: "#fff", border: "none", padding: "7px 14px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", flexShrink: 0 }}>← Back</button>
     </div>
   );
 }
@@ -359,7 +359,25 @@ function TPEntry({ entry, stage, onChanged }: { entry: any; stage: TPStage; onCh
   return (
     <div style={{ padding: "10px 16px", borderBottom: `1px solid ${C.border}` }}>
       <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{entry.name || "—"}</div>
-      {entry.position && <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>{entry.position}</div>}
+      {(entry.position || entry.branch || entry.department) && (
+        <div style={{ fontSize: 11, color: C.muted, marginBottom: entry.warning_date ? 2 : 6, display: "flex", flexWrap: "wrap", gap: 4 }}>
+          {[entry.position, entry.department, entry.branch].filter(Boolean).map((part, i, arr) => (
+            <span key={i}>{part}{i < arr.length - 1 ? " ·" : ""}</span>
+          ))}
+        </div>
+      )}
+      {entry.warning_date && (() => {
+        const days = daysFromNow(entry.warning_date);
+        const overdue = days !== null && days < 0;
+        return (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+            <span style={{ fontSize: 10, fontWeight: 700, color: overdue ? C.brand : C.warning, background: overdue ? C.brandLight : C.warningLight, padding: "1px 8px", borderRadius: 999 }}>
+              {isTrial ? "Trial ends" : "Probation ends"} {fmtDate(entry.warning_date)}
+            </span>
+            <DaysLabel days={days} />
+          </div>
+        );
+      })()}
       <label style={{ fontSize: 10, fontWeight: 600, color: s.color, textTransform: "uppercase", letterSpacing: "0.03em" }}>
         {isTrial ? "Feedback 1 (trial)" : "Feedback 2 (probation)"}
       </label>
@@ -427,12 +445,12 @@ function TrialProbationCard() {
         <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.04em", color: C.text }}>TRIAL &amp; PROBATION</div>
         <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>From career applications · feedback drives each stage</div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr" }}>
+      <div className="tpInnerGrid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr" }}>
         {(Object.keys(TP_STAGES) as TPStage[]).map((stage, idx) => {
           const s = TP_STAGES[stage];
           const list = entries.filter(e => String(e.board_stage).toLowerCase() === stage);
           return (
-            <div key={stage} style={{ borderLeft: idx === 1 ? `1px solid ${C.border}` : "none", minHeight: 160 }}>
+            <div key={stage} className={idx === 1 ? "tpColBorder" : undefined} style={{ borderLeft: idx === 1 ? `1px solid ${C.border}` : "none", minHeight: 160 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 16px", background: s.light }}>
                 <span style={{ width: 10, height: 10, borderRadius: 999, background: s.color, display: "inline-block" }} />
                 <span style={{ fontSize: 13, fontWeight: 700, color: s.color }}>{s.label}</span>
@@ -504,7 +522,20 @@ export default function HRDashboardPage() {
   const ofbTotal = offboarding.filter((r: any) => { const d = daysFromNow(r.end_date); return d !== null && d >= 0; }).length;
 
   return (
-    <div style={{ minHeight: "100vh", background: C.bg, padding: "24px 28px" }}>
+    <div className="hrDashRoot" style={{ minHeight: "100vh", background: C.bg, padding: "24px 28px" }}>
+      <style jsx global>{`
+        @media (max-width: 900px) {
+          .hrDashGrid { grid-template-columns: 1fr !important; }
+          .tpInnerGrid { grid-template-columns: 1fr !important; }
+          .tpColBorder { border-left: none !important; border-top: 1px solid ${C.border}; }
+        }
+        @media (max-width: 640px) {
+          .hrDashRoot { padding: 14px 12px !important; }
+          .dashCardHeader { flex-wrap: wrap; row-gap: 10px; }
+          .dashCardStats { flex-wrap: wrap; row-gap: 8px; justify-content: flex-start !important; }
+          .detailHeader { flex-wrap: wrap; }
+        }
+      `}</style>
       <div style={{ display: "flex", flexDirection: "column", gap: 24, maxWidth: 1280, margin: "0 auto" }}>
         <div style={{ paddingBottom: 20, borderBottom: `1px solid ${C.border}` }}>
           <Link href="/dashboards/hrms" style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 16px", border: `1px solid ${C.border}`, borderRadius: 10, background: "#fff", fontSize: 13, fontWeight: 600, color: C.text, textDecoration: "none" }}>
@@ -539,7 +570,7 @@ export default function HRDashboardPage() {
         ) : detailView === "mia" ? (
           <DetailView title={`MIA — Unpaid Leave (${formatMonthLabel(miaMonth)})${miaMissingToday.length ? " + Missing Today" : ""}`} color={C.red} lightColor={C.redLight} records={miaCombined} dateField="last_date" dateLabel="Last UL / Today" typeField="flag_label" typeLabel="Type" alertNames onBack={() => setDetailView(null)} />
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
+          <div className="hrDashGrid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
             <DashCard title="ONBOARDING" subtitle="-1 week → +6 months" color={C.success} lightColor={C.successLight}
               records={onboarding} dateField="start_date" mainCount={onb2w} mainLabel="2 Wk" smallCount={onbTotal} smallLabel="6 Mo"
               monthSelector={{ label: formatMonthLabel(signedMonth), onPrev: () => setSignedMonth(shiftMonth(signedMonth, -1)), onNext: () => setSignedMonth(shiftMonth(signedMonth, +1)) }}

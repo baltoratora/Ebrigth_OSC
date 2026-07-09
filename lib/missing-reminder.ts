@@ -3,25 +3,21 @@
  *
  * Daily "you're marked missing today" reminder email.
  *
- * For each ACTIVE employee (every branch) scheduled to work today, once the
- * clock passes (their scheduled start time + 30 min grace) without being
- * accounted for, we email them a reminder to write to HR justifying the
- * absence. This is NOT a clock-in/out email — it's a separate, scheduled nudge.
+ * For each ACTIVE HQ employee scheduled to work today, once the clock passes
+ * (their scheduled start time + 15 min grace) WITHOUT a clock-in scan, we email
+ * them a reminder to write to HR justifying the absence. This is NOT a
+ * clock-in/out email — it's a separate, scheduled nudge.
  *
- * "Accounted for" checks BOTH sources for every branch, not just the one that
- * branch normally uses — a real scanner clock-in today OR a saved
- * Present/Absent tick in manual_attendance today. So HQ/ST also clears via a
- * manual tick if that's what was actually used that day (scanner down, visiting
- * staff, etc.), and any other branch also clears via a real scan if one somehow
- * came through. On top of that, approved leave today or an already-filed
- * attendance_justification also counts as accounted for — the same rules the
- * HR dashboard's missing-today card uses.
+ * A person is skipped if they have already scanned today (ST-remapped id), are
+ * on approved leave today, or already filed an attendance_justification today —
+ * the same "accounted for" rules the HR dashboard's missing-today card uses.
  *
  * De-dup: one reminder per person per KL day, via a claim-before-send insert
  * into public.missing_reminder_email_log (released if the send throws so it
  * retries on the next tick). All reads are in ebright_hrfs (hrfsPrisma).
  *
- * Gated by the MISSING_REMINDER_EMAIL env flag (see instrumentation.ts).
+ * Scope is HQ only for now. Gated by the MISSING_REMINDER_EMAIL env flag
+ * (see instrumentation.ts).
  */
 
 import { Pool } from 'pg';
@@ -29,7 +25,7 @@ import { hrfsPrisma } from '@/lib/hrfs';
 import { sendMissingReminderEmail } from '@/lib/mailer';
 import { remapStScan } from '@/lib/scan-identity';
 
-const GRACE_SECONDS = 30 * 60; // email 30 min after the scheduled start time
+const GRACE_SECONDS = 15 * 60; // email 15 min after the scheduled start time
 
 // LeaveTransaction identifies people by HR payroll code (EBRIGHT021 …), a
 // different namespace from the numeric scanner id (BranchStaff.employeeId) this
@@ -75,7 +71,6 @@ interface StaffRow {
   code: string;
   name: string | null;
   email: string | null;
-  branch: string | null;
   working_hours: WeekHours;
   start_date: string | null;
   end_date: string | null;
@@ -151,15 +146,16 @@ export async function computeMissingCandidates(): Promise<MissingCandidate[]> {
   const dow = dowKL();
   const now = nowSecondsKL();
 
-  // Active staff at every branch with an employeeId.
+  // Active HQ staff with an employeeId. (Scope = HQ only for now.)
   const staff = await hrfsPrisma.$queryRawUnsafe<StaffRow[]>(
-    `SELECT "employeeId" AS code, name, email, branch,
+    `SELECT "employeeId" AS code, name, email,
             "workingHours" AS working_hours,
             NULLIF(TRIM(start_date), '') AS start_date,
             NULLIF(TRIM("endDate"), '')  AS end_date
        FROM "BranchStaff"
       WHERE COALESCE(NULLIF(TRIM(status), ''), 'Active') ILIKE 'Active'
-        AND "employeeId" IS NOT NULL AND "employeeId" <> ''`,
+        AND "employeeId" IS NOT NULL AND "employeeId" <> ''
+        AND branch = 'HQ'`,
   );
 
   // Today's scans (remapped so ST/collision/agnostic ids match employeeId).
@@ -171,21 +167,6 @@ export async function computeMissingCandidates(): Promise<MissingCandidate[]> {
     date,
   );
   const scannedSet = new Set(scanRows.map(r => remapStScan(r.device_id, r.person_id, null).personId));
-
-  // Attendance Manual branches: ANY tick today (present/absent) counts as
-  // "accounted for" — they were looked at and marked, so no scanner-based
-  // reminder is needed for them.
-  let manualTickedSet = new Set<string>();
-  try {
-    const manualRows = await hrfsPrisma.$queryRawUnsafe<{ employee_id: string }[]>(
-      `SELECT DISTINCT employee_id FROM public.manual_attendance
-        WHERE work_date = $1::date AND status IS NOT NULL`,
-      date,
-    );
-    manualTickedSet = new Set(manualRows.map(r => r.employee_id));
-  } catch {
-    // manual_attendance not provisioned yet (feature never used) — nobody ticked.
-  }
 
   // Approved leave today → resolve each HR payroll code to the numeric scanner
   // employeeId via the autocount bridge (NOT lt.EmployeeName, which is mostly
@@ -228,10 +209,8 @@ export async function computeMissingCandidates(): Promise<MissingCandidate[]> {
     if (!day || typeof day !== 'object') continue;
     // Only after start + 15 min grace
     if (now < toSeconds(day.start) + GRACE_SECONDS) continue;
-    // Accounted for? Check both sources regardless of branch — a real scan OR
-    // a manual tick either one clears them.
-    const accountedFor = scannedSet.has(s.code) || manualTickedSet.has(s.code);
-    if (accountedFor || onLeaveSet.has(s.code) || justifiedSet.has(s.code)) continue;
+    // Accounted for? (scanned / on leave / already justified)
+    if (scannedSet.has(s.code) || onLeaveSet.has(s.code) || justifiedSet.has(s.code)) continue;
     // Need an address to notify
     if (!s.email) continue;
 
@@ -247,6 +226,9 @@ export async function computeMissingCandidates(): Promise<MissingCandidate[]> {
 export async function sendMissingReminders(): Promise<{ sent: number; alreadySent: number }> {
   await ensureLogTable();
   const date = todayKL();
+  const displayDate = new Date(date + 'T00:00:00').toLocaleDateString('en-GB', {
+    day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kuala_Lumpur',
+  });
   const hrEmail = process.env.HR_JUSTIFY_EMAIL || undefined;
   const candidates = await computeMissingCandidates();
 
@@ -255,7 +237,8 @@ export async function sendMissingReminders(): Promise<{ sent: number; alreadySen
   for (const c of candidates) {
     if (await claim(c.code, date)) {
       try {
-        await sendMissingReminderEmail(c.email, c.name, hrEmail);
+        // Scope is HQ only for now (see file header) — branch is always "HQ".
+        await sendMissingReminderEmail(c.email, c.name, { branch: 'HQ', date: displayDate, hrEmail });
         sent++;
       } catch (e) {
         await unclaim(c.code, date);

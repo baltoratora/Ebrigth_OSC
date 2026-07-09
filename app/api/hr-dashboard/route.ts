@@ -52,6 +52,17 @@ async function loadAutocountMap(): Promise<Map<string, AutocountEntry>> {
 
 const ISO_DATE = String.raw`^\d{4}-\d{2}-\d{2}$`;
 
+// Malaysian Indian naming carries a relationship infix — "A/P" (Anak
+// Perempuan, Malay) and "D/O" (Daughter Of, English) are the SAME thing,
+// likewise "A/L" and "S/O" for sons — but different source systems spell it
+// differently (BranchStaff vs LeaveTransaction/Autocount often disagree).
+// An exact-string name match then silently fails and the raw, wrong-honorific
+// name leaks through instead of the canonical BranchStaff one. Strip the
+// infix from both sides before comparing so "KIRTIKHA A/P NARAYANAN" and
+// "KIRTIKHA D/O NARAYANAN" match as the same person.
+const stripHonorific = (col: string) =>
+  `TRIM(REGEXP_REPLACE(REGEXP_REPLACE(UPPER(TRIM(${col})), '(A/L|A/P|S/O|D/O)', '', 'g'), '\\s+', ' ', 'g'))`;
+
 // BranchStaff projection used by onboarding/offboarding.
 const STAFF_COLS = `
   id, name,
@@ -105,7 +116,7 @@ const RESOLVED_LEAVE_FROM = `
     ORDER BY m."createdAt" DESC NULLS LAST LIMIT 1
   ) ml ON true
   LEFT JOIN "BranchStaff" bs
-    ON UPPER(TRIM(bs.name)) = UPPER(TRIM(COALESCE(NULLIF(TRIM(lt."EmployeeName"), ''), nl."EmployeeName")))`;
+    ON ${stripHonorific('bs.name')} = ${stripHonorific(`COALESCE(NULLIF(TRIM(lt."EmployeeName"), ''), nl."EmployeeName")`)}`;
 
 const RESOLVED_NAME = `COALESCE(bs.name, NULLIF(TRIM(lt."EmployeeName"), ''), nl."EmployeeName", ml.name, lt."EmployeeCode")`;
 
@@ -255,16 +266,22 @@ export async function GET(req: NextRequest) {
 
   try {
     // Autocount code → name bridge (matches the internal dashboard). Applied to
-    // every leave card below so part-timers whose LeaveTransaction.EmployeeName
-    // is NULL show their real name instead of a raw code (e.g. "EBPT216").
+    // every leave card below, and given TOP priority over whatever name the SQL
+    // query resolved via string-matching — the EmployeeCode → BranchStaff bridge
+    // is authoritative (an explicit ID mapping), while the SQL join is a fuzzy
+    // name-string match that can still be fooled by spelling variants the
+    // honorific-stripping doesn't cover (typos, "BINTI"/"BT", missing initials,
+    // etc). This guarantees every displayed name is the exact canonical name
+    // from BranchStaff / HR Employee Management (the "IC name"), not a raw
+    // variant pulled from the leave/payroll export, whenever the code is mapped.
     const autocountMap = await loadAutocountMap();
     const resolveRow = <T extends { code?: string | null; name?: string | null; position?: string | null; department_branch?: string | null }>(row: T): T => {
       const code = row.code ? String(row.code).trim().toUpperCase() : "";
-      if (code && (!row.name || row.name.trim() === "" || row.name === row.code) && autocountMap.has(code)) {
-        const a = autocountMap.get(code)!;
-        row.name = a.name;
-        if (!row.position) row.position = a.role;
-        if (!row.department_branch) row.department_branch = a.branch;
+      const mapped = code ? autocountMap.get(code) : undefined;
+      if (mapped) {
+        row.name = mapped.name;
+        if (!row.position) row.position = mapped.role;
+        if (!row.department_branch) row.department_branch = mapped.branch;
       }
       return row;
     };
@@ -437,27 +454,18 @@ export async function GET(req: NextRequest) {
 
     interface StaffRow {
       code: string; name: string; position: string | null; department_branch: string | null;
-      branch: string | null; working_hours: WeekHours; start_date: string | null; end_date: string | null;
+      working_hours: WeekHours; start_date: string | null; end_date: string | null;
     }
-    // HQ, ST, and department codes that sometimes leak into BranchStaff.branch
-    // (od/mkt/ops/fnc/hr/acd/iop/ceo/op/fin) all use the real scanner — every
-    // OTHER branch code uses Attendance Manual instead (no scanner device yet).
-    // This mirrors the exact branch classification Attendance Manual itself uses.
-    const SCANNER_BRANCH_CODES = new Set([
-      "hq", "st", "od", "mkt", "ops", "fnc", "hr", "acd", "iop", "ceo", "op", "fin",
-    ]);
-    const isScannerBranch = (b: string | null) => !b || SCANNER_BRANCH_CODES.has(b.trim().toLowerCase());
-
     const staffRows = await hrfsPrisma.$queryRawUnsafe<StaffRow[]>(
       `SELECT "employeeId" AS code, name, role AS position,
               COALESCE(NULLIF(TRIM(department), ''), branch) AS department_branch,
-              branch,
               "workingHours" AS working_hours,
               NULLIF(TRIM(start_date), '') AS start_date,
               NULLIF(TRIM("endDate"), '')  AS end_date
          FROM "BranchStaff"
         WHERE COALESCE(NULLIF(TRIM(status), ''), 'Active') ILIKE 'Active'
-          AND "employeeId" IS NOT NULL AND "employeeId" <> ''`,
+          AND "employeeId" IS NOT NULL AND "employeeId" <> ''
+          AND branch IN ('HQ', 'ST')`,
     );
     const scanRows = await hrfsPrisma.$queryRawUnsafe<{ person_id: string; device_id: string | null }[]>(
       `SELECT DISTINCT person_id, device_id
@@ -467,20 +475,6 @@ export async function GET(req: NextRequest) {
       todayKL,
     );
     const scannedSet = new Set(scanRows.map(r => remapStScan(r.device_id, r.person_id, null).personId));
-    // Attendance Manual branches: ANY tick today (present/absent/leave/mia/late)
-    // counts as "accounted for" — they were looked at and marked, whatever the
-    // status says, so they shouldn't also show up as "missing".
-    let manualTickedSet = new Set<string>();
-    try {
-      const manualRows = await hrfsPrisma.$queryRawUnsafe<{ employee_id: string }[]>(
-        `SELECT DISTINCT employee_id FROM public.manual_attendance
-          WHERE work_date = $1::date AND status IS NOT NULL`,
-        todayKL,
-      );
-      manualTickedSet = new Set(manualRows.map(r => r.employee_id));
-    } catch {
-      // manual_attendance not provisioned yet (feature never used) — nobody ticked.
-    }
     // Anyone on approved leave today → resolve their payroll code to the numeric
     // employeeId so they're excluded from "Missing today". Two bridges, unioned:
     //   (a) autocount_employee_map (payroll code → employeeId) — the reliable one;
@@ -496,7 +490,7 @@ export async function GET(req: NextRequest) {
     const leaveNameRows = await hrfsPrisma.$queryRawUnsafe<{ code: string }[]>(
       `SELECT DISTINCT bs."employeeId" AS code
          FROM "LeaveTransaction" lt
-         JOIN "BranchStaff" bs ON UPPER(TRIM(bs.name)) = UPPER(TRIM(lt."EmployeeName"))
+         JOIN "BranchStaff" bs ON ${stripHonorific('bs.name')} = ${stripHonorific('lt."EmployeeName"')}
         WHERE lt."ApplyStatus" = 'A' AND lt."LeaveDate"::date = $1::date
           AND bs."employeeId" IS NOT NULL`,
       todayKL,
@@ -538,10 +532,8 @@ export async function GET(req: NextRequest) {
       if (!day || typeof day !== "object") return false;
       // Not yet "missing" until the scheduled start time has passed
       if (nowSeconds < toSeconds(day.start)) return false;
-      // Accounted for elsewhere? Scanner branches check real scans; branches
-      // using Attendance Manual (no scanner) check whether they were ticked.
-      const accountedFor = isScannerBranch(s.branch) ? scannedSet.has(s.code) : manualTickedSet.has(s.code);
-      if (accountedFor || onLeaveSet.has(s.code) || justifiedSet.has(s.code)) return false;
+      // Accounted for elsewhere?
+      if (scannedSet.has(s.code) || onLeaveSet.has(s.code) || justifiedSet.has(s.code)) return false;
       return true;
     }).map(s => ({
       code: s.code, name: s.name, position: s.position, department_branch: s.department_branch,

@@ -20,6 +20,7 @@ import {
   type CheckOutStatus,
 } from "@/lib/working-hours";
 import { visitingHomeBranch, assignedBranchForDate } from "@/lib/visiting-staff";
+import { normalizeLocation } from "@/lib/constants";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -45,7 +46,6 @@ interface AttendanceRecord {
   checkOutStatus: CheckOutStatus | null;
   scanCount: number; // total scans from device today
   scannerLocation: string | null;
-  isManual?: boolean; // ticked Present in Attendance Manual, not an actual scan
 }
 
 // ─── CSV Parser ───────────────────────────────────────────────────────────────
@@ -237,6 +237,40 @@ export default function AttendanceSummary() {
   const [selectedDate, setSelectedDate] = useState<string>(todayKLStr());
   const isViewingToday = selectedDate === todayKLStr();
 
+  // This whole dashboard is scanner-based (public.hikvision_attendance_all) —
+  // only HQ and Subang Taipan (ST) actually have a scanner device. Every other
+  // branch has no real attendance data to show here, so it gets a plain
+  // "not available" message instead of an always-empty Missing/table view.
+  const isScannerBranch = selectedLocation === "HQ" || selectedLocation === "Subang Taipan";
+  // "All" shows both sources at once: the scanner section (reused as-is,
+  // fed by HQ+ST combined data) stacked above the manual section (reused
+  // as-is, fed by every other branch combined).
+  const isAllBranches = selectedLocation === "All";
+  // Which branches the scanner section should represent right now.
+  const scannerTargetBranches = isAllBranches ? ["HQ", "Subang Taipan"] : [selectedLocation];
+
+  // ── Manual attendance (BM tick), for branches with no scanner ───────────────
+  // Sourced from the Attendance table on the Manpower Schedule Update page —
+  // the BM's Present/Absent/Late tick for that branch's weekday, keyed by name.
+  const [manualAttendance, setManualAttendance] = useState<{ name: string; branch?: string; status: "Present" | "Absent" | "Late"; locked: boolean; ticked: boolean }[]>([]);
+  const [manualAttendanceLoading, setManualAttendanceLoading] = useState(false);
+
+  const fetchManualAttendance = useCallback(() => {
+    if (isScannerBranch) return;
+    setManualAttendanceLoading(true);
+    // "All" asks the API for every non-scanner branch's ticks at once (each
+    // entry comes back tagged with its branch); a specific branch asks for
+    // just that one.
+    const branchParam = isAllBranches ? "ALL" : selectedLocation;
+    fetch(`/api/schedules/attendance?branch=${encodeURIComponent(branchParam)}&date=${encodeURIComponent(selectedDate)}`)
+      .then(r => (r.ok ? r.json() : { entries: [] }))
+      .then((d: { entries?: { name: string; branch?: string; status: "Present" | "Absent" | "Late"; locked: boolean; ticked: boolean }[] }) => setManualAttendance(d.entries ?? []))
+      .catch(() => setManualAttendance([]))
+      .finally(() => setManualAttendanceLoading(false));
+  }, [isScannerBranch, isAllBranches, selectedLocation, selectedDate]);
+
+  useEffect(() => { fetchManualAttendance(); }, [fetchManualAttendance]);
+
   // ── Leave (AL / MC / etc) on the selected date, keyed by empNo ──────────────
   // When an employee is on leave, the leave-type badge replaces their computed
   // Late / Left Late / etc status.
@@ -249,32 +283,6 @@ export default function AttendanceSummary() {
   // all (→ fall back to the single current workingHours). Keeps this dashboard
   // consistent with the Attendance Report, which is also history-aware.
   const [schedulesByDate, setSchedulesByDate] = useState<Record<string, unknown>>({});
-
-  // ── Attendance Manual ticks for this branch/date, keyed by employeeId ───────
-  // Attendance Manual is the paper-logbook register for branches without a
-  // scanner. Once someone is ticked Present/Absent there for the day, they're
-  // accounted for here too — no longer shown as Missing just because the
-  // scanner (which doesn't exist at their branch) has no record of them.
-  const [manualByEmpId, setManualByEmpId] = useState<Map<string, string>>(new Map());
-  const fetchManual = useCallback(() => {
-    if (selectedLocation === "HQ" || selectedLocation === "Subang Taipan") { setManualByEmpId(new Map()); return; }
-    // Attendance Manual keys rows by BranchStaff.branch, which is a short CODE
-    // ("KD", "AMP", …) — not the full display name this page's branch selector
-    // uses ("Kota Damansara"). branchStaff (already loaded for this location)
-    // carries that code on every row, so pull it from there rather than
-    // sending the display name straight through.
-    const branchCode = branchStaff.find(s => s.branch)?.branch;
-    if (!branchCode) { setManualByEmpId(new Map()); return; }
-    fetch(`/api/attendance-manual?branch=${encodeURIComponent(branchCode)}&date=${encodeURIComponent(selectedDate)}`)
-      .then(r => (r.ok ? r.json() : { staff: [] }))
-      .then((d: { staff?: { employeeId: string; status: string | null }[] }) => {
-        const m = new Map<string, string>();
-        (d.staff ?? []).forEach(s => { if (s.status) m.set(s.employeeId, s.status); });
-        setManualByEmpId(m);
-      })
-      .catch(() => setManualByEmpId(new Map()));
-  }, [selectedLocation, selectedDate, branchStaff]);
-  useEffect(() => { fetchManual(); }, [fetchManual]);
 
   // ── Attendance justifications for the selected date, keyed by empNo ──────────
   // HR/admin can justify a missing person with a reason and/or uploaded evidence.
@@ -296,6 +304,11 @@ export default function AttendanceSummary() {
   const [searchQuery, setSearchQuery] = useState("");
   const [sortKey, setSortKey] = useState<"name" | "checkIn" | "dept" | null>("checkIn");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  // Scanner-side status filter (Attendance table). Manual-side status is
+  // filtered separately below (Present/Late/Absent), since the vocabulary
+  // for scanner data (check-in/out based) doesn't map 1:1 to it.
+  const [statusFilter, setStatusFilter] = useState<"all" | "currentlyIn" | "checkedOut" | "late" | "leftEarly">("all");
+  const [manualStatusFilter, setManualStatusFilter] = useState<"all" | "Present" | "Late" | "Absent">("all");
 
   const toggleSort = (key: "name" | "checkIn" | "dept") => {
     if (sortKey === key) {
@@ -329,16 +342,21 @@ export default function AttendanceSummary() {
   }, []);
 
   // ── Load distinct locations ────────────────────────────────────────────────
+  // "All" is prepended client-side (not a real branch) so the dashboard can
+  // show every branch's attendance for the day at once — scanner data for
+  // HQ/ST merged with manual BM ticks for everywhere else.
   useEffect(() => {
     fetch("/api/branch-locations")
       .then(r => r.json())
-      .then(d => setLocations(d.locations ?? []))
+      .then(d => setLocations(["All", ...(d.locations ?? [])]))
       .catch(() => console.error("Failed to load locations"));
   }, []);
 
   // ── Load staff for selected location (drives the "Missing Today" panel) ──
   const fetchBranchStaff = useCallback(() => {
-    if (!selectedLocation) return;
+    // "All" isn't a real branch — its scanner-side staff comes out of
+    // allBranchStaff instead (see scannerHomeStaffPool), so skip this fetch.
+    if (!selectedLocation || selectedLocation === "All") return;
     fetch(`/api/branch-locations?location=${encodeURIComponent(selectedLocation)}`)
       .then(async r => {
         if (!r.ok) throw new Error(`HTTP ${r.status} (${r.statusText})`);
@@ -419,10 +437,9 @@ export default function AttendanceSummary() {
       fetchLeave();
       fetchSchedules();
       fetchJustifications();
-      fetchManual();
     }, 30_000);
     return () => clearInterval(id);
-  }, [fetchBranchStaff, fetchAllBranchStaff, fetchLeave, fetchSchedules, fetchJustifications, fetchManual]);
+  }, [fetchBranchStaff, fetchAllBranchStaff, fetchLeave, fetchSchedules, fetchJustifications]);
 
   // ── Poll /api/attendance-today every 5 seconds (reads from DB, written by office sync script) ──
   const fetchScans = useCallback(async () => {
@@ -515,12 +532,15 @@ export default function AttendanceSummary() {
   }, [selectedDate, effectiveScheduleFor]);
 
   useEffect(() => {
+    // No scanner at non-HQ/ST branches — nothing to poll for. "All" includes
+    // HQ+ST, so it needs the scanner poll too.
+    if (!isScannerBranch && !isAllBranches) return;
     fetchScans();
     // Only poll for live updates when viewing today — historical dates don't change.
     if (!isViewingToday) return;
     const interval = setInterval(fetchScans, 5000);
     return () => clearInterval(interval);
-  }, [fetchScans, isViewingToday]);
+  }, [fetchScans, isViewingToday, isScannerBranch, isAllBranches]);
 
   // ── Pull all history from scanner ──────────────────────────────────────────
   const [backfilling, setBackfilling] = useState(false);
@@ -638,36 +658,16 @@ export default function AttendanceSummary() {
   // ── Filter logs to the selected branch ────────────────────────────────────
   // Show records where the scanner that recorded them is tagged to this location.
   // Null scannerLocation = pre-migration rows → always show under HQ tab.
-  const branchFilteredLogs = logs.filter(r =>
-    r.scannerLocation === selectedLocation ||
-    (selectedLocation === 'HQ' && (r.scannerLocation === null || r.scannerLocation === 'HQ'))
-  );
+  // "All" needs no branch filter at all — the scanner only exists at HQ/ST, so
+  // every row in `logs` already belongs to one of those two branches.
+  const branchFilteredLogs = isAllBranches
+    ? logs
+    : logs.filter(r =>
+        r.scannerLocation === selectedLocation ||
+        (selectedLocation === 'HQ' && (r.scannerLocation === null || r.scannerLocation === 'HQ'))
+      );
 
-  // A "Present" tick in Attendance Manual counts as attended/clocked-in here
-  // too — synthesized as a row (no real scan times) for anyone at this branch
-  // who isn't already showing up via an actual scan.
-  const scannedEmpNosRaw = new Set(branchFilteredLogs.map(r => r.empNo).filter(Boolean));
-  const manualPresentRecords: AttendanceRecord[] = branchStaff
-    .filter(s => s.employeeId && manualByEmpId.get(s.employeeId) === "present" && !scannedEmpNosRaw.has(s.employeeId))
-    .map(s => ({
-      empNo: s.employeeId as string,
-      name: s.name || "—",
-      dept: s.department || s.branch || "—",
-      position: s.role || "—",
-      checkInTime: new Date(selectedDate + "T00:00:00"),
-      checkInStr: "Manual",
-      checkInStatus: null,
-      checkOutTime: null,
-      checkOutStr: null,
-      checkOutStatus: null,
-      scanCount: 0,
-      scannerLocation: selectedLocation,
-      isManual: true,
-    }));
-
-  const combinedFilteredLogs = [...branchFilteredLogs, ...manualPresentRecords];
-
-  const visibleLogs = combinedFilteredLogs
+  const visibleLogs = branchFilteredLogs
     .filter(r => {
       if (!searchQuery.trim()) return true;
       const q = searchQuery.toLowerCase();
@@ -675,6 +675,14 @@ export default function AttendanceSummary() {
           || r.empNo.toLowerCase().includes(q)
           || r.dept.toLowerCase().includes(q)
           || r.position.toLowerCase().includes(q);
+    })
+    .filter(r => {
+      if (statusFilter === "all") return true;
+      if (statusFilter === "currentlyIn") return r.checkOutStr === null;
+      if (statusFilter === "checkedOut")  return r.checkOutStr !== null;
+      if (statusFilter === "late")        return r.checkInStatus === "Late";
+      if (statusFilter === "leftEarly")   return r.checkOutStatus === "Left Early";
+      return true;
     })
     .sort((a, b) => {
       if (!sortKey) return 0;
@@ -686,8 +694,8 @@ export default function AttendanceSummary() {
     });
 
   // ── Stats ──────────────────────────────────────────────────────────────────
-  const checkedInCount = combinedFilteredLogs.filter((r) => r.checkOutStr === null).length;
-  const checkedOutCount = combinedFilteredLogs.filter((r) => r.checkOutStr !== null).length;
+  const checkedInCount = branchFilteredLogs.filter((r) => r.checkOutStr === null).length;
+  const checkedOutCount = branchFilteredLogs.filter((r) => r.checkOutStr !== null).length;
 
   // Missing = BranchStaff at selected location who didn't show up in today's scans.
   // Match strategy:
@@ -731,20 +739,28 @@ export default function AttendanceSummary() {
   //   • slot = undefined   → no schedule configured at all → still expected, so
   //                          they stay visible and the "No Working Hours Set"
   //                          panel nudges admins to fill it in.
-  const expectedHomeStaff = branchStaff.filter(s => {
+  // "All" has no single-branch `branchStaff` fetch to lean on (the API
+  // doesn't know a branch literally called "All") — pull HQ+ST staff out of
+  // the all-locations list instead.
+  const scannerHomeStaffPool = isAllBranches
+    ? allBranchStaff.filter(s => scannerTargetBranches.includes(normalizeLocation(s.branch || s.location)))
+    : branchStaff;
+
+  const expectedHomeStaff = scannerHomeStaffPool.filter(s => {
     if (!s.name) return false;
     if (!isEffectivelyActive(s)) return false;
     return slotForDate(effectiveScheduleFor(s), selectedDate) !== null;
   });
 
-  // Rotating "BM list" staff assigned to THIS location on the selected date.
-  // They're registered to their own branch (so they're not in `branchStaff`),
-  // but the rotation sheet puts them here today → they're expected here. Pulled
-  // from the all-locations list. Working hours still gate it: a rest day per
-  // their Staff Directory schedule means they're not expected even if assigned.
+  // Rotating "BM list" staff assigned to THIS location (or, for "All", to
+  // either HQ or ST) on the selected date. They're registered to their own
+  // branch (so they're not in `branchStaff`), but the rotation sheet puts
+  // them here today → they're expected here. Pulled from the all-locations
+  // list. Working hours still gate it: a rest day per their Staff Directory
+  // schedule means they're not expected even if assigned.
   const rotationExpected = allBranchStaff.filter(s => {
     if (!s.name || !s.employeeId) return false;
-    if (assignedBranchForDate(s.employeeId, selectedDate) !== selectedLocation) return false;
+    if (!scannerTargetBranches.includes(assignedBranchForDate(s.employeeId, selectedDate) ?? "")) return false;
     if (!isEffectivelyActive(s)) return false;
     return slotForDate(effectiveScheduleFor(s), selectedDate) !== null;
   });
@@ -794,9 +810,6 @@ export default function AttendanceSummary() {
     if (leaveTypeOf(s)) return false;
     // A recorded justification moves them to the Justify box, not Missing.
     if (s.employeeId && justByEmpNo.has(s.employeeId)) return false;
-    // Ticked Present in Attendance Manual — treated the same as a real scan.
-    // Absent (or not yet ticked) still counts as Missing.
-    if (s.employeeId && manualByEmpId.get(s.employeeId) === "present") return false;
     // Live "today" view: not missing until their scheduled start time passes
     // (e.g. a 09:00 start only counts as missing after 09:00). Past dates are
     // always after start, so this check is skipped for them.
@@ -814,7 +827,7 @@ export default function AttendanceSummary() {
   // for them — this list tells admins exactly whose hours still need filling.
   // Re-derives on every staff re-pull (every 30s), so newly-filled records drop
   // off automatically.
-  const noScheduleStaff = branchStaff.filter(
+  const noScheduleStaff = scannerHomeStaffPool.filter(
     s => !!s.name && isEffectivelyActive(s) && !hasSchedule(s.workingHours),
   );
 
@@ -939,6 +952,192 @@ export default function AttendanceSummary() {
         </header>
 
         <main className="max-w-7xl mx-auto px-4 py-8 w-full">
+        {!isScannerBranch && (() => {
+          const statusMatches = (s: "Present" | "Absent" | "Late") => manualStatusFilter === "all" || manualStatusFilter === s;
+          const presentRows = manualAttendance.filter(r => (r.status === "Present" || r.status === "Late") && statusMatches(r.status));
+          const absentRows = manualAttendance.filter(r => r.status === "Absent" && statusMatches("Absent"));
+          return (
+          <>
+            {/* ── Stat Cards ── */}
+            <motion.div
+              className="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-8"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, ease: "easeOut" }}
+            >
+              <StatCard
+                label="Present"
+                value={presentRows.filter(r => r.status === "Present").length}
+                icon={UserCheck}
+                tone="green"
+                tooltip={`Staff ticked Present by the BM for ${selectedLocation} on ${prettyDateLabel(selectedDate)}.`}
+              />
+              <StatCard
+                label="Late"
+                value={presentRows.filter(r => r.status === "Late").length}
+                icon={Clock}
+                tone="orange"
+                tooltip="Staff ticked Late by the BM."
+              />
+              <StatCard
+                label="Absent"
+                value={absentRows.length}
+                icon={UserX}
+                tone="red"
+                tooltip="Staff ticked Absent by the BM."
+              />
+            </motion.div>
+
+            <div className="mb-6 px-4 py-3 bg-white border border-gray-200 rounded-xl flex items-center gap-3 shadow-sm flex-wrap">
+              <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center shrink-0">
+                <Info className="w-4 h-4 text-indigo-500" />
+              </div>
+              <p className="text-xs text-gray-600 leading-relaxed flex-1 min-w-[200px]">
+                <span className="font-semibold text-gray-900">
+                  {isAllBranches ? "No scanner outside HQ/Subang Taipan." : `No scanner at ${selectedLocation}.`}
+                </span>{" "}
+                {isAllBranches ? "These branches'" : "This branch's"} attendance comes from the BM's manual tick on the Manpower Schedule Update page instead of live scans.
+              </p>
+              <label className="inline-flex items-center gap-2 px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg cursor-pointer shrink-0">
+                <span className="text-[11px] font-medium text-gray-500 uppercase tracking-wider">Status</span>
+                <select
+                  value={manualStatusFilter}
+                  onChange={e => setManualStatusFilter(e.target.value as typeof manualStatusFilter)}
+                  className="text-xs font-semibold text-gray-900 bg-transparent focus:outline-none cursor-pointer"
+                >
+                  <option value="all">All</option>
+                  <option value="Present">Present</option>
+                  <option value="Late">Late</option>
+                  <option value="Absent">Absent / Missing</option>
+                </select>
+              </label>
+              {manualAttendanceLoading && <Loader2 className="w-4 h-4 text-gray-400 animate-spin shrink-0" />}
+            </div>
+
+            <div className="flex flex-col lg:flex-row gap-6 items-stretch">
+              <div className="flex-1 min-w-0">
+                {/* ── Attendance Table (Present / Late) ── */}
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+                  <div className="px-6 py-4 border-b border-gray-200">
+                    <div className="flex items-center gap-3">
+                      <div className="w-1 h-6 bg-blue-500 rounded-full" />
+                      <div>
+                        <h2 className="text-lg font-bold text-gray-900">
+                          {isViewingToday ? "Today's Attendance" : `Attendance · ${prettyDateLabel(selectedDate)}`}
+                        </h2>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          {isAllBranches ? "All branches (manual)" : `${selectedLocation} branch`} · {presentRows.length} employee{presentRows.length !== 1 ? "s" : ""}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  {presentRows.length === 0 ? (
+                    <div className="px-6 py-16 flex flex-col items-center gap-3 text-center">
+                      <Users className="w-10 h-10 text-gray-300" />
+                      <p className="text-sm font-medium text-gray-700">No one ticked Present/Late yet</p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead>
+                          <tr className="bg-gray-50 border-b border-gray-200">
+                            <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Employee</th>
+                            {isAllBranches && <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Branch</th>}
+                            <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Status</th>
+                            <th className="px-4 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Confirmed</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {presentRows.map((row) => (
+                            <tr key={`${row.branch ?? ""}-${row.name}`} className="border-b border-gray-100 last:border-0 hover:bg-gray-50">
+                              <td className="px-4 py-3 text-sm font-semibold text-gray-900">{row.name}</td>
+                              {isAllBranches && <td className="px-4 py-3 text-sm text-gray-500">{row.branch ?? "—"}</td>}
+                              <td className="px-4 py-3">
+                                <span className={`inline-flex px-2.5 py-1 rounded-md text-[11px] font-bold uppercase tracking-wide ${
+                                  row.status === "Present"
+                                    ? "bg-green-50 text-green-700 ring-1 ring-green-200"
+                                    : "bg-yellow-50 text-yellow-700 ring-1 ring-yellow-200"
+                                }`}>
+                                  {row.status}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-xs text-gray-500">
+                                {row.locked ? (
+                                  <span className="inline-flex items-center gap-1 text-emerald-600 font-semibold">
+                                    <CheckCircle2 className="w-3.5 h-3.5" /> Confirmed
+                                  </span>
+                                ) : (
+                                  <span className="text-gray-400">Pending confirm</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="shrink-0 lg:w-[360px]">
+                {/* ── Missing (Absent-ticked) ── */}
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+                  <div className="px-6 py-4 flex items-center justify-between gap-3 border-b border-gray-200">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-1 h-6 bg-red-500 rounded-full shrink-0" />
+                      <div className="min-w-0">
+                        <h2 className="text-lg font-bold text-gray-900">
+                          {isViewingToday ? "Missing Today" : `Missing on ${prettyDateLabel(selectedDate)}`}
+                        </h2>
+                        <p className="text-xs text-gray-500 mt-0.5 truncate">
+                          {isAllBranches ? "All branches (manual)" : `${selectedLocation} branch`} · Absent or not yet ticked by the BM
+                        </p>
+                      </div>
+                    </div>
+                    {absentRows.length > 0 && (
+                      <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-red-50 text-red-700 ring-1 ring-red-200 shrink-0">
+                        <AlertTriangle className="w-3.5 h-3.5" />
+                        <span className="text-sm font-bold">{absentRows.length}</span>
+                      </div>
+                    )}
+                  </div>
+                  {absentRows.length === 0 ? (
+                    <div className="px-6 py-12 flex flex-col items-center gap-3 text-center">
+                      <div className="w-12 h-12 rounded-full bg-emerald-50 ring-4 ring-emerald-100 flex items-center justify-center">
+                        <CheckCircle2 className="w-6 h-6 text-emerald-600" />
+                      </div>
+                      <p className="text-sm font-semibold text-gray-900">No one marked absent</p>
+                    </div>
+                  ) : (
+                    <div className="max-h-[680px] overflow-y-auto divide-y divide-gray-100">
+                      {absentRows.map((row) => (
+                        <div key={`${row.branch ?? ""}-${row.name}`} className="px-6 py-3 flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-full bg-rose-50 text-rose-600 ring-1 ring-rose-100 flex items-center justify-center font-bold text-sm shrink-0">
+                            {row.name.charAt(0).toUpperCase()}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-semibold text-gray-900 truncate">
+                              {row.name}
+                              {isAllBranches && row.branch && <span className="ml-1.5 text-xs font-normal text-gray-400">· {row.branch}</span>}
+                            </p>
+                            <p className="text-xs text-gray-500">
+                              {row.ticked
+                                ? `Marked Absent by BM${row.locked ? " · Confirmed" : ""}`
+                                : "Not ticked yet by the BM"}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </>
+          );
+        })()}
+        {(isScannerBranch || isAllBranches) && (
+        <>
           {/* ── Stat Cards ── */}
           <motion.div
             className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8"
@@ -948,7 +1147,7 @@ export default function AttendanceSummary() {
           >
             <StatCard
               label="Employees Scanned"
-              value={combinedFilteredLogs.length}
+              value={branchFilteredLogs.length}
               icon={Users}
               tone="blue"
               tooltip={`Total unique employees who have scanned in at ${selectedLocation} today.`}
@@ -1048,7 +1247,7 @@ export default function AttendanceSummary() {
                       {isViewingToday ? "Today's Attendance" : `Attendance · ${prettyDateLabel(selectedDate)}`}
                     </h2>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      {selectedLocation} branch · {combinedFilteredLogs.length} employee{combinedFilteredLogs.length !== 1 ? "s" : ""}
+                      {isAllBranches ? "HQ + Subang Taipan (scanner)" : `${selectedLocation} branch`} · {branchFilteredLogs.length} employee{branchFilteredLogs.length !== 1 ? "s" : ""}
                       {searchQuery && (
                         <span className="ml-1 text-blue-600">· {visibleLogs.length} matching</span>
                       )}
@@ -1066,24 +1265,40 @@ export default function AttendanceSummary() {
                   </div>
                 )}
               </div>
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                  placeholder="Search by name, ID, department, or position…"
-                  className="w-full pl-9 pr-9 py-2 text-sm bg-gray-50 border border-gray-200 rounded-lg focus:bg-white focus:border-blue-400 focus:ring-2 focus:ring-blue-100 focus:outline-none transition-all"
-                />
-                {searchQuery && (
-                  <button
-                    onClick={() => setSearchQuery("")}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md hover:bg-gray-200 text-gray-400 hover:text-gray-600 transition-colors"
-                    aria-label="Clear search"
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="relative flex-1 min-w-[220px]">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    placeholder="Search by name, ID, department, or position…"
+                    className="w-full pl-9 pr-9 py-2 text-sm bg-gray-50 border border-gray-200 rounded-lg focus:bg-white focus:border-blue-400 focus:ring-2 focus:ring-blue-100 focus:outline-none transition-all"
+                  />
+                  {searchQuery && (
+                    <button
+                      onClick={() => setSearchQuery("")}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md hover:bg-gray-200 text-gray-400 hover:text-gray-600 transition-colors"
+                      aria-label="Clear search"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+                <label className="inline-flex items-center gap-2 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg cursor-pointer shrink-0">
+                  <span className="text-[11px] font-medium text-gray-500 uppercase tracking-wider">Status</span>
+                  <select
+                    value={statusFilter}
+                    onChange={e => setStatusFilter(e.target.value as typeof statusFilter)}
+                    className="text-sm font-semibold text-gray-900 bg-transparent focus:outline-none cursor-pointer"
                   >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
+                    <option value="all">All</option>
+                    <option value="currentlyIn">Currently In</option>
+                    <option value="checkedOut">Checked Out</option>
+                    <option value="late">Late</option>
+                    <option value="leftEarly">Left Early</option>
+                  </select>
+                </label>
               </div>
             </div>
 
@@ -1155,12 +1370,6 @@ export default function AttendanceSummary() {
                             <td className="px-4 py-3.5">
                               <div className="flex items-center gap-2">
                                 <p className="text-sm font-semibold text-gray-900">{record.name}</p>
-                                {record.isManual && (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">
-                                    <Pencil className="w-3 h-3" />
-                                    Manual
-                                  </span>
-                                )}
                                 {(() => {
                                   // Rotating "BM list" staff are based at a branch but come to
                                   // HQ on some days. When they show up in the HQ view, flag them
@@ -1313,7 +1522,7 @@ export default function AttendanceSummary() {
                     {isViewingToday ? "Missing Today" : `Missing on ${prettyDateLabel(selectedDate)}`}
                   </h2>
                   <p className="text-xs text-gray-500 mt-0.5 truncate">
-                    {selectedLocation} branch · {isViewingToday ? "Scheduled staff not yet scanned" : "Scheduled staff with no scan that day"}
+                    {isAllBranches ? "HQ + Subang Taipan" : `${selectedLocation} branch`} · {isViewingToday ? "Scheduled staff not yet scanned" : "Scheduled staff with no scan that day"}
                   </p>
                 </div>
               </div>
@@ -1734,6 +1943,8 @@ export default function AttendanceSummary() {
               )}
             </div>
           </div>
+        </>
+        )}
         </main>
       </div>
 
