@@ -146,11 +146,13 @@ export async function sendClockInEmail(to: string, name: string, time: string): 
 export async function sendMissingReminderEmail(
   to: string,
   name: string,
-  opts: { branch: string; date: string; hrEmail?: string; deadline?: string },
+  opts: { branch: string; date: string; hrEmail?: string; startTime?: string },
 ): Promise<void> {
   const hrEmail = opts.hrEmail || 'hr@ebright.my';
-  const deadline = opts.deadline || '6:00 PM';
   const hrLink = `<a href="mailto:${hrEmail}" style="color:#b45309;">${hrEmail}</a>`;
+  // startTime is the person's own scheduled start time for that day (from
+  // BranchStaff.workingHours), not a fixed company-wide time — see callers.
+  const timeline = opts.startTime ? `${opts.date} ${opts.startTime}` : opts.date;
   await safeSend({
     from: `"Ebright HR" <${process.env.SMTP_USER}>`,
     to,
@@ -170,14 +172,13 @@ export async function sendMissingReminderEmail(
           </tr>
           <tr>
             <td style="padding:6px 0;color:#6b7280;">Timeline / Date:</td>
-            <td style="padding:6px 0;"><strong>${opts.date}</strong></td>
+            <td style="padding:6px 0;"><strong>${timeline}</strong></td>
           </tr>
         </table>
 
         <p style="font-size:15px;">
           To ensure company compliance and protect your monthly payroll from errors, you must justify this
-          missing log. Please reply to this email or contact us at ${hrLink} before
-          <strong>${deadline}</strong> today with your status update:
+          missing log. Please reply to this email or contact us at ${hrLink} in 24 hour with your status update:
         </p>
 
         <p style="font-size:14px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;margin:16px 0;">

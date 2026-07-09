@@ -20,7 +20,7 @@ export async function GET() {
       schedulerEnabled: process.env.MISSING_REMINDER_EMAIL === "on",
       hrEmailConfigured: !!process.env.HR_JUSTIFY_EMAIL,
       count: candidates.length,
-      candidates, // [{ name, branch, firstSeenAt, email }]
+      candidates, // [{ name, fullName, branch, firstSeenAt, email, startTime }]
     });
   } catch (err) {
     console.error("[api/hr-dashboard/branch-missing-reminder GET] failed:", err);

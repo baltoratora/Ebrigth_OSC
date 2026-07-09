@@ -595,7 +595,11 @@ export async function GET(req: NextRequest) {
             // still shows up instead of being silently dropped.
             return {
               code: staff?.employeeId || `manual:${e.branch}:${e.name}`,
-              name: e.name,
+              // Prefer the canonical IC name persisted at save time (see
+              // NAME_INFO_NOTES_KEY) over the raw nickname — same "always
+              // follow the Employee Dashboard name" rule as the rest of this
+              // dashboard's leave/MC cards.
+              name: e.fullName ?? e.name,
               position: staff?.role ?? null,
               department_branch: staff?.department_branch ?? e.branch,
             };

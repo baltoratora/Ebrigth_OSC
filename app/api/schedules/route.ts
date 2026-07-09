@@ -11,6 +11,15 @@ type ScheduleBody = {
   startDate: string;
   endDate: string;
   selections: unknown;
+  // notes also carries a reserved "__nameInfo" key (see NAME_INFO_NOTES_KEY
+  // in app/manpower-schedule/update/page.tsx) — each Attendance-table name's
+  // resolved {branch, fullName}, JSON-stringified. Deliberately kept inside
+  // this existing, already-typed field rather than a separate table: the
+  // name was selected as part of Manpower Planning, so its resolution
+  // belongs with that record. Safe to extend this way because nothing in the
+  // app blindly iterates `notes` (every consumer reads specific known keys),
+  // unlike `selections`, which many places iterate assuming every value is a
+  // plain name string.
   notes: unknown;
   originalSelections: unknown;
   originalNotes: unknown;

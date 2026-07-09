@@ -27,3 +27,12 @@ CREATE TABLE IF NOT EXISTS public."ManpowerScheduleAttendance" (
   "attendanceLocked" jsonb NOT NULL DEFAULT '{}'::jsonb,
   "updatedAt" timestamptz NOT NULL DEFAULT now()
 );
+
+-- NOTE: each attendance-table name's resolved {branch, fullName} is NOT
+-- stored here. It lives on "ManpowerSchedule".notes instead (a reserved
+-- "__nameInfo" key, JSON-stringified) — the name was selected as part of
+-- Manpower Planning, so its resolution belongs with that record, not bolted
+-- onto this separate Attendance table. See NAME_INFO_NOTES_KEY in
+-- app/manpower-schedule/update/page.tsx. No migration needed for that: notes
+-- is an existing typed column on ManpowerSchedule, written via the normal
+-- Prisma update/create calls in app/api/schedules/route.ts.

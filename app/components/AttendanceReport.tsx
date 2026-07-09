@@ -588,7 +588,7 @@ export default function AttendanceReport() {
 
             <div className="lg:col-span-8">
               {/* Table card */}
-              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-visible">
                 <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <div className="w-1 h-6 bg-blue-500 rounded-full" />
@@ -603,17 +603,17 @@ export default function AttendanceReport() {
                   </button>
                 </div>
 
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto overflow-y-auto max-h-[80vh]">
                   <table className="w-full">
-                    <thead>
+                    <thead className="sticky-thead">
                       <tr className="bg-gray-50 border-b border-gray-200">
-                        <th className="px-3 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider">No.</th>
-                        <th className="px-3 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Day</th>
-                        <th className="px-3 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Date</th>
-                        <th className="px-3 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Clock In</th>
-                        <th className="px-3 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Clock Out</th>
-                        <th className="px-3 py-3 text-center text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Duration</th>
-                        <th className="px-3 py-3 text-center text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Status</th>
+                        <th className="px-3 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">No.</th>
+                        <th className="px-3 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">Day</th>
+                        <th className="px-3 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">Date</th>
+                        <th className="px-3 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">Clock In</th>
+                        <th className="px-3 py-3 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">Clock Out</th>
+                        <th className="px-3 py-3 text-center text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">Duration</th>
+                        <th className="px-3 py-3 text-center text-[11px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">Status</th>
                       </tr>
                     </thead>
                     <tbody>
