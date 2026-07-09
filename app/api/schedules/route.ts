@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { hrfsPrisma } from '@/lib/hrfs';
 import { requireRole, requireSession, canSeeAllBranches, assertSameBranch } from '@/lib/auth';
 import { MANAGEMENT_ROLES, hasAnyRole } from '@/lib/roles';
 import { canAccess, parseOverrides } from '@/lib/dashboard-access';
@@ -27,14 +28,21 @@ type ScheduleBody = {
 };
 
 // Self-provisioning table for the Attendance table on the Update Schedule
-// page. This is a genuine table in the app's own database (not the
-// ManpowerSchedule view), so CREATE TABLE / INSERT ... ON CONFLICT work
-// normally here — unlike ManpowerSchedule itself.
+// page. Deliberately stored in ebright_hrfs (via hrfsPrisma), not the crm
+// database where ManpowerSchedule itself lives as an FDW-backed view — a
+// genuine table works fine in ebright_hrfs, so CREATE TABLE / INSERT ... ON
+// CONFLICT both work normally here.
+//
+// Every reference below is explicitly schema-qualified as public.* — this
+// database also has a "crm" schema (an FDW import mirroring ebright_crm),
+// and the DB role's default search_path resolves there before "public", so
+// an unqualified name would silently land in the wrong schema (this actually
+// happened once with an unqualified one-off script).
 let attendanceTableEnsured: Promise<void> | null = null;
 function ensureAttendanceTable(): Promise<void> {
   if (!attendanceTableEnsured) {
-    attendanceTableEnsured = prisma.$executeRawUnsafe(`
-      CREATE TABLE IF NOT EXISTS "ManpowerScheduleAttendance" (
+    attendanceTableEnsured = hrfsPrisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS public."ManpowerScheduleAttendance" (
         "scheduleId" text PRIMARY KEY,
         attendance jsonb NOT NULL DEFAULT '{}'::jsonb,
         "attendanceLocked" jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -122,8 +130,8 @@ export async function GET() {
       await ensureAttendanceTable();
       const ids = schedules.map((s) => s.id);
       const attendanceRows = ids.length
-        ? await prisma.$queryRawUnsafe<{ scheduleId: string; attendance: unknown; attendanceLocked: unknown }[]>(
-            `SELECT "scheduleId", attendance, "attendanceLocked" FROM "ManpowerScheduleAttendance" WHERE "scheduleId" = ANY($1::text[])`,
+        ? await hrfsPrisma.$queryRawUnsafe<{ scheduleId: string; attendance: unknown; attendanceLocked: unknown }[]>(
+            `SELECT "scheduleId", attendance, "attendanceLocked" FROM public."ManpowerScheduleAttendance" WHERE "scheduleId" = ANY($1::text[])`,
             ids,
           )
         : [];
@@ -195,21 +203,21 @@ export async function POST(req: Request) {
           },
         });
 
-    // attendance lives in its own real table (ManpowerScheduleAttendance),
-    // NOT on the ManpowerSchedule view — that view is FDW-backed and can't
-    // take ALTER TABLE / ON CONFLICT. This table is a normal table in the
-    // app's own DB, so a plain upsert works fine.
+    // attendance lives in its own real table (ManpowerScheduleAttendance) in
+    // ebright_hrfs, NOT on the ManpowerSchedule view in crm — that view is
+    // FDW-backed and can't take ALTER TABLE / ON CONFLICT. A genuine table in
+    // ebright_hrfs supports a plain upsert fine.
     if (body.attendance !== undefined || body.attendanceLocked !== undefined) {
       await ensureAttendanceTable();
       // Only overwrite the field(s) actually sent — fall back to the
       // existing row's value (via COALESCE against the excluded row) for
       // whichever one wasn't provided, so a partial update can't wipe it out.
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO "ManpowerScheduleAttendance" ("scheduleId", attendance, "attendanceLocked", "updatedAt")
+      await hrfsPrisma.$executeRawUnsafe(
+        `INSERT INTO public."ManpowerScheduleAttendance" ("scheduleId", attendance, "attendanceLocked", "updatedAt")
          VALUES ($1, $2::jsonb, $3::jsonb, now())
          ON CONFLICT ("scheduleId") DO UPDATE SET
-           attendance = CASE WHEN $4 THEN $2::jsonb ELSE "ManpowerScheduleAttendance".attendance END,
-           "attendanceLocked" = CASE WHEN $5 THEN $3::jsonb ELSE "ManpowerScheduleAttendance"."attendanceLocked" END,
+           attendance = CASE WHEN $4 THEN $2::jsonb ELSE public."ManpowerScheduleAttendance".attendance END,
+           "attendanceLocked" = CASE WHEN $5 THEN $3::jsonb ELSE public."ManpowerScheduleAttendance"."attendanceLocked" END,
            "updatedAt" = now()`,
         body.id,
         JSON.stringify(body.attendance ?? {}),
