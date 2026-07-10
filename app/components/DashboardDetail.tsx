@@ -2,6 +2,9 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { canSeeKey } from "@/lib/dashboard-access";
+import { useMyPermissions } from "@/lib/use-my-permissions";
+import { isEmployee } from "@/lib/roles";
 
 interface DashboardCard {
   id: string;
@@ -9,6 +12,8 @@ interface DashboardCard {
   icon: string;
   color: string;
   items: {
+    /** Key in DASHBOARD_TREE — drives visibility via canSeeKey. */
+    key: string;
     name: string;
     href: string;
     icon: string;
@@ -22,8 +27,8 @@ const dashboards: DashboardCard[] = [
     icon: "📚",
     color: "bg-purple-500",
     items: [
-      { name: "Documents", href: "#", icon: "📄" },
-      { name: "Resources", href: "#", icon: "📁" },
+      { key: "library.documents", name: "Documents", href: "#", icon: "📄" },
+      { key: "library.resources", name: "Resources", href: "#", icon: "📁" },
     ],
   },
   {
@@ -32,8 +37,8 @@ const dashboards: DashboardCard[] = [
     icon: "📊",
     color: "bg-green-500",
     items: [
-      { name: "Analytics", href: "#", icon: "📈" },
-      { name: "Reports", href: "#", icon: "📋" },
+      { key: "internal-dashboard.analytics", name: "Analytics", href: "#", icon: "📈" },
+      { key: "internal-dashboard.reports",   name: "Reports",   href: "#", icon: "📋" },
     ],
   },
   {
@@ -42,26 +47,28 @@ const dashboards: DashboardCard[] = [
     icon: "👥",
     color: "bg-blue-500",
     items: [
-      { name: "Employee Dashboard", href: "/dashboard-employee-management", icon: "📊" },
-      { name: "Manpower Planning", href: "/manpower-schedule", icon: "🗂️" },
-      { name: "Claims", href: "/claim", icon: "💰" },
-      { name: "Attendance", href: "/attendance", icon: "⏰" },
-      { name: "Onboarding", href: "/onboarding", icon: "🟢" },
-      { name: "Offboarding", href: "/offboarding", icon: "🔴" },
-      { name: "HR Dashboard", href: "/hr-dashboard", icon: "📋" },
-      { name: "Manpower Cost Report", href: "/manpower-cost-report", icon: "💸" },
+      { key: "hrms.employee",         name: "Employee Dashboard",  href: "/dashboard-employee-management", icon: "📊" },
+      { key: "hrms.manpower-planning",name: "Manpower Planning",   href: "/manpower-schedule",             icon: "🗂️" },
+      { key: "hrms.claims",           name: "Claims",              href: "/claim",                         icon: "💰" },
+      { key: "hrms.attendance",       name: "Attendance",          href: "/attendance",                    icon: "⏰" },
+      { key: "hrms.recruitment",      name: "Recruitment",         href: "/recruitment",                   icon: "🧑‍💼" },
+      { key: "hrms.onboarding",       name: "Onboarding",          href: "/onboarding",                    icon: "🟢" },
+      { key: "hrms.offboarding",      name: "Offboarding",         href: "/offboarding",                   icon: "🔴" },
+      { key: "hrms.hr-dashboard",     name: "HR Dashboard",        href: "/hr-dashboard",                  icon: "📋" },
+      { key: "hrms.manpower-cost",    name: "Manpower Cost Report",href: "/manpower-cost-report",          icon: "💸" },
+      { key: "hrms.staff-directory",  name: "Staff Directory",     href: "/staff-directory",               icon: "📇" },
     ],
   },
   {
     id: "crm",
-    title: "CRM",
-    icon: "📊",
+    title: "CNS",
+    icon: "🤝",
     color: "bg-yellow-500",
     items: [
-      { name: "Open CRM", href: "/crm", icon: "🚀" },
-      { name: "Contacts", href: "/crm/contacts", icon: "👥" },
-      { name: "Pipeline", href: "/crm/opportunities", icon: "📋" },
-      { name: "Automations", href: "/crm/automations", icon: "⚡" },
+      // Lead and Ticket are the only CRM entry points — both land on their
+      // respective dashboards first, where users drill into kanban / lists.
+      { key: "crm.lead",   name: "Lead",   href: "/crm/dashboard",         icon: "📋" },
+      { key: "crm.ticket", name: "Ticket", href: "/crm/tickets/dashboard", icon: "🎫" },
     ],
   },
   {
@@ -70,8 +77,8 @@ const dashboards: DashboardCard[] = [
     icon: "📰",
     color: "bg-yellow-500",
     items: [
-      { name: "Content Manager", href: "#", icon: "✏️" },
-      { name: "Media", href: "#", icon: "🖼️" },
+      { key: "cms.content-manager", name: "Content Manager", href: "#", icon: "✏️" },
+      { key: "cms.media",           name: "Media",           href: "#", icon: "🖼️" },
     ],
   },
   {
@@ -80,8 +87,9 @@ const dashboards: DashboardCard[] = [
     icon: "💬",
     color: "bg-indigo-500",
     items: [
-      { name: "Messages", href: "#", icon: "💌" },
-      { name: "Templates", href: "#", icon: "📧" },
+      { key: "sms.messages",  name: "Messages",  href: "#",        icon: "💌" },
+      { key: "sms.templates", name: "Templates", href: "/sms",     icon: "📧" },
+      { key: "sms.burnlist",  name: "Burnlist",  href: "/burnlist", icon: "🔥" },
     ],
   },
   {
@@ -90,8 +98,8 @@ const dashboards: DashboardCard[] = [
     icon: "📦",
     color: "bg-pink-500",
     items: [
-      { name: "Stock Management", href: "#", icon: "📊" },
-      { name: "Warehouse", href: "#", icon: "🏭" },
+      { key: "inventory.stock",     name: "Stock Management", href: "#", icon: "📊" },
+      { key: "inventory.warehouse", name: "Warehouse",        href: "#", icon: "🏭" },
     ],
   },
   {
@@ -100,8 +108,8 @@ const dashboards: DashboardCard[] = [
     icon: "🎓",
     color: "bg-indigo-600",
     items: [
-      { name: "Event Management", href: "/academy", icon: "📅" },
-      { name: "Courses", href: "#", icon: "📖" },
+      { key: "academy.events",  name: "Academy Dashboard", href: "/academy/dashboard", icon: "📅" },
+      { key: "academy.courses", name: "Ebright Class Syllabus", href: "/academy/syllabus", icon: "📚" },
     ],
   },
 ];
@@ -112,7 +120,18 @@ interface DashboardDetailProps {
 
 export default function DashboardDetail({ id }: DashboardDetailProps) {
   const router = useRouter();
+  const { role, overrides } = useMyPermissions();
   const dashboard = dashboards.find((d) => d.id === id);
+
+  const isItemEnabled = (key: string) => canSeeKey(role, key, overrides);
+
+  // FT/PT share the "Attendance" tile's unlock (hrms.attendance) so it isn't
+  // greyed out for them, but they don't get the /attendance hub itself
+  // (Summary/Appeal/Leave show other staff's data) — send them straight to
+  // their own self-scoped Report page instead. See middleware.ts, which only
+  // allowlists /attendance/report for FT/PT, never bare /attendance.
+  const resolveHref = (item: { key: string; href: string }) =>
+    item.key === "hrms.attendance" && isEmployee(role) ? "/attendance/report" : item.href;
 
   if (!dashboard) {
     return (
@@ -145,14 +164,29 @@ export default function DashboardDetail({ id }: DashboardDetailProps) {
 
       {/* Main Content Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {dashboard.items.map((item) => (
-          <Link key={item.name} href={item.href}>
-            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 hover:border-blue-400 hover:shadow-md transition-all cursor-pointer p-8 h-full flex flex-col items-center justify-center text-center">
-              <span className="text-5xl mb-4">{item.icon}</span>
-              <h2 className="text-lg font-black text-slate-800 uppercase tracking-tight">{item.name}</h2>
-            </div>
-          </Link>
-        ))}
+        {dashboard.items.map((item) => {
+          const enabled = isItemEnabled(item.key);
+          if (!enabled) {
+            return (
+              <div
+                key={item.name}
+                aria-disabled="true"
+                className="bg-slate-100 rounded-2xl shadow-sm border border-slate-200 p-8 h-full flex flex-col items-center justify-center text-center cursor-not-allowed opacity-50"
+              >
+                <span className="text-5xl mb-4 grayscale">{item.icon}</span>
+                <h2 className="text-lg font-black text-slate-500 uppercase tracking-tight">{item.name}</h2>
+              </div>
+            );
+          }
+          return (
+            <Link key={item.name} href={resolveHref(item)}>
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 hover:border-blue-400 hover:shadow-md transition-all cursor-pointer p-8 h-full flex flex-col items-center justify-center text-center">
+                <span className="text-5xl mb-4">{item.icon}</span>
+                <h2 className="text-lg font-black text-slate-800 uppercase tracking-tight">{item.name}</h2>
+              </div>
+            </Link>
+          );
+        })}
       </div>
 
     </div>

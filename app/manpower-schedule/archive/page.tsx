@@ -8,21 +8,34 @@ import Sidebar from "@/app/components/Sidebar";
 
 // --- IMPORT SHARED CONSTANTS ---
 import {
-  SHARED_EMPLOYEES, COLUMNS, ALL_BRANCHES,
+  SHARED_EMPLOYEES, ALL_COLUMNS, getColumnsForDay, TRAINING_DAY_HOURS, ALL_BRANCHES,
   getTimeSlotsForDay, isAdminSlot, getStaffColorByIndex,
   getWorkingDaysForBranch, isOpeningClosingSlot,
-  isManagerOnDutySlot,
+  isManagerOnDutySlot, isOnlineCoachOnly,
 } from "@/lib/manpowerUtils";
 import { isBranchManager } from "@/lib/roles";
+import { isInTraining } from "@/lib/training";
+
+function nameWithBadge(name: string, training?: { start?: string; end?: string }) {
+  const inWindow = isInTraining(training?.start, training?.end);
+  if (!inWindow) return name;
+  return (
+    <span title={`In training: ${training?.start} → ${training?.end}`}>
+      {name} 🎓
+    </span>
+  );
+}
 
 
 // --- HELPER COMPONENT: SUMMARY TABLE ---
-const SummaryTable = ({ data }: { data: any[] }) => {
+const SummaryTable = ({ data, trainingMap = {} }: { data: any[], trainingMap?: Record<string, { start?: string; end?: string }> }) => {
   const formatTime = (d: number) => {
     const h = Math.floor(d);
     const m = Math.round((d - h) * 60);
     return { h: h, m: m.toString().padStart(2, '0') };
   };
+
+  const hasMod = data.some(r => (r.modHrs ?? 0) > 0);
 
   return (
     <div className="bg-white rounded-xl shadow-md border overflow-hidden mt-8">
@@ -35,6 +48,7 @@ const SummaryTable = ({ data }: { data: any[] }) => {
                     <th className="p-3 text-left w-12 border-r border-slate-600">No.</th>
                     <th className="p-3 text-left border-r border-slate-600">Name</th>
                     <th className="p-3 text-center border-r border-slate-600">Class (Coach)</th>
+                    {hasMod && <th className="p-3 text-center border-r border-slate-600">MOD Hrs</th>}
                     <th className="p-3 text-center border-r border-slate-600">Executive</th>
                     <th className="p-3 text-center">Total (hrs:min)</th>
                 </tr>
@@ -42,18 +56,27 @@ const SummaryTable = ({ data }: { data: any[] }) => {
             <tbody className="divide-y text-sm">
                 {data.map((row, index) => {
                     const c = formatTime(row.coachHrs);
+                    const mod = formatTime(row.modHrs ?? 0);
                     const e = formatTime(row.execHrs);
                     const t = formatTime(row.total);
                     return (
                         <tr key={row.name} className="hover:bg-slate-50 transition-colors">
                             <td className="p-4 text-center border-r font-bold text-slate-500">{index + 1}</td>
-                            <td className="p-4 font-bold border-r text-slate-800">{row.name}</td>
+                            <td className="p-4 font-bold border-r text-slate-800">{nameWithBadge(row.name, trainingMap[row.name])}</td>
                             <td className="p-4 text-center border-r">
                                 <span className="inline-flex items-baseline gap-1 border border-slate-200 bg-white px-2 py-1 rounded">
                                     <span className="font-bold">{c.h}</span> <span className="text-[10px] text-slate-400">HRS</span>
                                     <span className="font-bold">{c.m}</span> <span className="text-[10px] text-slate-400">MIN</span>
                                 </span>
                             </td>
+                            {hasMod && (
+                                <td className="p-4 text-center border-r">
+                                    <span className="inline-flex items-baseline gap-1 border border-amber-200 bg-amber-50 px-2 py-1 rounded">
+                                        <span className="font-bold text-amber-700">{mod.h}</span> <span className="text-[10px] text-amber-400">HRS</span>
+                                        <span className="font-bold text-amber-700">{mod.m}</span> <span className="text-[10px] text-amber-400">MIN</span>
+                                    </span>
+                                </td>
+                            )}
                             <td className="p-4 text-center border-r">
                                 <span className="inline-flex items-baseline gap-1 border border-slate-200 bg-white px-2 py-1 rounded">
                                     <span className="font-bold">{e.h}</span> <span className="text-[10px] text-slate-400">HRS</span>
@@ -70,6 +93,49 @@ const SummaryTable = ({ data }: { data: any[] }) => {
                     );
                 })}
             </tbody>
+            {data.length > 0 && (() => {
+                const totCoach = data.reduce((s, r) => s + r.coachHrs, 0);
+                const totMod   = data.reduce((s, r) => s + (r.modHrs ?? 0), 0);
+                const totExec  = data.reduce((s, r) => s + r.execHrs, 0);
+                const totTotal = data.reduce((s, r) => s + r.total, 0);
+                const tc = formatTime(totCoach);
+                const tm = formatTime(totMod);
+                const te = formatTime(totExec);
+                const tt = formatTime(totTotal);
+                return (
+                    <tfoot>
+                        <tr className="bg-[#2D3F50] text-white text-xs font-black uppercase tracking-wider">
+                            <td colSpan={2} className="p-3 text-right border-r border-slate-600">Total</td>
+                            <td className="p-3 text-center border-r border-slate-600">
+                                <span className="inline-flex items-baseline gap-1">
+                                    <span>{tc.h}</span> <span className="text-[10px] opacity-70">HRS</span>
+                                    <span>{tc.m}</span> <span className="text-[10px] opacity-70">MIN</span>
+                                </span>
+                            </td>
+                            {hasMod && (
+                                <td className="p-3 text-center border-r border-slate-600">
+                                    <span className="inline-flex items-baseline gap-1">
+                                        <span>{tm.h}</span> <span className="text-[10px] opacity-70">HRS</span>
+                                        <span>{tm.m}</span> <span className="text-[10px] opacity-70">MIN</span>
+                                    </span>
+                                </td>
+                            )}
+                            <td className="p-3 text-center border-r border-slate-600">
+                                <span className="inline-flex items-baseline gap-1">
+                                    <span>{te.h}</span> <span className="text-[10px] opacity-70">HRS</span>
+                                    <span>{te.m}</span> <span className="text-[10px] opacity-70">MIN</span>
+                                </span>
+                            </td>
+                            <td className="p-3 text-center">
+                                <span className="inline-flex items-baseline gap-1">
+                                    <span>{tt.h}</span> <span className="text-[10px] opacity-70">HRS</span>
+                                    <span>{tt.m}</span> <span className="text-[10px] opacity-70">MIN</span>
+                                </span>
+                            </td>
+                        </tr>
+                    </tfoot>
+                );
+            })()}
         </table>
     </div>
   );
@@ -86,7 +152,10 @@ export default function ArchiveSchedulePage() {
   const [isLoading, setIsLoading] = useState(true);
   const [branchStaffData, setBranchStaffData] = useState<Record<string, string[]>>({});
   const [branchManagerData, setBranchManagerData] = useState<Record<string, string[]>>({});
-  
+  const [trainingMap, setTrainingMap] = useState<Record<string, { start?: string; end?: string }>>({});
+  const [employeeIdMap, setEmployeeIdMap] = useState<Record<string, string>>({});
+  const [homeBranchMap, setHomeBranchMap] = useState<Record<string, string>>({});
+
   // --- FILTER STATES ---
   const [filterBranch, setFilterBranch] = useState<string>("");
   const [drillYear, setDrillYear] = useState<string | null>(null);
@@ -106,20 +175,35 @@ export default function ArchiveSchedulePage() {
       }
     };
     const fetchStaff = async () => {
-      const res = await fetch('/api/branch-staff');
+      const res = await fetch('/api/branch-staff?include=all');
       const staffList = await res.json();
+      if (!Array.isArray(staffList)) return;
       const grouped: Record<string, string[]> = {};
       const managers: Record<string, string[]> = {};
+      const tmap: Record<string, { start?: string; end?: string }> = {};
+      const idmap: Record<string, string> = {};
+      const hmap: Record<string, string> = {};
       staffList.forEach((s: any) => {
+        if (!s.branch) return;
         if (!grouped[s.branch]) grouped[s.branch] = [];
         grouped[s.branch].push(s.name);
+        hmap[s.name] = s.branch;
         if (s.role && s.role.startsWith('branch_manager')) {
           if (!managers[s.branch]) managers[s.branch] = [];
           managers[s.branch].push(s.name);
         }
+        if (s.trainingStartDate || s.trainingEndDate) {
+          tmap[s.name] = { start: s.trainingStartDate ?? undefined, end: s.trainingEndDate ?? undefined };
+        }
+        if (s.employeeId) {
+          idmap[s.name] = s.employeeId;
+        }
       });
       setBranchStaffData(grouped);
       setBranchManagerData(managers);
+      setTrainingMap(tmap);
+      setEmployeeIdMap(idmap);
+      setHomeBranchMap(hmap);
     };
     fetchSchedules();
     fetchStaff();
@@ -165,13 +249,21 @@ export default function ArchiveSchedulePage() {
   }, [history, filterBranch, userRole, userBranch]);
 
   // --- BULLETPROOF DATA SYNC ---
-  const validData = useMemo(() => {
+  const allKnownNames = useMemo(() => {
+    return new Set([...SHARED_EMPLOYEES, ...Object.values(branchStaffData).flat()]);
+  }, [branchStaffData]);
+
+  const validData = useMemo<Record<string, string>>(() => {
     if (!selectedRecord) return {};
-    if (selectedRecord.selections && Object.keys(selectedRecord.selections).length > 0) {
-        return selectedRecord.selections;
-    }
-    return selectedRecord.originalSelections || {};
-  }, [selectedRecord]);
+    const raw: Record<string, string> = selectedRecord.selections && Object.keys(selectedRecord.selections).length > 0
+      ? selectedRecord.selections
+      : selectedRecord.originalSelections || {};
+    // Strip stale names (e.g. "ISHINI" saved before a nickname change) so they
+    // don't appear in the grid or the hours summary.
+    return Object.fromEntries(
+      Object.entries(raw).filter(([, v]) => !v || v === "None" || allKnownNames.has(v as string))
+    );
+  }, [selectedRecord, allKnownNames]);
 
 
   const calculateHoursForData = () => {
@@ -179,11 +271,12 @@ export default function ArchiveSchedulePage() {
     
     const managerNames = new Set(Object.values(branchManagerData).flat());
     const allBranchStaff = (branchStaffData[selectedRecord.branch] || []).filter(n => !managerNames.has(n));
-    const selectedInTable = (Object.values(validData).filter(val => val !== "" && val !== "None") as string[]).filter(n => !managerNames.has(n));
+    const selectedInTable = (Object.values(validData).filter(val => val !== "" && val !== "None") as string[])
+      .filter(n => !managerNames.has(n));
     const uniqueEmployeesToTrack: string[] = Array.from(new Set([...allBranchStaff, ...selectedInTable]));
 
-    const staffStats: Record<string, { coachHrs: number; execHrs: number; total: number }> = {};
-    uniqueEmployeesToTrack.forEach((emp: string) => { staffStats[emp] = { coachHrs: 0, execHrs: 0, total: 0 }; });
+    const staffStats: Record<string, { coachHrs: number; modHrs: number; execHrs: number; total: number }> = {};
+    uniqueEmployeesToTrack.forEach((emp: string) => { staffStats[emp] = { coachHrs: 0, modHrs: 0, execHrs: 0, total: 0 }; });
 
     getWorkingDaysForBranch(selectedRecord.branch).forEach((day) => {
       const isWeekend = day === "Saturday" || day === "Sunday";
@@ -191,34 +284,70 @@ export default function ArchiveSchedulePage() {
 
       uniqueEmployeesToTrack.forEach((emp: string) => {
         let coachingHoursForDay = 0;
-        let explicitExecHoursForDay = 0;
+        let trainingSlotHoursForDay = 0;
         let workedThatDay = false;
+        let inTrainingThatDay = false;
+        let managerSlotsForDay = 0;
 
         getTimeSlotsForDay(day, selectedRecord.branch).forEach((slot: string) => {
           if (isOpeningClosingSlot(slot, selectedRecord.branch)) return;
-          COLUMNS.forEach((col) => {
-            if (validData[`${day}-${slot}-${col.id}`] === emp) {
-              workedThatDay = true;
-              if (col.type === "coach") {
-                  const slotDuration = isAdminSlot(slot, selectedRecord.branch) ? 0.25 : 1.25;
-                  coachingHoursForDay += slotDuration;
-              } else if (col.type === "exec") {
-                  const slotDuration = isAdminSlot(slot, selectedRecord.branch) ? 0.25 : 1.25;
-                  explicitExecHoursForDay += slotDuration;
-              }
+          const isAdmin = isAdminSlot(slot, selectedRecord.branch);
+
+          // Check MANAGER column — counts for non-BM replacement managers.
+          if (validData[`${day}-${slot}-MANAGER`] === emp) {
+            workedThatDay = true;
+            if (!isAdmin) managerSlotsForDay++;
+          }
+
+          ALL_COLUMNS.forEach((col) => {
+            if (validData[`${day}-${slot}-${col.id}`] !== emp) return;
+            workedThatDay = true;
+            const slotDuration = isAdmin ? 0.25 : 1.25;
+            // A training assignment makes the whole day a flat training day
+            // (TRAINING_DAY_HOURS) — handled below.
+            if (col.type === "training") {
+              inTrainingThatDay = true;
+              trainingSlotHoursForDay += slotDuration;
+              return;
             }
+            if (col.type === "coach") coachingHoursForDay += slotDuration;
           });
         });
-        
-        if (workedThatDay) {
-          staffStats[emp].coachHrs += coachingHoursForDay;
-          if (explicitExecHoursForDay > 0) {
-             staffStats[emp].execHrs += explicitExecHoursForDay;
-          } else {
-             staffStats[emp].execHrs += Math.max(0, dailyTarget - coachingHoursForDay);
-          }
-          staffStats[emp].total = staffStats[emp].coachHrs + staffStats[emp].execHrs;
+
+        if (!workedThatDay) return;
+
+        // Non-BM replacement in MANAGER column: MOD slot hours go to modHrs;
+        // remaining time up to the daily target counts as exec hrs.
+        if (managerSlotsForDay > 0) {
+          const mHrs = Math.min(managerSlotsForDay * 1.25, dailyTarget);
+          staffStats[emp].modHrs += mHrs;
+          staffStats[emp].execHrs += Math.max(0, dailyTarget - mHrs);
+          staffStats[emp].total = staffStats[emp].coachHrs + staffStats[emp].modHrs + staffStats[emp].execHrs;
+          return;
         }
+
+        if (inTrainingThatDay) {
+          // Training day: a flat TRAINING_DAY_HOURS day, shown as slot hours
+          // (coach) plus the remainder (exec) — the same split the manpower
+          // cost report shows, where the day is paid at the flat training rate.
+          const dayCoachHrs = coachingHoursForDay + trainingSlotHoursForDay;
+          staffStats[emp].coachHrs += dayCoachHrs;
+          staffStats[emp].execHrs += Math.max(0, TRAINING_DAY_HOURS - dayCoachHrs);
+          staffStats[emp].total = staffStats[emp].coachHrs + staffStats[emp].modHrs + staffStats[emp].execHrs;
+          return;
+        }
+
+        // Online coaches (home branch = Online) have no exec hours —
+        // coaching hours only. Keyed on the coach's HOME branch, not this
+        // schedule's branch: when an online coach covers another branch they
+        // still hold the class online, so the rule follows them there.
+        // Day-aware for Pooja (physical-style on Saturdays only).
+        const coachOnly = isOnlineCoachOnly(homeBranchMap[emp] ?? selectedRecord.branch, employeeIdMap[emp], day);
+        staffStats[emp].coachHrs += coachingHoursForDay;
+        if (!coachOnly) {
+          staffStats[emp].execHrs += Math.max(0, dailyTarget - coachingHoursForDay);
+        }
+        staffStats[emp].total = staffStats[emp].coachHrs + staffStats[emp].execHrs;
       });
     });
     
@@ -287,6 +416,7 @@ export default function ArchiveSchedulePage() {
               {selectedDay && (() => {
                 const day = selectedDay;
                 const slots = getTimeSlotsForDay(day, selectedRecord.branch);
+                const dayColumns = getColumnsForDay(day, selectedRecord.branch);
                 const branchStaff = Array.from(new Set([...SHARED_EMPLOYEES, ...(branchStaffData[selectedRecord.branch] || [])]));
                 return (
                   <div key={day} className="bg-white rounded-xl shadow-lg border border-slate-200 overflow-hidden">
@@ -303,8 +433,8 @@ export default function ArchiveSchedulePage() {
                             <tr className="bg-slate-700 text-white uppercase tracking-widest">
                                 <th className="p-3 border-r border-slate-600 text-left w-[180px] sticky left-0 z-20 bg-slate-700 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]">Slot</th>
                                 <th className="p-3 border-r border-slate-600 text-center w-[180px] bg-slate-700 border-b-4 border-b-emerald-400">Manager on Duty</th>
-                                {COLUMNS.map(c => (
-                                    <th key={c.id} className={`p-3 border-r border-slate-600 text-center w-[150px] ${c.type === 'exec' ? 'bg-slate-800' : ''}`}>
+                                {dayColumns.map(c => (
+                                    <th key={c.id} className={`p-3 border-r border-slate-600 text-center w-[150px] ${c.type === 'exec' ? 'bg-slate-800' : c.type === 'training' ? 'bg-yellow-600' : ''}`}>
                                         {c.label}
                                     </th>
                                 ))}
@@ -336,7 +466,7 @@ export default function ArchiveSchedulePage() {
                                         // Show manager name for slots where manager is on duty
                                         managerName ? (
                                           <span className={`inline-block w-full px-2 py-1.5 rounded text-xs font-bold ${getStaffColorByIndex(managerName, branchStaff)}`}>
-                                            {managerName}
+                                            {nameWithBadge(managerName, trainingMap[managerName])}
                                           </span>
                                         ) : (
                                           <span className="text-slate-300 font-bold">-</span>
@@ -351,18 +481,18 @@ export default function ArchiveSchedulePage() {
                                   )}
 
                                   {isOpenClose ? (
-                                    <td colSpan={COLUMNS.length + 1} className="p-3 border-b border-slate-200 text-center">
+                                    <td colSpan={dayColumns.length + 1} className="p-3 border-b border-slate-200 text-center">
                                       <span className="text-xs font-black text-blue-600 uppercase tracking-widest">All Staff — Executive ({slotIndex === 0 ? "Opening" : "Closing"})</span>
                                     </td>
                                   ) : (
                                     <>
-                                      {COLUMNS.map(col => {
-                                        const name = validData[`${day}-${slot}-${col.id}`];
+                                      {dayColumns.map(col => {
+                                        const name = validData[`${day}-${slot}-${col.id}`] as string | undefined;
                                         const displayValue = name && name !== "None" ? name : "-";
-                                        const bgColor = name && name !== "None" ? getStaffColorByIndex(name, branchStaff) : (col.type === 'exec' ? 'bg-slate-50 text-slate-300' : 'bg-white text-slate-300');
+                                        const bgColor = name && name !== "None" ? getStaffColorByIndex(name, branchStaff) : (col.type === 'exec' ? 'bg-slate-50 text-slate-300' : col.type === 'training' ? 'bg-yellow-50 text-slate-300' : 'bg-white text-slate-300');
                                         return (
                                             <td key={col.id} className={`p-3 border-r border-b border-slate-200 text-center font-bold transition-colors ${bgColor}`}>
-                                                {displayValue}
+                                                {displayValue !== "-" ? nameWithBadge(displayValue, trainingMap[displayValue]) : displayValue}
                                             </td>
                                         );
                                       })}
@@ -381,7 +511,7 @@ export default function ArchiveSchedulePage() {
                 );
               })()}
 
-              <SummaryTable data={calculateHoursForData()} />
+              <SummaryTable data={calculateHoursForData()} trainingMap={trainingMap} />
             </div>
           </div>
         </main>

@@ -66,17 +66,40 @@ function parseUpdate(raw: unknown):
   };
 }
 
+type Overrides = Record<string, 'ALLOWED' | 'DENIED'>;
+
 function parsePatch(raw: unknown):
-  | { ok: true; data: { id: number; action: 'toggle-status' | 'change-role'; role?: string } }
+  | { ok: true; data: { id: number; action: 'toggle-status' | 'change-role' | 'update-permissions'; role?: string; overrides?: Overrides } }
   | { ok: false; error: string } {
   const b = asObj(raw);
   if (!b) return { ok: false, error: 'Invalid JSON body' };
   if (typeof b.id !== 'number' || !Number.isInteger(b.id)) return { ok: false, error: 'id must be an integer' };
-  if (b.action !== 'toggle-status' && b.action !== 'change-role') return { ok: false, error: "action must be 'toggle-status' or 'change-role'" };
-  if (b.role !== undefined && (typeof b.role !== 'string' || !ROLE_SET.has(b.role))) return { ok: false, error: 'role must be one of ' + ROLE_VALUES.join(', ') };
+  if (b.action !== 'toggle-status' && b.action !== 'change-role' && b.action !== 'update-permissions') {
+    return { ok: false, error: "action must be 'toggle-status', 'change-role', or 'update-permissions'" };
+  }
+  if (b.role !== undefined && (typeof b.role !== 'string' || !ROLE_SET.has(b.role))) {
+    return { ok: false, error: 'role must be one of ' + ROLE_VALUES.join(', ') };
+  }
+
+  let overrides: Overrides | undefined;
+  if (b.action === 'update-permissions') {
+    const o = asObj(b.overrides);
+    if (!o) return { ok: false, error: 'overrides must be an object of { key: "ALLOWED" | "DENIED" }' };
+    overrides = {};
+    for (const [k, v] of Object.entries(o)) {
+      if (typeof k !== 'string' || k.length === 0 || k.length > 80) {
+        return { ok: false, error: `invalid override key "${k}"` };
+      }
+      if (v !== 'ALLOWED' && v !== 'DENIED') {
+        return { ok: false, error: `override "${k}" must be "ALLOWED" or "DENIED"` };
+      }
+      overrides[k] = v;
+    }
+  }
+
   return {
     ok: true,
-    data: { id: b.id, action: b.action, role: b.role as string | undefined },
+    data: { id: b.id, action: b.action, role: b.role as string | undefined, overrides },
   };
 }
 
@@ -86,7 +109,7 @@ export async function GET() {
 
   try {
     const users = await prisma.user.findMany({
-      select: { id: true, name: true, email: true, role: true, branchName: true, status: true, createdAt: true },
+      select: { id: true, name: true, email: true, role: true, branchName: true, status: true, createdAt: true, lastLoggedInAt: true, dashboardOverrides: true },
       orderBy: { createdAt: 'desc' },
     });
     return NextResponse.json(users);
@@ -113,7 +136,7 @@ export async function POST(req: NextRequest) {
     const passwordHash = await bcrypt.hash(password, 10);
     const user = await prisma.user.create({
       data: { name, email, passwordHash, role, branchName, status: 'ACTIVE' },
-      select: { id: true, name: true, email: true, role: true, branchName: true, status: true, createdAt: true },
+      select: { id: true, name: true, email: true, role: true, branchName: true, status: true, createdAt: true, lastLoggedInAt: true, dashboardOverrides: true },
     });
     return NextResponse.json(user, { status: 201 });
   } catch (err) {
@@ -148,7 +171,7 @@ export async function PUT(req: NextRequest) {
     const user = await prisma.user.update({
       where: { id },
       data: updateData,
-      select: { id: true, name: true, email: true, role: true, branchName: true, status: true, createdAt: true },
+      select: { id: true, name: true, email: true, role: true, branchName: true, status: true, createdAt: true, lastLoggedInAt: true, dashboardOverrides: true },
     });
     return NextResponse.json(user);
   } catch (err) {
@@ -164,7 +187,7 @@ export async function PATCH(req: NextRequest) {
   try {
     const parsed = parsePatch(await req.json());
     if (!parsed.ok) return bad(parsed.error);
-    const { id, action, role } = parsed.data;
+    const { id, action, role, overrides } = parsed.data;
 
     const updateData: Record<string, unknown> = {};
 
@@ -172,15 +195,18 @@ export async function PATCH(req: NextRequest) {
       const current = await prisma.user.findUnique({ where: { id }, select: { status: true } });
       if (!current) return NextResponse.json({ error: 'User not found' }, { status: 404 });
       updateData.status = current.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
-    } else {
+    } else if (action === 'change-role') {
       if (!role) return NextResponse.json({ error: 'role is required for change-role' }, { status: 400 });
       updateData.role = role;
+    } else {
+      // update-permissions
+      updateData.dashboardOverrides = overrides ?? {};
     }
 
     const user = await prisma.user.update({
       where: { id },
       data: updateData,
-      select: { id: true, name: true, email: true, role: true, branchName: true, status: true, createdAt: true },
+      select: { id: true, name: true, email: true, role: true, branchName: true, status: true, createdAt: true, lastLoggedInAt: true, dashboardOverrides: true },
     });
     return NextResponse.json(user);
   } catch (err) {

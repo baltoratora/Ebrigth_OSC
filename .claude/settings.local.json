@@ -7,7 +7,8 @@
       "Bash(ls *.xlsx *.csv)",
       "Bash(npx tsc:*)",
       "Bash(npx prisma:*)",
-      "Bash(gh repo:*)"
+      "Bash(gh repo:*)",
+      "Bash(git ls-remote *)"
     ]
   }
 }

@@ -25,8 +25,16 @@ jobs:
           --health-retries 5
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ebright_hrfs_test?schema=public
+      # LEADS_DB_URL + FA_DATABASE_URL point at the same test DB so any code
+      # that opens a separate pool doesn't fall back to system defaults
+      # (which on the GitHub runner tries the "root" role and FATALs).
+      LEADS_DB_URL: postgresql://postgres:postgres@localhost:5432/ebright_hrfs_test?schema=public
+      FA_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ebright_hrfs_test?schema=public
       NEXTAUTH_URL: http://localhost:3001
       NEXTAUTH_SECRET: ci-test-secret-not-for-production
+      # Required by lib/env.ts. CI-only fakes — never used outside this run.
+      BETTER_AUTH_SECRET: ci-test-better-auth-secret-not-for-production
+      ENCRYPTION_KEY: 7ff3934c5175346f23b6f0ef5eb094733407b0c763cf17585f507b06b6fcddf0
       AUTOCOUNT_API_TOKEN: ci-test-token
       PLAYWRIGHT_BASE_URL: http://localhost:3001
     steps:

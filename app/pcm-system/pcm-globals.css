@@ -1,0 +1,620 @@
+@import "tailwindcss";
+
+/* ============================================================================
+   PCM System — Design Tokens
+   "Aurora" palette. Cool lavender surfaces, violet accents, indigo
+   highlights. Distinct from FA's warm Ivory & Bronze.
+   ============================================================================ */
+
+@theme {
+  /* Cool off-whites — page + surface (slight lavender tint) */
+  --color-ivory-50:  #ffffff;
+  --color-ivory-100: #faf9ff;
+  --color-ivory-200: #f3f0ff;
+  --color-ivory-300: #e0d9ff;
+
+  /* Slate ink — slight cool shift vs FA's warm charcoal */
+  --color-ink-50:  #f8fafc;
+  --color-ink-100: #f1f5f9;
+  --color-ink-200: #e2e8f0;
+  --color-ink-300: #cbd5e1;
+  --color-ink-400: #94a3b8;
+  --color-ink-500: #64748b;
+  --color-ink-600: #475569;
+  --color-ink-700: #334155;
+  --color-ink-800: #1e293b;
+  --color-ink-900: #0f172a;
+
+  /* Violet — accent only, replaces FA's bronze gold */
+  --color-gold-100: #ede9fe;
+  --color-gold-200: #ddd6fe;
+  --color-gold-300: #c4b5fd;
+  --color-gold-400: #a78bfa;
+  --color-gold-500: #8b5cf6;
+  --color-gold-600: #7c3aed;
+  --color-gold-700: #6d28d9;
+
+  /* Indigo — rare, hero/CTA moments. Replaces FA's burgundy. */
+  --color-brand-50:  #eef2ff;
+  --color-brand-100: #e0e7ff;
+  --color-brand-200: #c7d2fe;
+  --color-brand-300: #a5b4fc;
+  --color-brand-400: #818cf8;
+  --color-brand-500: #6366f1;
+  --color-brand-600: #4f46e5;
+  --color-brand-700: #4338ca;
+  --color-brand-800: #3730a3;
+  --color-brand-900: #312e81;
+  --color-brand-950: #1e1b4b;
+
+  /* Functional — sharper tones to match the cool palette */
+  --color-success:      #059669;
+  --color-success-soft: #d1fae5;
+  --color-warning:      #d97706;
+  --color-warning-soft: #fef3c7;
+  --color-danger:       #e11d48;
+  --color-danger-soft:  #ffe4e6;
+  --color-info:         #0891b2;
+  --color-info-soft:    #cffafe;
+
+  /* Typography */
+  --font-display: var(--font-fraunces), "Source Serif Pro", Georgia, serif;
+  --font-sans:    var(--font-inter), -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono:    var(--font-jetbrains), "JetBrains Mono", "Menlo", monospace;
+}
+
+/* ============================================================================
+   Theme variants — override the @theme tokens above on the <html> element
+   when data-pcm-theme is set. The default (Ivory & Bronze) needs no overrides.
+   ============================================================================ */
+
+/* Vibrant Modern — clean white surfaces, navy ink, blue + teal accents. */
+[data-pcm-theme="vibrant"] {
+  --color-ivory-50:  #ffffff;
+  --color-ivory-100: #f7fafc;
+  --color-ivory-200: #edf2f7;
+  --color-ivory-300: #cbd5e0;
+
+  --color-ink-400: #4a5568;
+  --color-ink-500: #2d3748;
+  --color-ink-600: #1a202c;
+  --color-ink-700: #171923;
+  --color-ink-800: #0f111a;
+  --color-ink-900: #060818;
+
+  /* "gold" repurposed as blue accent. */
+  --color-gold-100: #e6f4ff;
+  --color-gold-200: #b3dcfd;
+  --color-gold-300: #66b8fa;
+  --color-gold-400: #1f8af1;
+  --color-gold-500: #1565c0;
+  --color-gold-600: #0d47a1;
+  --color-gold-700: #082c5e;
+
+  --color-brand-500: #ee6c5e;
+  --color-brand-600: #e94e4e;
+  --color-brand-700: #c53030;
+
+  --color-success:      #0f9f6e;
+  --color-success-soft: #d3f6e8;
+  --color-warning:      #d97706;
+  --color-warning-soft: #fff3d6;
+  --color-danger:       #e94e4e;
+  --color-danger-soft:  #fee2e2;
+  --color-info:         #1f8af1;
+  --color-info-soft:    #e6f4ff;
+}
+
+/* Warm Sunset — peach + cream + orange/pink/purple. */
+[data-pcm-theme="sunset"] {
+  --color-ivory-50:  #fffaf3;
+  --color-ivory-100: #fff7ed;
+  --color-ivory-200: #ffedd5;
+  --color-ivory-300: #fbcfa5;
+
+  --color-ink-400: #6b21a8;
+  --color-ink-500: #581c87;
+  --color-ink-600: #4c1d95;
+  --color-ink-700: #3b0764;
+  --color-ink-800: #2e1065;
+  --color-ink-900: #1e0b3a;
+
+  --color-gold-100: #ffe6c8;
+  --color-gold-200: #fed7aa;
+  --color-gold-300: #fdba74;
+  --color-gold-400: #fb923c;
+  --color-gold-500: #ea580c;
+  --color-gold-600: #c2410c;
+  --color-gold-700: #9a3412;
+
+  --color-brand-500: #d946ef;
+  --color-brand-600: #c026d3;
+  --color-brand-700: #a21caf;
+
+  --color-success:      #65a30d;
+  --color-success-soft: #ecfccb;
+  --color-warning:      #f59e0b;
+  --color-warning-soft: #fef3c7;
+  --color-danger:       #db2777;
+  --color-danger-soft:  #fce7f3;
+  --color-info:         #8b5cf6;
+  --color-info-soft:    #ede9fe;
+}
+
+/* High-Contrast Pro — deep navy + bright accents, maximum number readability. */
+[data-pcm-theme="highcontrast"] {
+  --color-ivory-50:  #ffffff;
+  --color-ivory-100: #ffffff;
+  --color-ivory-200: #f1f5f9;
+  --color-ivory-300: #94a3b8;
+
+  --color-ink-200: #475569;
+  --color-ink-300: #334155;
+  --color-ink-400: #1e293b;
+  --color-ink-500: #0f172a;
+  --color-ink-600: #020617;
+  --color-ink-700: #000000;
+  --color-ink-800: #000000;
+  --color-ink-900: #000000;
+
+  --color-gold-100: #fef9c3;
+  --color-gold-200: #fef08a;
+  --color-gold-300: #facc15;
+  --color-gold-400: #eab308;
+  --color-gold-500: #ca8a04;
+  --color-gold-600: #854d0e;
+  --color-gold-700: #422006;
+
+  --color-brand-500: #ef4444;
+  --color-brand-600: #dc2626;
+  --color-brand-700: #b91c1c;
+
+  --color-success:      #16a34a;
+  --color-success-soft: #dcfce7;
+  --color-warning:      #ca8a04;
+  --color-warning-soft: #fef9c3;
+  --color-danger:       #dc2626;
+  --color-danger-soft:  #fee2e2;
+  --color-info:         #0891b2;
+  --color-info-soft:    #cffafe;
+}
+
+/* ============================================================================
+   Base
+   ============================================================================ */
+
+html {
+  font-family: var(--font-sans);
+  color: var(--color-ink-900);
+  background: var(--color-ivory-200);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* PCM body — multi-spot soft watercolor backdrop. Distinct from FA's
+   minimal cream-and-gold body. Scoped via the .pcm-system class on the
+   layout wrapper so it never leaks back to FA. */
+.pcm-system {
+  min-height: 100vh;
+  background:
+    radial-gradient(at  5%  10%, rgba(139,  92, 246, 0.18) 0px, transparent 45%),
+    radial-gradient(at 95%   5%, rgba(236,  72, 153, 0.14) 0px, transparent 45%),
+    radial-gradient(at 50%  95%, rgba( 14, 165, 233, 0.14) 0px, transparent 45%),
+    radial-gradient(at 80%  60%, rgba(244, 114,  82, 0.10) 0px, transparent 50%),
+    linear-gradient(180deg, #faf9ff 0%, #f3f0ff 60%, #fef3f2 100%);
+  background-attachment: fixed;
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+::selection {
+  background: var(--color-gold-100);
+  color: var(--color-ink-900);
+}
+
+/* ============================================================================
+   Component classes
+   ============================================================================ */
+
+/* -------- Cards -------- */
+.fa-card {
+  background: var(--color-ivory-50);
+  border-radius: 12px;
+  border: 1px solid var(--color-gold-200);
+  box-shadow: 0 1px 2px rgba(12, 10, 9, 0.04);
+}
+
+.fa-card-hover {
+  background: var(--color-ivory-50);
+  border-radius: 12px;
+  border: 1px solid var(--color-gold-200);
+  box-shadow: 0 1px 2px rgba(12, 10, 9, 0.04);
+  transition: transform 300ms cubic-bezier(0.2, 0.8, 0.2, 1), border-color 250ms, box-shadow 250ms;
+}
+.fa-card-hover:hover {
+  transform: translateY(-2px);
+  border-color: var(--color-gold-400);
+  box-shadow: 0 12px 32px -12px rgba(176, 145, 79, 0.25), 0 2px 4px rgba(12, 10, 9, 0.04);
+}
+
+/* -------- Buttons -------- */
+.fa-btn,
+.fa-btn-primary,
+.fa-btn-secondary,
+.fa-btn-ghost,
+.fa-btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1rem;
+  border-radius: 10px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: all 150ms;
+  cursor: pointer;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.fa-btn:focus-visible,
+.fa-btn-primary:focus-visible,
+.fa-btn-secondary:focus-visible,
+.fa-btn-ghost:focus-visible,
+.fa-btn-danger:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px white, 0 0 0 4px var(--color-gold-300);
+}
+.fa-btn:disabled,
+.fa-btn-primary:disabled,
+.fa-btn-secondary:disabled,
+.fa-btn-ghost:disabled,
+.fa-btn-danger:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.fa-btn-primary {
+  background: var(--color-ink-900);
+  color: var(--color-ivory-50);
+}
+.fa-btn-primary:hover:not(:disabled) {
+  background: var(--color-ink-700);
+}
+
+.fa-btn-secondary {
+  background: var(--color-ivory-50);
+  border-color: var(--color-gold-300);
+  color: var(--color-ink-800);
+}
+.fa-btn-secondary:hover:not(:disabled) {
+  background: var(--color-ivory-100);
+  border-color: var(--color-gold-400);
+}
+
+.fa-btn-ghost {
+  background: transparent;
+  color: var(--color-ink-600);
+}
+.fa-btn-ghost:hover:not(:disabled) {
+  background: var(--color-ivory-100);
+  color: var(--color-ink-900);
+}
+
+.fa-btn-danger {
+  background: var(--color-danger);
+  color: white;
+}
+.fa-btn-danger:hover:not(:disabled) {
+  filter: brightness(0.92);
+}
+
+/* -------- Inputs -------- */
+.fa-input {
+  width: 100%;
+  padding: 0.625rem 0.875rem;
+  border-radius: 10px;
+  border: 1px solid var(--color-ink-200);
+  background: var(--color-ivory-50);
+  color: var(--color-ink-900);
+  font-size: 0.875rem;
+  transition: border-color 150ms, box-shadow 150ms;
+}
+.fa-input::placeholder {
+  color: var(--color-ink-400);
+}
+.fa-input:focus {
+  outline: none;
+  border-color: var(--color-gold-400);
+  box-shadow: 0 0 0 3px var(--color-gold-100);
+}
+
+.fa-input-icon-left {
+  padding-left: 2.5rem;
+}
+
+/* Safety net: any native input/textarea/select inside the FA system that
+ * forgets to set its text colour explicitly falls back to ink-900 here, so
+ * quota numbers, search boxes, etc. stay readable in every theme. Also
+ * forces the color-scheme so the browser doesn't apply a dark-mode tint to
+ * the input chrome (spinners, calendar picker, etc.). */
+.fa-system input,
+.fa-system textarea,
+.fa-system select {
+  color: var(--color-ink-900);
+  color-scheme: light;
+}
+.fa-system input::placeholder,
+.fa-system textarea::placeholder {
+  color: var(--color-ink-400);
+}
+
+.fa-label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-ink-500);
+  margin-bottom: 0.375rem;
+}
+
+/* -------- Pills / Badges -------- */
+.fa-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.625rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.fa-pill-dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 9999px;
+}
+
+/* -------- Tables -------- */
+.fa-table {
+  width: 100%;
+  font-size: 0.875rem;
+  border-collapse: collapse;
+}
+.fa-table thead th {
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-ink-500);
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--color-gold-200);
+  background: rgba(245, 241, 232, 0.5);
+}
+.fa-table tbody tr {
+  border-bottom: 1px solid var(--color-ivory-300);
+  transition: background-color 150ms;
+}
+.fa-table tbody tr:hover {
+  background: rgba(251, 250, 246, 0.8);
+}
+.fa-table tbody td {
+  padding: 0.75rem 1rem;
+  color: var(--color-ink-700);
+}
+
+/* -------- Editorial display headline -------- */
+.fa-display {
+  font-family: var(--font-display);
+  font-optical-sizing: auto;
+  font-variation-settings: "SOFT" 50, "WONK" 0;
+  letter-spacing: -0.02em;
+}
+
+/* -------- New editorial utilities -------- */
+.fa-mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1, "zero" 1;
+  letter-spacing: -0.01em;
+}
+
+.fa-display-italic {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-variation-settings: "opsz" 144;
+  letter-spacing: -0.03em;
+  line-height: 0.95;
+}
+
+.fa-kicker {
+  font-family: var(--font-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--color-gold-600);
+}
+
+.fa-rule-gold {
+  border-top: 1px solid var(--color-gold-300);
+}
+
+.fa-hairline {
+  border-color: var(--color-gold-200);
+}
+
+/* -------- Entrance animations -------- */
+@keyframes fa-fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fa-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.fa-enter      { animation: fa-fade-up 500ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.fa-enter-slow { animation: fa-fade-up 700ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.fa-enter-fade { animation: fa-fade-in 600ms ease-out both; }
+
+.fa-delay-1 { animation-delay:  80ms; }
+.fa-delay-2 { animation-delay: 160ms; }
+.fa-delay-3 { animation-delay: 240ms; }
+.fa-delay-4 { animation-delay: 320ms; }
+
+/* -------- Toast -------- */
+@keyframes fa-toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fa-toast-in {
+  animation: fa-toast-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* -------- Print: certificate-only output --------
+ * The CertificatePreviewModal renders a duplicate copy of the certificate
+ * via a portal directly into <body> with the .fa-print-cert class. That copy
+ * is hidden on screen and is the ONLY thing visible during print — keeping
+ * it out of the modal's scroll container avoids any clipping. */
+.fa-print-cert {
+  display: none;
+}
+
+@media print {
+  @page {
+    margin: 1cm;
+  }
+  body * {
+    visibility: hidden;
+  }
+  .fa-print-cert {
+    display: block;
+    visibility: visible;
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    padding: 0;
+    margin: 0;
+  }
+  .fa-print-cert * {
+    visibility: visible;
+  }
+  /* Each bulk-print certificate gets its own page. The single-preview
+     flow doesn't wrap with .fa-print-cert-page so it still prints on one page.
+     Visibility override is required because `body *` is visibility:hidden
+     above — without revealing this subtree, bulk-print pages come out
+     blank. Unlike .fa-print-cert, this rule does NOT set position:absolute,
+     so multiple .fa-print-cert-page siblings flow normally and each
+     lands on its own A4 sheet via page-break-after.
+
+     print-color-adjust: exact forces the browser to print background
+     colours and gradient fills as designed — without it, the red banner,
+     slate identity strip, and red-bordered Remarks box all wash out
+     because Chrome strips background colours by default. */
+  .fa-print-cert-page,
+  .fa-print-cert-page * {
+    visibility: visible;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    color-adjust: exact;
+  }
+  /* Print mode — STRICTLY one cert per A4 page, always.
+     Wrapper IS the A4 page (210×297mm fixed) with overflow:hidden so
+     content can NEVER spill to page 2. zoom 0.85 on the inner element
+     sizes content to fit within the page; the 400-char form limit on
+     Strengths + Improvement Plan caps content so it stays within that
+     budget. Together: every cert prints on exactly one page that's
+     mostly filled, no clipping for in-bounds content. */
+  .fa-print-cert-page {
+    width: 210mm !important;
+    height: 297mm !important;
+    max-width: none !important;
+    padding: 0 !important;
+    margin: 0 auto !important;
+    box-sizing: border-box;
+    overflow: hidden;
+    page-break-after: always;
+    break-after: page;
+  }
+  .fa-print-cert-page > * {
+    /* 0.85 — verified value that fits the FULL PCM cert including
+       Prepared-by + Received-by signature names. 0.95 was too tight
+       and clipped the names off the bottom because PCM has more
+       content than FA (rubric grid + two narrative boxes + signature
+       row with images). The 400-char limit on Strengths/Improvement
+       Plan keeps the cert bounded; some bottom whitespace remains for
+       short reports as the safe tradeoff. */
+    zoom: 0.85;
+  }
+  .fa-print-cert-page:last-child {
+    page-break-after: auto;
+    break-after: auto;
+  }
+  /* Banner h1 — readable but tighter top-margin. */
+  .fa-print-cert-page h1 {
+    font-size: 30px !important;
+    margin-top: 6px !important;
+  }
+  /* Section headings (Score, Remarks). */
+  .fa-print-cert-page h2 {
+    font-size: 22px !important;
+    margin-top: 10px !important;
+    margin-bottom: 6px !important;
+  }
+  /* Identity panel — tighter top/bottom padding. */
+  .fa-print-cert-page .px-10.py-7 {
+    padding-top: 10px !important;
+    padding-bottom: 10px !important;
+  }
+  /* Inner body — bottom padding mostly removed. */
+  .fa-print-cert-page .px-10.pb-10 {
+    padding-bottom: 6px !important;
+  }
+  /* Rubric / 4-criterion table — keep cell font readable but trim cell
+     vertical padding to compress the grid. */
+  .fa-print-cert-page table th,
+  .fa-print-cert-page table td {
+    padding-top: 5px !important;
+    padding-bottom: 5px !important;
+  }
+  /* Total-score line — pull it closer to the table. */
+  .fa-print-cert-page .text-right.mt-3 {
+    margin-top: 4px !important;
+  }
+  /* Strengths / Improvement Plan boxes — minimum height. When the BM
+     writes more, the boxes grow naturally. */
+  .fa-print-cert-page div[style*="border: 2px solid"] {
+    min-height: 70px !important;
+    padding: 10px !important;
+  }
+  /* Signature row + narrative grid spacing. */
+  .fa-print-cert-page .mt-12 {
+    margin-top: 12px !important;
+  }
+  .fa-print-cert-page .grid.mt-6 {
+    margin-top: 8px !important;
+  }
+}
+
+
+/* ============================================================================
+   PCM Assessment Report — A4 print rules
+   margin: 0 because the .fa-print-cert-page wrapper is sized to a full
+   A4 page (210×297mm) and controls the cert edge-to-edge itself.
+   ============================================================================ */
+@media print {
+  @page {
+    size: A4;
+    margin: 0;
+  }
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+}

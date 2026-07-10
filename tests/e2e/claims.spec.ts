@@ -1,14 +1,15 @@
 import { test, expect, login } from './fixtures';
 
 test.describe('Claims smoke', () => {
-  test('ADMIN can open the claims page and submit a basic claim', async ({ page }) => {
+  test('ADMIN can open the claims page', async ({ page }) => {
     await login(page, 'admin');
-    await page.goto('/claims');
-    await expect(page).toHaveURL(/\/claims/);
+    await page.goto('/claim');
+    await expect(page).toHaveURL(/\/claim/);
 
-    // Locate the "new claim" / "submit" entry point. The page is large; we just
-    // assert the page loads and the primary CTA is visible.
-    const submitCta = page.getByRole('button', { name: /submit|new claim|create/i }).first();
-    await expect(submitCta).toBeVisible({ timeout: 10_000 });
+    // Default view is "status" (a dashboard of pending/approved/etc. claims).
+    // The h1 reads "Claims Status" — assert that to prove auth + render.
+    await expect(
+      page.getByRole('heading', { name: /claims\s+status/i })
+    ).toBeVisible({ timeout: 10_000 });
   });
 });

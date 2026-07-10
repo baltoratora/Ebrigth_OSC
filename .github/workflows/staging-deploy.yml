@@ -18,5 +18,131 @@ jobs:
           host: 103.209.156.225
           username: deploy
           key: ${{ secrets.STAGING_SSH_KEY }}
-          command_timeout: 30m
-          script: /home/deploy/deploy.sh osc
+          # 45m wasn't enough when deploy.sh runs the aggressive Docker
+          # cleanup — npm ci has to redownload all deps from scratch.
+          command_timeout: 90m
+          script: |
+            # Harden the working copy BEFORE deploy.sh runs. deploy.sh uses
+            # `git pull`, which silently leaves STALE code when the on-server
+            # tree is dirty — the bug behind the manual host rebuilds. Reset to
+            # the exact pushed commit first (mirrors prod-deploy.yml). After
+            # this, deploy.sh's own pull is a clean no-op and the docker build
+            # picks up fresh source.
+            for CANDIDATE in /home/deploy/ebright-osc /home/deploy/osc /home/deploy/Ebrigth_OSC; do
+              if [ -f "$CANDIDATE/docker-compose.yml" ]; then PROJECT_DIR="$CANDIDATE"; break; fi
+            done
+            if [ -z "$PROJECT_DIR" ]; then
+              PROJECT_DIR=$(find /home/deploy -maxdepth 4 -type d -name ".git" 2>/dev/null | head -1 | xargs -r dirname)
+            fi
+            if [ -n "$PROJECT_DIR" ]; then
+              echo "Resetting $PROJECT_DIR to origin/staging"
+              cd "$PROJECT_DIR"
+              git fetch origin
+              git reset --hard origin/staging
+              echo "Source now at: $(git log --oneline -1)"
+            else
+              echo "WARNING: staging project dir not found; deploy.sh will manage code"
+            fi
+
+            # Force-remove any leftover containers from a prior compose run.
+            # `docker compose up -d --build` inside deploy.sh otherwise
+            # fails with "container name already in use" when its image-
+            # build path bumps a layer hash but doesn't trigger a clean
+            # recreate — exactly what bit the 2026-05-16 staging deploy.
+            # Errors swallowed so first-ever deploys (containers absent)
+            # don't fail this line.
+            docker rm -f ebright-osc-osc-1 ebright-osc-worker-1 2>/dev/null || true
+
+            export NEXTAUTH_SECRET='${{ secrets.NEXTAUTH_SECRET }}'
+            export BETTER_AUTH_SECRET='${{ secrets.BETTER_AUTH_SECRET }}'
+            export ENCRYPTION_KEY='${{ secrets.ENCRYPTION_KEY }}'
+            export DATABASE_URL='${{ secrets.DATABASE_URL }}'
+            export HRFS_DATABASE_URL='${{ secrets.HRFS_DATABASE_URL }}'
+            export CRM_PREVIEW_MODE='${{ secrets.CRM_PREVIEW_MODE }}'
+            export SHARED_SSO_SECRET='${{ secrets.SHARED_SSO_SECRET }}'
+            export INVENTORY_URL='${{ secrets.INVENTORY_URL }}'
+            # SMTP for clock-in/out attendance emails (lib/mailer.ts). The
+            # email watcher (lib/hikvision-email-sync.ts) only runs when
+            # HIKVISION_EMAIL_SYNC=on, so leaving that secret blank keeps it off.
+            export SMTP_HOST='${{ secrets.SMTP_HOST }}'
+            export SMTP_PORT='${{ secrets.SMTP_PORT }}'
+            export SMTP_USER='${{ secrets.SMTP_USER }}'
+            export SMTP_PASS='${{ secrets.SMTP_PASS }}'
+            # OFF on staging: staging may share prod's DB, so 'on' here would
+            # fire real clock-in/out emails to real staff. Prod is 'on'.
+            export HIKVISION_EMAIL_SYNC='off'
+            /home/deploy/deploy.sh osc
+
+            # Self-healing burnlist tables: idempotent DDL run inside the
+            # worker container. Creates burnlist_week / burnlist_entry in
+            # both `crm` and `public` schemas of whichever DATABASE_URL
+            # the staging env points at. No-op on subsequent deploys.
+            echo "===== ensuring burnlist tables exist ====="
+            docker exec ebright-osc-worker-1 node scripts/ensure-burnlist-tables.mjs \
+              || echo "WARN: burnlist tables ensure failed (non-fatal — page may show DB error until fixed)"
+
+            echo "===== cleaning up legacy department platforms ====="
+            docker exec ebright-osc-worker-1 node scripts/cleanup-department-platforms.mjs \
+              || echo "WARN: department platform cleanup failed (non-fatal)"
+
+            echo "===== ensuring recruitment schema (applicationId + interview/resume) ====="
+            docker exec ebright-osc-worker-1 node scripts/ensure-recruitment-schema.mjs \
+              || echo "WARN: recruitment schema ensure failed (non-fatal)"
+
+            # One-shot backfill of the 2026-05-13 historical week. Script
+            # checks if the week already exists and exits early — so this is
+            # a no-op on every deploy after the first. Safe to keep here.
+            echo "===== backfilling 2026-05-13 historical week (idempotent) ====="
+            docker exec ebright-osc-worker-1 node scripts/backfill-burnlist-may13.mjs \
+              || echo "WARN: 5/13 backfill failed (non-fatal)"
+
+  smoke-tests:
+    needs: deploy # Only run tests AFTER deployment succeeds
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache Playwright Browsers
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Playwright Browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps
+
+      # Run ONLY the unauthenticated boundary tests against the live staging
+      # server. The login-dependent specs use seeded test users
+      # (test.admin@example.test etc.) that exist only in the CI test DB,
+      # not in staging — running them here would always time out.
+      - name: Run Playwright smoke (unauth boundary only)
+        run: npx playwright test --grep "API auth boundary"
+        env:
+          # The container's port 3003 is firewalled from outside the host —
+          # external traffic goes through nginx on the staging-portal
+          # domain (443 → 3003 internal). Hit the domain directly so the
+          # GitHub runner doesn't get tripped by the firewall.
+          BASE_URL: https://staging-portal.ebright.my
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+
+          

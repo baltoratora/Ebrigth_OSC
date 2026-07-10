@@ -9,7 +9,7 @@ import ManpowerDashboardMatrix from "@/app/components/ManpowerDashboardMatrix";
 import { isBranchManager } from "@/lib/roles";
 import {
   ALL_BRANCHES,
-  COLUMNS,
+  ALL_COLUMNS,
   getStaffColorByIndex,
   getTimeSlotsForDay,
   getWorkingDaysForBranch,
@@ -287,7 +287,7 @@ function PerBranchView({
 
   const coachNamesForSlot = (slot: string): string[] => {
     const names: string[] = [];
-    for (const col of COLUMNS) {
+    for (const col of ALL_COLUMNS) {
       if (col.type !== "coach") continue;
       const v = schedule.selections[`${day}-${slot}-${col.id}`];
       if (v && v !== "None") names.push(v);

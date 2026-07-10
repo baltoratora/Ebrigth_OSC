@@ -25,6 +25,12 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "@fa/*": [
+        "./app/fa-system/*"
+      ],
+      "@pcm/*": [
+        "./app/pcm-system/*"
       ]
     }
   },

@@ -1,4 +1,51 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+/* Show the × delete button when hovering an inserted text-box container. */
+[data-tb-container="1"]:hover > [data-tb-delete="1"] {
+  display: flex !important;
+}
+
+/* Numbering Library — applied to <ol data-num-style="..."> by the toolbar's
+   Numbering Library popover. The `.` variants only need list-style-type;
+   the `)` variants override the ::marker `content` to swap the suffix. */
+ol[data-num-style="1."] { list-style-type: decimal; }
+ol[data-num-style="I."] { list-style-type: upper-roman; }
+ol[data-num-style="A."] { list-style-type: upper-alpha; }
+ol[data-num-style="a."] { list-style-type: lower-alpha; }
+ol[data-num-style="i."] { list-style-type: lower-roman; }
+
+ol[data-num-style="1)"] > li::marker {
+  content: counter(list-item) ") ";
+}
+ol[data-num-style="a)"] > li::marker {
+  content: counter(list-item, lower-alpha) ") ";
+}
+ol[data-num-style="A)"] > li::marker {
+  content: counter(list-item, upper-alpha) ") ";
+}
+
+/* Bullet Library — applied to <ul data-bullet-style="..."> by the toolbar
+   popover. Standard 3 use list-style-type; the rest override ::marker. */
+ul[data-bullet-style="●"] { list-style-type: disc; }
+ul[data-bullet-style="○"] { list-style-type: circle; }
+ul[data-bullet-style="■"] { list-style-type: square; }
+
+ul[data-bullet-style="◆"] > li::marker { content: "◆  "; }
+ul[data-bullet-style="▶"] > li::marker { content: "▶  "; }
+ul[data-bullet-style="✓"] > li::marker { content: "✓  "; }
+ul[data-bullet-style="★"] > li::marker { content: "★  "; }
+ul[data-bullet-style="→"] > li::marker { content: "→  "; }
+
+/* Tailwind v4: enable class-based dark variant so `dark:bg-...` utilities
+   activate whenever .dark is on <html> (or an ancestor). next-themes is
+   configured with attribute="class" + enableSystem={false} in
+   components/crm/providers.tsx, so this is the single switch the user
+   controls via the Light/Dark toggle in the topbar dropdown.
+
+   Without this directive, Tailwind v4 silently ignores every `dark:` class
+   in the codebase and the toggle appears to do nothing. */
+@custom-variant dark (&:where(.dark, .dark *));
 
 :root {
   --background: #ffffff;
@@ -12,15 +59,69 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* Dark theme variables track the user-controlled .dark class, NOT the OS
+   preference. The previous @media (prefers-color-scheme: dark) override
+   ignored the toggle entirely on systems set to dark mode. */
+.dark {
+  --background: #0a0a0a;
+  --foreground: #ededed;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+@keyframes spin-slow {
+  to { transform: rotate(360deg); }
+}
+.animate-spin-slow {
+  animation: spin-slow 4s linear infinite;
+}
+
+details[open] > summary svg.lucide-chevron-right {
+  transform: rotate(90deg);
+}
+
+/* Sticky table header for manpower cost report. Applied to <thead>; targets
+   <th> cells directly because Tailwind's default border-collapse: collapse
+   makes <thead>/<tr> sticky unreliable in Chrome. */
+.sticky-thead th {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+/* Themed slim scrollbar — used by the kanban pipeline columns (and any other
+   scroll pane that wants the system look). Slate thumb on a transparent track,
+   rounded, with a hover lift; tracks the .dark class like the rest of the UI. */
+.cns-scroll {
+  scrollbar-width: thin;                         /* Firefox */
+  scrollbar-color: rgb(203 213 225) transparent; /* slate-300 on transparent */
+}
+.dark .cns-scroll {
+  scrollbar-color: rgb(71 85 105) transparent;   /* slate-600 */
+}
+.cns-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.cns-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.cns-scroll::-webkit-scrollbar-thumb {
+  background-color: rgb(203 213 225);            /* slate-300 */
+  border-radius: 9999px;
+  border: 2px solid transparent;                 /* inset the thumb */
+  background-clip: content-box;
+}
+.cns-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(148 163 184);            /* slate-400 */
+}
+.dark .cns-scroll::-webkit-scrollbar-thumb {
+  background-color: rgb(71 85 105);              /* slate-600 */
+}
+.dark .cns-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(100 116 139);            /* slate-500 */
 }

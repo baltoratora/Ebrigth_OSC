@@ -4,6 +4,11 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  // Prisma 6 still REQUIRES `url` here — `prisma validate` errors without it,
+  // even though prisma.config.ts also defines datasource.url. The newer Prisma
+  // VS Code extension (Prisma 7-aware) flags this line as deprecated, but that
+  // warning is ahead of the installed CLI (6.19); removing it breaks the build.
+  // Prisma 7 will move this to prisma.config.ts entirely — drop this line then.
   url      = env("DATABASE_URL")
 }
 
@@ -12,14 +17,40 @@ datasource db {
 // ============================================================
 
 model User {
-  id           Int      @id @default(autoincrement())
-  email        String   @unique
-  passwordHash String
-  role         String   @default("BRANCH_MANAGER")
-  branchName   String?
-  createdAt    DateTime @default(now())
-  name         String?
-  status       String   @default("ACTIVE")
+  id                   Int       @id @default(autoincrement())
+  email                String    @unique
+  passwordHash         String
+  role                 String    @default("BRANCH_MANAGER")
+  branchName           String?
+  createdAt            DateTime  @default(now())
+  name                 String?
+  status               String    @default("ACTIVE")
+  lastLoggedInAt       DateTime?
+  // Per-user dashboard access overrides on top of the role default in
+  // lib/dashboard-access.ts. Shape: { "hrms.attendance": "DENIED", "crm": "ALLOWED" }
+  // Null/empty = follow the role default for every key.
+  dashboardOverrides   Json?
+
+  showcaseTasksAssigned       ShowcaseTask[]         @relation("ShowcaseTaskAssignee")
+  showcaseTasksCreated        ShowcaseTask[]         @relation("ShowcaseTaskCreator")
+  showcaseBudgetApproved      ShowcaseBudgetItem[]   @relation("ShowcaseBudgetApprover")
+  showcaseAnnouncements           ShowcaseAnnouncement[]       @relation("ShowcaseAnnouncementAuthor")
+  showcasePostMortems             ShowcasePostMortem[]         @relation("ShowcasePostMortemAuthor")
+  showcaseOutreachLogs            ShowcaseSponsorOutreach[]    @relation("OutreachLogger")
+  showcasePostMortemResponses     ShowcasePostMortemResponse[] @relation("PostMortemResponder")
+}
+
+// Tracks when a user's active sessions should be invalidated. Written by
+// /api/auth/change-password on a successful password update; consulted by
+// lib/nextauth.ts's jwt() callback and by middleware.ts on every page nav.
+//
+// Lives in the local `crm` schema (NOT on the User table) because crm."User"
+// is an FDW view of ebright_hrfs.public."User" and the FDW source doesn't
+// know about OSC's session lifecycle. Decoupling this row from the User
+// model means OSC owns its own revocation history end-to-end.
+model SessionRevocation {
+  email        String   @id
+  revokedAfter DateTime
 }
 
 model ManpowerSchedule {
@@ -34,6 +65,28 @@ model ManpowerSchedule {
   status             String   @default("Finalized")
   submittedAt        DateTime @default(now())
   originalAuthor     String
+}
+
+// BM's Present/Absent/Late attendance tick for a schedule week, keyed by
+// `${day}::${name}` inside the two JSON blobs. Deliberately a SEPARATE real
+// table, not columns on ManpowerSchedule — that model is a view backed by a
+// foreign table (FDW into ebright_hrfs; see the ON CONFLICT comment on
+// POST /api/schedules), so it can't take ALTER TABLE ADD COLUMN.
+//
+// Lives in ebright_hrfs itself (via hrfsPrisma, see lib/hrfs.ts), NOT in the
+// crm database this schema.prisma's datasource points at — same reasoning as
+// the BranchStaff writes in lib/hrfs.ts: a genuine table in ebright_hrfs
+// supports plain CREATE TABLE / INSERT ... ON CONFLICT, unlike the FDW view.
+// This model is declared here purely for documentation (the `db` datasource
+// above is crm, not hrfs) — it self-provisions at runtime (see
+// ensureAttendanceTable in app/api/schedules/route.ts) and is read/written
+// via raw SQL through hrfsPrisma, never the typed client generated from this
+// schema, so `prisma generate` / `prisma migrate` are not involved.
+model ManpowerScheduleAttendance {
+  scheduleId       String   @id
+  attendance       Json     @default("{}")
+  attendanceLocked Json     @default("{}")
+  updatedAt        DateTime @default(now())
 }
 
 model Employee {
@@ -79,15 +132,38 @@ model BranchStaff {
   position           String?
   location           String?
   accessStatus       String?   @default("AUTHORIZED")
-  biometricTemplate  String?
   contract           String?
   employeeId         String?
   endDate            String?
   probation          String?
   rate               String?
   updatedAt          DateTime? @updatedAt
+  trainingStartDate  String?
+  trainingEndDate    String?
+  // Weekly schedule for the Staff Directory working-hours panel.
+  // Shape: { Mon: { start: "09:00", end: "18:00" } | null, ..., Sun: ... }
+  workingHours       Json?
 
   @@map("BranchStaff")
+}
+
+// Dated history of an employee's weekly working-hours schedule. Each row is a
+// version that takes effect on `effectiveFrom` and stays active until a later
+// version supersedes it. The attendance report judges each day's Late/Early by
+// the version active that day, so editing this/next week never rewrites past
+// weeks. BranchStaff.workingHours still holds the latest version as a cache for
+// the editor. Written/read via raw SQL (see staff-directory/actions.ts) so it
+// works before the generated client is refreshed.
+model BranchStaffSchedule {
+  id            Int      @id @default(autoincrement())
+  branchStaffId Int
+  effectiveFrom DateTime @db.Date
+  schedule      Json
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([branchStaffId, effectiveFrom], map: "uq_branchstaff_eff")
+  @@index([branchStaffId, effectiveFrom], map: "idx_bss_staff_eff")
+  @@map("BranchStaffSchedule")
 }
 
 model AttendanceLog {
@@ -152,23 +228,6 @@ model MedicalLeave {
   createdAt    DateTime  @default(now()) @db.Timestamp(6)
 }
 
-model AttendanceLogST {
-  id                Int      @id @default(autoincrement())
-  date              String
-  empNo             String
-  empName           String
-  clockInTime       String
-  clockInSerialNo   String
-  clockInEmailSent  Boolean  @default(false)
-  clockOutTime      String?
-  clockOutSerialNo  String?
-  clockOutEmailSent Boolean  @default(false)
-  createdAt         DateTime @default(now()) @db.Timestamptz
-  updatedAt         DateTime @updatedAt @db.Timestamptz
-
-  @@unique([date, empNo])
-}
-
 // ============================================================
 // SHARED AUDIT LOG (used by all Ebright modules)
 // ============================================================
@@ -217,6 +276,7 @@ model crm_auth_user {
   automationRuns crm_automation_run[]
   messages      crm_message[]
   appointments  crm_appointment[]
+  leadTransfers crm_lead_transfer[]
 
   @@map("crm_auth_user")
 }
@@ -287,6 +347,15 @@ model crm_branch {
   id               String   @id @default(uuid())
   tenantId         String
   name             String
+  /** Short branch code (e.g. "AMP", "ST", "KD"). Used by the dashboard
+   *  bar chart + ticket module. Until the manage-branches feature went in
+   *  this lived in a hard-coded map in leads-metrics; now it's a column
+   *  so super-admins can add/rename branches without editing source. */
+  code             String?
+  /** Region letter: 'A' | 'B' | 'C'. Drives the colour bucket on the
+   *  super-admin dashboard bar chart. Nullable for branches outside the
+   *  canonical regional grouping (e.g. the OD test branch, HR). */
+  region           String?
   address          String?
   phone            String?
   email            String?
@@ -312,14 +381,65 @@ model crm_branch {
   tags             crm_tag[]
   customValues     crm_custom_value[]   @relation("BranchCustomValues")
   messageTemplates crm_message_template[]
+  transfersFrom    crm_lead_transfer[]  @relation("TransferFrom")
+  transfersTo      crm_lead_transfer[]  @relation("TransferTo")
+  whatsappLeads    crm_whatsapp_lead[]
 
   @@index([tenantId])
   @@map("crm_branch")
 }
 
+/// Inbound WhatsApp interactions that a branch must process.
+///
+/// Each row mirrors one interaction from `ebrightleads_db.ws_leads` (anonymous
+/// "1 message = 1 potential lead" counts auto-inserted by the Meta WhatsApp
+/// pipeline) OR a manual entry added by a super admin. The CRM tracks the
+/// resolution state HERE rather than in ws_leads (which is owned by the
+/// external auto-system), keyed by `wsLeadId`. COMPLETED/DELETED rows act as
+/// tombstones so a re-sync never resurrects a cleared interaction.
+///
+/// Lifecycle: PENDING → (branch fills the WhatsApp form) COMPLETED, linking the
+/// `crm_contact` it created; or → (super admin) DELETED for "just asking"
+/// interactions. Only these two transitions clear a branch's red badge.
+model crm_whatsapp_lead {
+  id          String    @id @default(uuid())
+  tenantId    String
+  branchId    String
+  /// ws_leads.ws_lead_id for auto rows, or "manual_<uuid>" for super-admin adds.
+  wsLeadId    String
+  /// 'auto' (synced from ws_leads) | 'manual' (super-admin added).
+  source      String    @default("auto")
+  /// 'PENDING' | 'COMPLETED' | 'DELETED'.
+  status      String    @default("PENDING")
+  // Snapshot of the ws_leads row at sync time (ws_leads may change/disappear).
+  rawBranch   String?
+  locationKey String?
+  fullName    String?
+  phone       String?
+  campaignName String?
+  submittedAt DateTime?
+  // Set when a branch completes the WhatsApp form.
+  contactId        String?
+  completedByUserId String?
+  completedAt       DateTime?
+  // Set when a super admin deletes the interaction.
+  deletedByUserId String?
+  deletedAt       DateTime?
+  deleteReason    String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  branch      crm_branch @relation(fields: [branchId], references: [id])
+
+  @@unique([tenantId, wsLeadId], name: "uq_crm_whatsapp_lead_wsid")
+  @@index([tenantId, branchId, status])
+  @@map("crm_whatsapp_lead")
+}
+
 enum CrmUserRole {
   SUPER_ADMIN
   AGENCY_ADMIN
+  REGIONAL_MANAGER
   BRANCH_MANAGER
   BRANCH_STAFF
 }
@@ -400,6 +520,25 @@ model crm_contact {
   preferredBranchId String?
   preferredTrialDay TrialDay?
   enrolledPackage   String?
+  // For sibling-exploded imports (children in master_leads_base.children_details),
+  // contact.firstName/lastName holds the CHILD's name and parentFullName holds
+  // the parent's. Single-child / no-children imports leave parentFullName null
+  // so the card and the modal both show the same name.
+  parentFullName    String?
+  // Marketing campaign that produced this lead (from master_leads_base.campaign_name).
+  // Stored verbatim — display as written, no normalisation. Null = lead didn't
+  // come from a tracked campaign; UI renders "-" in that case.
+  campaignName      String?
+  // Free-text remarks the parent typed on the Wix / trial registration form.
+  // Stored directly on the contact (one per sibling) so the lead-detail card
+  // can show it without a separate note row. Null when none was entered.
+  remarks           String?
+  // Raw lead-source label as it arrived from the source system (e.g.
+  // "roadshow", "trial-class-e form") BEFORE normalizeSourceName() collapsed
+  // it into the canonical bucket on `leadSource`. Lets the lead-detail card
+  // show "Others (roadshow)" instead of a flat "Others". Null when the raw
+  // label matched the bucket or wasn't captured.
+  leadSourceDetail  String?
   childName1        String?
   childAge1         String?
   childName2        String?
@@ -408,6 +547,13 @@ model crm_contact {
   childAge3         String?
   childName4        String?
   childAge4         String?
+  // Idempotency keys for inbound integration ingest. The pair points back at
+  // the source row in ebrightleads_db (e.g. "meta_leads" + "6625556"). The
+  // composite unique constraint makes it impossible to ingest the same lead
+  // twice — the LISTEN/NOTIFY worker and the polling backstop can race freely
+  // without producing duplicates.
+  externalSourceTable String?
+  externalSourceId    String?
   deletedAt         DateTime?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
@@ -424,6 +570,7 @@ model crm_contact {
   appointments   crm_appointment[]
   automationRuns crm_automation_run[]
 
+  @@unique([tenantId, externalSourceTable, externalSourceId], name: "uq_crm_contact_external_source")
   @@index([tenantId, branchId])
   @@index([tenantId, email])
   @@index([tenantId, phone])
@@ -450,9 +597,13 @@ model crm_opportunity {
   stage         crm_stage          @relation(fields: [stageId], references: [id])
   assignedUser  crm_auth_user?     @relation("AssignedUser", fields: [assignedUserId], references: [id])
   stageHistory  crm_stage_history[]
+  leadTransfers crm_lead_transfer[]
 
   @@index([tenantId, branchId, stageId])
   @@index([tenantId, pipelineId])
+  // Kanban fetches a stage's cards filtered by createdAt and ordered by it —
+  // this covers the per-column query + ORDER BY without a sort step.
+  @@index([tenantId, stageId, createdAt])
   @@map("crm_opportunity")
 }
 
@@ -473,6 +624,29 @@ model crm_stage_history {
 
   @@index([tenantId, opportunityId])
   @@map("crm_stage_history")
+}
+
+model crm_lead_transfer {
+  id                  String   @id @default(uuid())
+  tenantId            String
+  opportunityId       String
+  fromBranchId        String
+  toBranchId          String
+  fromPipelineId      String
+  toPipelineId        String
+  fromStageId         String
+  toStageId           String
+  transferredByUserId String?
+  reason              String
+  transferredAt       DateTime @default(now())
+
+  opportunity   crm_opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  fromBranch    crm_branch      @relation("TransferFrom", fields: [fromBranchId], references: [id])
+  toBranch      crm_branch      @relation("TransferTo",   fields: [toBranchId],   references: [id])
+  transferredBy crm_auth_user?  @relation(fields: [transferredByUserId], references: [id])
+
+  @@index([tenantId, opportunityId])
+  @@map("crm_lead_transfer")
 }
 
 model crm_lead_source {
@@ -658,6 +832,11 @@ enum AutomationTriggerType {
   APPOINTMENT_BOOKED
   CONTACT_REPLIED
   NO_REPLY_AFTER
+  LEAD_TRANSFERRED
+  // Fires when a branch converts an inbound WhatsApp interaction (from the
+  // Opportunities WhatsApp inbox) into a real lead. Contact-centric, so every
+  // action node works the same as NEW_LEAD — but scoped to WhatsApp leads only.
+  WHATSAPP_LEAD
 }
 
 enum AutomationRunStatus {
@@ -794,6 +973,9 @@ model crm_appointment {
   user    crm_auth_user? @relation(fields: [userId], references: [id])
 
   @@index([tenantId, branchId])
+  // Each kanban card looks up its latest "Trial Class" appointment
+  // (WHERE contactId = ? AND title = ? ORDER BY startAt DESC LIMIT 1).
+  @@index([contactId, title, startAt])
   @@map("crm_appointment")
 }
 
@@ -1049,4 +1231,669 @@ model tkt_counter {
   @@unique([tenant_id, platform_id, branch_id, counter_type, year, month, day])
   @@index([tenant_id])
   @@map("tkt_counter")
+}
+
+// ============================================================
+// BRANCH OPERATION DAYS — configurable per-branch operating day flags
+// ============================================================
+
+model BranchOperationDays {
+  id        Int      @id @default(autoincrement())
+  branch    String   @unique
+  wed       Boolean  @default(true)
+  thu       Boolean  @default(true)
+  fri       Boolean  @default(true)
+  sat       Boolean  @default(true)
+  sun       Boolean  @default(true)
+  updatedAt DateTime @updatedAt
+
+  @@map("branch_operation_days")
+}
+
+// ============================================================
+// BRANCH QUOTA — per-branch daily staff quota targets for the
+// branch opening planning heatmap. Defaults to 5 when absent.
+// ============================================================
+
+model BranchQuota {
+  id        Int      @id @default(autoincrement())
+  branch    String   @unique  // branch code e.g. "RBY"
+  wed       Int      @default(5)
+  thu       Int      @default(5)
+  fri       Int      @default(5)
+  sat       Int      @default(5)
+  sun       Int      @default(5)
+  updatedAt DateTime @updatedAt
+
+  @@map("branch_quota")
+}
+
+// ============================================================
+// BURNLIST — weekly snapshots of expired+active students from
+// ebrightleads_db.studentrecords, with editable cta/remarks/done.
+// Each Wednesday a new BurnlistWeek is created and a row is
+// snapshotted per student. Entries store a frozen copy of
+// name/branch/expiry so historical weeks stay stable even when
+// the upstream studentrecords row changes.
+// ============================================================
+
+model BurnlistWeek {
+  id        String   @id @default(cuid())
+  weekKey   String   @unique  // YYYY-MM-DD of the Wednesday, e.g. "2026-05-20"
+  createdAt DateTime @default(now())
+
+  entries   BurnlistEntry[]
+
+  @@map("burnlist_week")
+}
+
+model BurnlistEntry {
+  id              String   @id @default(cuid())
+  weekId          String
+  week            BurnlistWeek @relation(fields: [weekId], references: [id], onDelete: Cascade)
+
+  // Snapshot fields — copied from studentrecords at snapshot time.
+  studentRecordId String
+  studentName     String
+  branch          String   // raw branch code, e.g. "ST"
+  expiryDate      String   // YYYY-MM-DD as Postgres held it
+
+  // Editable action fields. Blank on snapshot; filled in by BMs / user.
+  cta      String   @default("")    // "" | "Extend" | "Archive" | "Renew" | "No Action"
+  remarks  String   @default("")
+  done     Boolean  @default(false)
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([weekId, studentRecordId])
+  @@index([weekId])
+  @@map("burnlist_entry")
+}
+
+// ============================================================
+// ANNUAL SHOWCASE MODULE — showcase_* tables
+// ============================================================
+
+enum ShowcaseEditionStatus {
+  DRAFT
+  REGISTRATION_OPEN
+  TEST_RUN
+  EVENT_ACTIVE
+  POST_EVENT
+  ARCHIVED
+}
+
+enum ShowcaseTaskStatus {
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  DONE
+}
+
+enum ShowcaseTaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum ShowcaseBudgetType {
+  REVENUE
+  EXPENSE
+}
+
+enum ShowcaseBudgetItemStatus {
+  PENDING
+  APPROVED
+  PAID
+  REJECTED
+}
+
+enum ShowcaseSponsorStatus {
+  PROSPECT
+  CONTACTED
+  NEGOTIATING
+  CONFIRMED
+  DECLINED
+  LEAD
+  MEETING
+  MOU_SIGNED
+  FULFILLED
+}
+
+model ShowcaseEdition {
+  id                   String                @id @default(cuid())
+  name                 String
+  theme                String
+  status               ShowcaseEditionStatus @default(DRAFT)
+  startDate            DateTime?
+  endDate              DateTime?
+  venueName            String?
+  venueAddress         String?
+  participantTarget    Int                   @default(0)
+  profitabilityTarget  Float                 @default(0)
+  registrationDeadline DateTime?
+  testRunDate          DateTime?
+  currency             String                @default("MYR")
+  isActive             Boolean               @default(false)
+  departmentLeads      Json?
+  goodieBagChecklist      Json?
+  logisticsData           Json?
+  sponsorPackages         Json?
+  photographerGuidelines  Json?
+  pressCoverage           Json?
+  photoDistribution       Json?
+  scoringCriteria         Json?
+  stageChecklist          Json?
+  youthpreneurLayout      Json?
+  waitlistEnabled         Boolean               @default(false)
+  waitlistCount           Int                   @default(0)
+  createdAt               DateTime              @default(now())
+  updatedAt               DateTime              @updatedAt
+
+  members       ShowcaseMember[]
+  participants  ShowcaseParticipant[]
+  categories    ShowcaseCategory[]
+  feeWaves      ShowcaseFeeWave[]
+  tasks         ShowcaseTask[]
+  budgetItems   ShowcaseBudgetItem[]
+  sponsors      ShowcaseSponsor[]
+  announcements       ShowcaseAnnouncement[]
+  postMortems         ShowcasePostMortem[]
+  manpower            ShowcaseManpower[]
+  mediaPosts          ShowcaseMediaPost[]
+  postMortemResponses ShowcasePostMortemResponse[]
+  cueSheetBlocks      ShowcaseCueSheetBlock[]
+  scores              ShowcaseScore[]
+  youthpreneurBooths  ShowcaseYouthpreneurBooth[]
+  waitlist            ShowcaseWaitlist[]
+
+  @@map("showcase_edition")
+}
+
+model ShowcaseMember {
+  id           String   @id @default(cuid())
+  editionId    String
+  edition      ShowcaseEdition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  email        String
+  name         String?
+  allowedUnits String[] @default([])
+  invitedAt    DateTime @default(now())
+
+  @@unique([editionId, email])
+  @@index([editionId])
+  @@map("showcase_member")
+}
+
+model ShowcaseCategory {
+  id          String   @id @default(cuid())
+  editionId   String
+  name        String
+  description String?
+  maxTeamSize Int      @default(4)
+  createdAt   DateTime @default(now())
+
+  edition      ShowcaseEdition      @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  participants ShowcaseParticipant[]
+
+  @@map("showcase_category")
+}
+
+model ShowcaseFeeWave {
+  id        String   @id @default(cuid())
+  editionId String
+  name      String
+  amount    Float
+  deadline  DateTime
+  createdAt DateTime @default(now())
+
+  edition      ShowcaseEdition      @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  participants ShowcaseParticipant[]
+
+  @@map("showcase_fee_wave")
+}
+
+model ShowcaseParticipant {
+  id            String    @id @default(cuid())
+  editionId     String
+  categoryId    String?
+  feeWaveId     String?
+  fullName      String
+  email         String?
+  phone         String?
+  teamName      String?
+  paymentStatus String    @default("UNPAID")
+  dateOfBirth   DateTime?
+  isEbrighter   Boolean   @default(false)
+  parentName    String?
+  parentEmail   String?
+  parentPhone   String?
+  orderNo       Int?
+  paymentLog    Json?
+  faStudentId   String?
+  emailSentAt   DateTime?
+  checkpoints   Json      @default("[]")
+  registeredAt  DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  edition  ShowcaseEdition   @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  category ShowcaseCategory? @relation(fields: [categoryId], references: [id])
+  feeWave  ShowcaseFeeWave?  @relation(fields: [feeWaveId], references: [id])
+  scores   ShowcaseScore[]
+
+  @@index([editionId])
+  @@map("showcase_participant")
+}
+
+model ShowcaseTask {
+  id          String               @id @default(cuid())
+  editionId   String
+  unit        String
+  title       String
+  description String?
+  status      ShowcaseTaskStatus   @default(TODO)
+  priority    ShowcaseTaskPriority @default(MEDIUM)
+  assigneeId  Int?
+  createdById Int?
+  dueDate     DateTime?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  edition   ShowcaseEdition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  assignee  User?           @relation("ShowcaseTaskAssignee", fields: [assigneeId], references: [id])
+  createdBy User?           @relation("ShowcaseTaskCreator", fields: [createdById], references: [id])
+
+  @@index([editionId, unit])
+  @@map("showcase_task")
+}
+
+model ShowcaseBudgetItem {
+  id           String                  @id @default(cuid())
+  editionId    String
+  unit         String
+  type         ShowcaseBudgetType
+  description  String
+  amount       Float
+  status       ShowcaseBudgetItemStatus @default(PENDING)
+  approvedById Int?
+  approvedAt   DateTime?
+  createdAt    DateTime                @default(now())
+  updatedAt    DateTime                @updatedAt
+
+  edition    ShowcaseEdition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  approvedBy User?           @relation("ShowcaseBudgetApprover", fields: [approvedById], references: [id])
+
+  @@index([editionId])
+  @@map("showcase_budget_item")
+}
+
+model ShowcaseSponsor {
+  id             String                @id @default(cuid())
+  editionId      String
+  companyName    String
+  contactName    String?
+  contactEmail   String?
+  contactPhone   String?
+  packageType    String?
+  amount         Float                 @default(0)
+  pipelineStatus ShowcaseSponsorStatus @default(PROSPECT)
+  notes          String?
+  isVVIP         Boolean               @default(false)
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  edition     ShowcaseEdition         @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  outreachLog ShowcaseSponsorOutreach[]
+
+  @@index([editionId])
+  @@map("showcase_sponsor")
+}
+
+model ShowcaseAnnouncement {
+  id          String   @id @default(cuid())
+  editionId   String
+  title       String
+  body        String
+  targetUnits String[] @default([])
+  authorId    Int?
+  createdAt   DateTime @default(now())
+
+  edition ShowcaseEdition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  author  User?           @relation("ShowcaseAnnouncementAuthor", fields: [authorId], references: [id])
+
+  @@index([editionId])
+  @@map("showcase_announcement")
+}
+
+model ShowcasePostMortem {
+  id          String   @id @default(cuid())
+  editionId   String
+  unit        String
+  highlights  String?
+  lowlights   String?
+  suggestions String?
+  authorId    Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  edition ShowcaseEdition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  author  User?           @relation("ShowcasePostMortemAuthor", fields: [authorId], references: [id])
+
+  @@index([editionId])
+  @@map("showcase_post_mortem")
+}
+
+model ShowcaseManpower {
+  id        String          @id @default(cuid())
+  editionId String
+  edition   ShowcaseEdition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  unit      String
+  type      String
+  name      String
+  role      String
+  phone     String?
+  email     String?
+  shift     String?
+  day       String?
+  status    String          @default("CONFIRMED")
+  notes     String?
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  @@index([editionId, unit])
+  @@index([type])
+  @@map("showcase_manpower")
+}
+
+model ShowcaseSponsorOutreach {
+  id           String          @id @default(cuid())
+  sponsorId    String
+  sponsor      ShowcaseSponsor @relation(fields: [sponsorId], references: [id], onDelete: Cascade)
+  type         String
+  date         DateTime
+  outcome      String?
+  followUpDate DateTime?
+  loggedById   Int?
+  loggedBy     User?           @relation("OutreachLogger", fields: [loggedById], references: [id])
+  createdAt    DateTime        @default(now())
+
+  @@index([sponsorId])
+  @@map("showcase_sponsor_outreach")
+}
+
+model ShowcaseMediaPost {
+  id          String          @id @default(cuid())
+  editionId   String
+  edition     ShowcaseEdition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  platform    String
+  caption     String?
+  mediaType   String
+  scheduledAt DateTime?
+  publishedAt DateTime?
+  status      String          @default("DRAFT")
+  link        String?
+  notes       String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([editionId])
+  @@map("showcase_media_post")
+}
+
+model ShowcasePostMortemResponse {
+  id              String          @id @default(cuid())
+  editionId       String
+  edition         ShowcaseEdition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  unit            String
+  submittedById   Int?
+  submittedBy     User?           @relation("PostMortemResponder", fields: [submittedById], references: [id])
+  wentWell        String?
+  didNotGoWell    String?
+  improvements    String?
+  recommendations String?
+  rating          Int?
+  submittedAt     DateTime        @default(now())
+
+  @@unique([editionId, unit])
+  @@index([editionId])
+  @@map("showcase_post_mortem_response")
+}
+
+model ShowcaseCueSheetBlock {
+  id           String          @id @default(cuid())
+  editionId    String
+  edition      ShowcaseEdition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  dayNumber    Int
+  order        Int
+  title        String
+  type         String
+  startTime    String
+  durationMins Int
+  pic          String?
+  status       String          @default("UPCOMING")
+  notes        String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  @@index([editionId, dayNumber])
+  @@map("showcase_cue_sheet_block")
+}
+
+model ShowcaseScore {
+  id             String              @id @default(cuid())
+  editionId      String
+  edition        ShowcaseEdition     @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  participantId  String
+  participant    ShowcaseParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  judgeName      String
+  criteriaScores Json
+  total          Float
+  locked         Boolean             @default(false)
+  submittedAt    DateTime            @default(now())
+
+  @@index([editionId])
+  @@index([participantId])
+  @@map("showcase_score")
+}
+
+model ShowcaseYouthpreneurBooth {
+  id            String          @id @default(cuid())
+  editionId     String
+  edition       ShowcaseEdition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  boothNumber   String?
+  businessName  String
+  ownerName     String
+  ownerAge      Int?
+  category      String?
+  description   String?
+  status        String          @default("PENDING")
+  boothSize     String?
+  specialNeeds  String?
+  parentName    String?
+  parentContact String?
+  products      ShowcaseYouthpreneurProduct[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@index([editionId])
+  @@map("showcase_youthpreneur_booth")
+}
+
+model ShowcaseYouthpreneurProduct {
+  id          String                    @id @default(cuid())
+  boothId     String
+  booth       ShowcaseYouthpreneurBooth @relation(fields: [boothId], references: [id], onDelete: Cascade)
+  name        String
+  price       Float?
+  description String?
+  createdAt   DateTime                  @default(now())
+
+  @@index([boothId])
+  @@map("showcase_youthpreneur_product")
+}
+
+model ShowcaseWaitlist {
+  id        String          @id @default(cuid())
+  editionId String
+  edition   ShowcaseEdition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  name      String
+  email     String
+  phone     String?
+  createdAt DateTime        @default(now())
+
+  @@index([editionId])
+  @@map("showcase_waitlist")
+}
+
+// ============================================================
+// RECRUITMENT MODULE (HR)
+// Additive tables for the HR Recruitment kanban. Mirrors the CRM kanban shape
+// but with its own tables and a 29-stage HR pipeline. Recruits are imported
+// from the GHL "HR Recruitment" export; a recruit that matches a BranchStaff
+// row added since the cutoff is flagged `hired` and carries `branchStaffId`
+// (stored as a plain id — no FK relation, so the existing BranchStaff model is
+// not modified). Lives in this (portal) DB so the hired-match is a same-DB join.
+// ============================================================
+
+model RecStage {
+  id        String   @id @default(uuid())
+  name      String
+  shortCode String   @unique
+  order     Int
+  color     String   @default("slate")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  recruits    RecRecruit[]
+  historyFrom RecStageHistory[] @relation("RecFromStage")
+  historyTo   RecStageHistory[] @relation("RecToStage")
+
+  @@index([order])
+  @@map("rec_stage")
+}
+
+model RecRecruit {
+  id               String    @id @default(uuid())
+  name             String
+  email            String?
+  phone            String?
+  source           String?
+  position         String?   // "Working Position Oppo" from the GHL export
+  branch           String?   // branch tag from GHL (e.g. "st", "kd")
+  stageId          String
+  // Hired-match to BranchStaff (added since the import cutoff). Set by the
+  // import's email/phone/name cross-check; null/false until matched.
+  hired            Boolean   @default(false)
+  branchStaffId    Int?
+  // Provenance from the GHL export so re-imports are idempotent.
+  ghlOpportunityId String?   @unique
+  ghlContactId     String?
+  ghlCreatedAt     DateTime?
+  // Link to ebright_hrfs.career_applications.id — set when a candidate card is
+  // ingested from a "Join the Team" form submission. Unique so the reconcile
+  // never creates a second card for the same application.
+  applicationId    Int?      @unique
+  // ── Training-day attendance workflow ──────────────────────────────────────
+  // When a card enters a training stage (TR1/TR2/TR3) we stamp trainingEnteredAt
+  // and null trainingConfirmedAt. Once 3 days pass without a confirmation, HR is
+  // prompted (dashboard popup) to confirm attendance; confirming stamps
+  // trainingConfirmedAt and (for TR1/TR2) advances to the next training day.
+  trainingEnteredAt   DateTime?
+  trainingConfirmedAt DateTime?
+  // Set when a training no-show is parked in Reschedule: rescheduleReturnCode is
+  // the training stage to send them back to, rescheduleAt the date to do it on.
+  // A background reconcile moves them back when rescheduleAt arrives.
+  rescheduleAt         DateTime?
+  rescheduleReturnCode String?
+  // Archived cards are hidden from the active board but still viewable via the
+  // "Show archived" toggle (and restorable). Distinct from deletedAt: archiving
+  // is for parking leads that aren't backed by a real applications record.
+  archivedAt       DateTime?
+  deletedAt        DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  stage     RecStage          @relation(fields: [stageId], references: [id])
+  history   RecStageHistory[]
+  interview RecInterview?
+  resumes   RecResume[]
+
+  @@index([stageId])
+  @@index([hired])
+  @@index([branchStaffId])
+  @@map("rec_recruit")
+}
+
+model RecStageHistory {
+  id          String   @id @default(uuid())
+  recruitId   String
+  fromStageId String?
+  toStageId   String
+  changedBy   String?
+  note        String?
+  changedAt   DateTime @default(now())
+
+  recruit   RecRecruit @relation(fields: [recruitId], references: [id], onDelete: Cascade)
+  fromStage RecStage?  @relation("RecFromStage", fields: [fromStageId], references: [id])
+  toStage   RecStage   @relation("RecToStage", fields: [toStageId], references: [id])
+
+  @@index([recruitId])
+  @@map("rec_stage_history")
+}
+
+model RecInterview {
+  id          String   @id @default(uuid())
+  recruitId   String   @unique
+  // Stored naive-KL-as-UTC (the HR picks 03:00 PM and we persist UTC hour 15),
+  // matching the trial-appointment convention elsewhere in the portal so the
+  // Calendar grid reads back via getUTC* without a double timezone shift.
+  scheduledAt DateTime
+  location    String?
+  note        String?
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  recruit RecRecruit @relation(fields: [recruitId], references: [id], onDelete: Cascade)
+
+  @@index([scheduledAt])
+  @@map("rec_interview")
+}
+
+model RecResume {
+  id         String   @id @default(uuid())
+  recruitId  String
+  fileName   String
+  mimeType   String   @default("application/octet-stream")
+  sizeBytes  Int      @default(0)
+  // Binary lives in ONE place: the DB (data) for legacy/unconfigured envs, or
+  // Google Drive (driveFileId) once the recruitment Drive folder is set. The
+  // API route streams whichever is present, keeping access auth-gated either way.
+  data          Bytes?
+  driveFileId   String?
+  uploadedBy String?
+  uploadedAt DateTime @default(now())
+
+  recruit RecRecruit @relation(fields: [recruitId], references: [id], onDelete: Cascade)
+
+  @@index([recruitId])
+  @@index([uploadedAt])
+  @@map("rec_resume")
+}
+
+// Editable rich-text body for each Academy syllabus chapter page.
+// Keyed by (level, grade, chapter) so one row backs one URL like
+// /academy/syllabus/jnr/3/5. Stored as Tiptap JSON.
+model academy_chapter_content {
+  id        String   @id @default(uuid())
+  level     String   // "jnr" | "mdr" | "snr"
+  grade     Int      // 1..8
+  chapter   Int      // 1..12
+  content   Json     // Tiptap JSONContent
+  updatedBy String?  // user email (best-effort attribution)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([level, grade, chapter])
+  @@map("academy_chapter_content")
 }

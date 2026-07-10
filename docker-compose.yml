@@ -1,0 +1,34 @@
+services:
+  # Web container — Next.js on :3003 (host) → :3000 (container)
+  osc:
+    image: ebright-osc:latest
+    build: .
+    ports:
+      - "3003:3000"
+    env_file:
+      - .env
+    restart: unless-stopped
+    networks:
+      - ebright-net
+
+  # Background worker — same image as the web container, just a different
+  # CMD. Runs `tsx server/workers/index.ts`, which starts:
+  #   - leadIngestWorker (LISTEN ebrightleads_db.lead_inserted + 5-min backstop)
+  #   - BullMQ workers when Redis is reachable (automation, reminder, …)
+  #
+  # Shares ebright-osc:latest so the worker doesn't re-run `npm ci` /
+  # `next build`. Compose builds once via the osc service, then this
+  # service starts from the same tagged image.
+  worker:
+    image: ebright-osc:latest
+    command: npm run worker
+    env_file:
+      - .env
+    restart: unless-stopped
+    depends_on:
+      - osc
+    networks:
+      - ebright-net
+
+networks:
+  ebright-net:

@@ -1,0 +1,44 @@
+name: Fix staging working copy
+
+# One-shot manual workflow to clean up the staging server's working tree
+# when a `git pull` is being blocked by uncommitted local changes (e.g. a
+# dirty package-lock.json from a manual `npm install` on the server).
+#
+# How to run:
+#   GitHub → Actions → "Fix staging working copy" → Run workflow.
+#
+# After it goes green, re-run the failed staging deploy from the Actions tab.
+# Safe to delete this file once the deploy script is hardened to use
+# `git fetch && git reset --hard origin/staging` instead of `git pull`.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reset staging working copy to origin/staging
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 103.209.156.225
+          username: deploy
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            set -e
+            REPO=$(find /home/deploy -maxdepth 4 -type d -name ".git" 2>/dev/null | head -1 | xargs -r dirname)
+            if [ -z "$REPO" ]; then
+              echo "ERROR: no git repo found under /home/deploy"
+              exit 1
+            fi
+            echo "Found repo at: $REPO"
+            cd "$REPO"
+            echo "===== status BEFORE ====="
+            git status
+            echo "===== resetting to origin/staging ====="
+            git fetch origin staging
+            git reset --hard origin/staging
+            echo "===== status AFTER ====="
+            git status
+            git log --oneline -3

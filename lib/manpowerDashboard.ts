@@ -8,6 +8,7 @@ import {
   isOpeningClosingSlot,
   getTimeSlotsForDay,
   getWorkingDaysForBranch,
+  MAX_COACH_COLUMNS,
 } from '@/lib/manpowerUtils';
 
 export type WeekRange = {
@@ -40,7 +41,9 @@ export function getWeekRanges(today: Date): WeekRanges {
 
 export type SelectionsMap = Record<string, string>;
 
-const COACH_COLUMN_IDS = ['coach1', 'coach2', 'coach3', 'coach4', 'coach5'] as const;
+// Covers the largest coach grid any branch/day uses (Online Friday has 8);
+// branches with fewer coach columns simply have no keys for the higher ids.
+const COACH_COLUMN_IDS = Array.from({ length: MAX_COACH_COLUMNS }, (_, i) => `coach${i + 1}`);
 
 function isFilled(value: string | undefined): boolean {
   if (!value) return false;
@@ -95,7 +98,7 @@ export function isWeekPlanned(schedule: SchedulePlanned): boolean {
   const { selections } = schedule;
   if (!selections || typeof selections !== 'object') return false;
   for (const key of Object.keys(selections)) {
-    if (!/-coach[1-5]$/.test(key)) continue;
+    if (!/-coach[1-8]$/.test(key)) continue;
     if (isFilled(selections[key])) return true;
   }
   return false;

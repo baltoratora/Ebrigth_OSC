@@ -1,9 +1,16 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { BRANCH_OPTIONS, ROLE_OPTIONS, CONTRACT_OPTIONS, GENDER_OPTIONS } from "@/lib/constants";
+import { BRANCH_OPTIONS, DEPARTMENT_OPTIONS, ROLE_OPTIONS, CONTRACT_OPTIONS, GENDER_OPTIONS } from "@/lib/constants";
 import EmployeeIdInput from "@/app/components/EmployeeIdInput";
 import { composeEmployeeId, isValidSuffix } from "@/lib/employeeId";
+
+// Department applies only to HQ staff; Rate only to part-time coaches (paid
+// hourly). Both fields are conditionally shown based on these checks.
+const isPartTimeCoach = (role?: string | null) => {
+  const r = (role ?? "").trim().toUpperCase();
+  return r === "PT COACH" || r.startsWith("PT - COACH");
+};
 
 interface RegistrationFormProps {
   onSuccess?: () => void;
@@ -37,7 +44,8 @@ export default function RegistrationForm({
     Bank_Account: "",
     University: "",
     branch: "HQ",
-    role: "PT - Coach EGR",
+    department: "",
+    role: "",
     contract: "",
     startDate: "",
     endDate: "",
@@ -79,8 +87,10 @@ export default function RegistrationForm({
     if (!formData.phone.trim()) newErrors.phone = "Phone is required";
     if (!isValidPhone(formData.phone)) newErrors.phone = "Invalid phone format";
 
-    if (!empIdPrefix) newErrors.employeeId = "Select a role code";
-    else if (!isValidSuffix(empIdSuffix)) newErrors.employeeId = "Enter exactly 6 digits";
+    // Employee ID is optional, but if a prefix is picked, the suffix must be valid
+    if (empIdPrefix && !isValidSuffix(empIdSuffix)) {
+      newErrors.employeeId = "Enter exactly 6 digits";
+    }
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -99,10 +109,15 @@ export default function RegistrationForm({
   ) => {
     const { name, value } = e.target;
     const uppercaseFields = ["fullName", "nickName", "homeAddress"];
-    setFormData((prev) => ({
-      ...prev,
-      [name]: uppercaseFields.includes(name) ? value.toUpperCase() : value,
-    }));
+    setFormData((prev) => {
+      const next = {
+        ...prev,
+        [name]: uppercaseFields.includes(name) ? value.toUpperCase() : value,
+      };
+      // Department only applies to HQ — clear it when switching to any other branch.
+      if (name === "branch" && value !== "HQ") next.department = "";
+      return next;
+    });
     // Clear error for this field
     if (errors[name]) {
       setErrors((prev) => ({
@@ -125,7 +140,11 @@ export default function RegistrationForm({
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ ...formData, employeeId: composeEmployeeId(empIdPrefix, empIdSuffix) }),
+        body: JSON.stringify(
+          empIdPrefix && isValidSuffix(empIdSuffix)
+            ? { ...formData, employeeId: composeEmployeeId(empIdPrefix, empIdSuffix) }
+            : formData
+        ),
       });
 
       if (!response.ok) {
@@ -163,7 +182,8 @@ export default function RegistrationForm({
         Bank_Account: "",
         University: "",
         branch: "HQ",
-        role: "PT - Coach EGR",
+        department: "",
+        role: "",
         contract: "",
         startDate: "",
         endDate: "",
@@ -376,12 +396,13 @@ export default function RegistrationForm({
                 onSuffixChange={(v) => { setEmpIdSuffix(v); if (errors.employeeId) setErrors((p) => ({ ...p, employeeId: "" })); }}
                 error={errors.employeeId}
                 disabled={submitting || isLoading}
+                required={false}
               />
             </div>
 
-            {/* Branch/Dept */}
-            <div className="md:col-span-2">
-              <label className="block text-sm font-medium text-gray-900 mb-1">Branch/Dept</label>
+            {/* Branch */}
+            <div className={formData.branch === "HQ" ? "" : "md:col-span-2"}>
+              <label className="block text-sm font-medium text-gray-900 mb-1">Branch</label>
               <select
                 name="branch"
                 value={formData.branch}
@@ -394,6 +415,24 @@ export default function RegistrationForm({
                 ))}
               </select>
             </div>
+
+            {/* Department — only relevant for HQ staff */}
+            {formData.branch === "HQ" && (
+              <div>
+                <label className="block text-sm font-medium text-gray-900 mb-1">Department</label>
+                <select
+                  name="department"
+                  value={formData.department}
+                  onChange={handleChange}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
+                  disabled={submitting || isLoading}
+                >
+                  {DEPARTMENT_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             {/* Role */}
             <div className="md:col-span-2">
@@ -428,7 +467,12 @@ export default function RegistrationForm({
                           <li
                             key={o.value}
                             onClick={() => {
-                              setFormData((prev) => ({ ...prev, role: o.value }));
+                              setFormData((prev) => ({
+                                ...prev,
+                                role: o.value,
+                                // Rate only applies to part-time coaches; drop any stale value otherwise.
+                                rate: isPartTimeCoach(o.value) ? prev.rate : "",
+                              }));
                               setRoleOpen(false);
                               setRoleSearch("");
                             }}
@@ -499,19 +543,21 @@ export default function RegistrationForm({
               />
             </div>
 
-            {/* Rate */}
-            <div>
-              <label className="block text-sm font-medium text-gray-900 mb-1">Rate</label>
-              <input
-                type="number"
-                name="rate"
-                value={formData.rate}
-                onChange={handleChange}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
-                placeholder="Enter rate"
-                disabled={submitting || isLoading}
-              />
-            </div>
+            {/* Rate — only for part-time coaches (paid hourly) */}
+            {isPartTimeCoach(formData.role) && (
+              <div>
+                <label className="block text-sm font-medium text-gray-900 mb-1">Rate</label>
+                <input
+                  type="number"
+                  name="rate"
+                  value={formData.rate}
+                  onChange={handleChange}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
+                  placeholder="Enter rate"
+                  disabled={submitting || isLoading}
+                />
+              </div>
+            )}
 
             <div>
               <label className="block text-sm font-medium text-gray-900 mb-1">
@@ -592,15 +638,15 @@ export default function RegistrationForm({
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-900 mb-1">
-                Emergency Contact Email
+                Emergency Contact Name
               </label>
               <input
-                type="email"
+                type="text"
                 name="Emc_Email"
                 value={formData.Emc_Email}
                 onChange={handleChange}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
-                placeholder="Enter emergency contact email"
+                placeholder="Enter emergency contact name"
                 disabled={submitting || isLoading}
               />
             </div>

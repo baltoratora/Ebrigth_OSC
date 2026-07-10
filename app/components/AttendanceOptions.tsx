@@ -4,16 +4,19 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import Sidebar from "./Sidebar";
+import { canAccess } from "@/lib/dashboard-access";
+import { useMyPermissions } from "@/lib/use-my-permissions";
 
 const attendanceItems = [
-  { name: "Summary", href: "/attendance/summary", icon: "📋", code: "3.4.1" },
-  { name: "Report", href: "/attendance/report", icon: "📄", code: "3.4.2" },
-  { name: "Appeal", href: "/attendance/appeal", icon: "⚖️", code: "3.4.3" },
-  { name: "Leave", href: "/attendance/leave", icon: "🏖️", code: "3.4.4" },
+  { key: "hrms.attendance.summary", name: "Summary", href: "/attendance/summary", icon: "📋", code: "3.4.1" },
+  { key: "hrms.attendance.report",  name: "Report",  href: "/attendance/report",  icon: "📄", code: "3.4.2" },
+  { key: "hrms.attendance.appeal",  name: "Appeal",  href: "/attendance/appeal",  icon: "⚖️", code: "3.4.3" },
+  { key: "hrms.attendance.leave",   name: "Leave",   href: "/attendance/leave",   icon: "🏖️", code: "3.4.4" },
 ];
 
 export default function AttendanceOptions() {
   const router = useRouter();
+  const { role, overrides } = useMyPermissions();
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   return (
@@ -34,7 +37,7 @@ export default function AttendanceOptions() {
 
         <main className="max-w-5xl mx-auto px-4 py-12">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-            {attendanceItems.map((item) => (
+            {attendanceItems.filter((item) => canAccess(role, item.key, overrides)).map((item) => (
               <Link key={item.name} href={item.href}>
                 <div className="bg-white rounded-xl shadow-md transition-all p-12 flex flex-col items-center border-t-4 border-blue-500 hover:shadow-2xl hover:scale-105 cursor-pointer">
                   <span className="text-6xl mb-4">{item.icon}</span>

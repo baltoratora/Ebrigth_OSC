@@ -6,13 +6,16 @@ export const BRANCH_LIST = [
   'Denai Alam', 'Bandar Baru Bangi', 'Danau Kota', 'Shah Alam',
   'Bandar Tun Hussein Onn', 'Eco Grandeur', 'Bandar Seri Putra',
   'Bandar Rimbayu', 'Taman Sri Gombak', 'Kota Warisan', 'Kajang',
+  'Tropicana Sungai Buloh',
 ] as const;
 
 export function normalizeLocation(raw: string | null): string {
   if (!raw) return 'Unknown';
   const clean = raw.trim().replace(/[\r\n]+/g, ' ').trim();
   const key   = clean.toLowerCase();
-  if (key.includes('hq')) return 'HQ';
+  // All HQ codes — internal departments that are physically at HQ
+  const HQ_CODES = new Set(['hq', 'od', 'op', 'ops', 'ceo', 'mkt', 'acd', 'iop', 'fnc', 'fin', 'hr', 'hr/iop', 'marketing']);
+  if (HQ_CODES.has(key) || key.includes('hq')) return 'HQ';
   const MAP: Record<string, string> = {
     'onl': 'Online', 'online': 'Online',
     'st': 'Subang Taipan', 'subang taipan': 'Subang Taipan', 'subang taipan & ampang': 'Subang Taipan',
@@ -22,7 +25,7 @@ export function normalizeLocation(raw: string | null): string {
     'pjy': 'Putrajaya', 'putrajaya': 'Putrajaya',
     'amp': 'Ampang', 'ampang': 'Ampang',
     'cjy': 'Cyberjaya', 'cyberjaya': 'Cyberjaya',
-    'klg': 'Klang', 'klang': 'Klang', 'kw': 'Klang',
+    'klg': 'Klang', 'klang': 'Klang', 'kw': 'Kota Warisan',
     'da': 'Denai Alam', 'denai alam': 'Denai Alam',
     'bbb': 'Bandar Baru Bangi',
     'dk': 'Danau Kota',
@@ -32,24 +35,68 @@ export function normalizeLocation(raw: string | null): string {
     'bsp': 'Bandar Seri Putra',
     'rby': 'Bandar Rimbayu',
     'tsg': 'Taman Sri Gombak',
-    'ktg': 'Kota Warisan', 'kota warisan': 'Kota Warisan',
+    'tsb': 'Tropicana Sungai Buloh', 'tropicana sungai buloh': 'Tropicana Sungai Buloh',
+    'ktg': 'Kajang TTDI Groove', 'kajang ttdi groove': 'Kajang TTDI Groove', 'kota warisan': 'Kota Warisan',
     'kajang': 'Kajang',
-    'marketing': 'HQ',
+    'dpu': 'Dataran Puchong Utama', 'dataran puchong utama': 'Dataran Puchong Utama',
   };
   return MAP[key] ?? clean;
 }
 
+/**
+ * Compare two branch labels for equivalence, tolerating the code-vs-full-name
+ * drift across the app (User.branchName holds "Klang" / "Rimbayu" while
+ * BranchStaff.branch holds short codes "KLG" / "RBY"). Accepts an exact match,
+ * a match after normalizeLocation on both sides, or a substring match either
+ * way ("Rimbayu" ⊂ "Bandar Rimbayu").
+ */
+export function branchesMatch(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  const norm = (v: string) => v.toLowerCase().trim();
+  const na = norm(a);
+  const nb = norm(b);
+  if (na === nb) return true;
+  const fa = norm(normalizeLocation(a));
+  const fb = norm(normalizeLocation(b));
+  if (fa === fb) return true;
+  if (fa && fb && (fa.includes(fb) || fb.includes(fa))) return true;
+  return false;
+}
+
 // ─── Role / branch / contract options ─────────────────────────────────────────
 
+export const DEPARTMENT_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "",       label: "— None —" },
+  { value: "CEO",    label: "CEO" },
+  { value: "OD",     label: "OD" },
+  { value: "OP",     label: "OP" },
+  { value: "MKT",    label: "MKT" },
+  { value: "ACD",    label: "ACD" },
+  { value: "FIN",    label: "FIN" },
+  { value: "HR/IOP", label: "HR/IOP" },
+];
+
+// Canonical job-role values stored in BranchStaff.role and shown in the
+// employee form (add + edit). Standardised on a single convention: employment
+// prefix + single space + role, no hyphens, short codes. Keep this list and
+// the lib/roles.ts auth mapping (authRoleForStaffRole) in sync.
 export const ROLE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "CEO", label: "CEO" },
   { value: "FT HOD", label: "FT HOD" },
   { value: "FT EXEC", label: "FT EXEC" },
-  { value: "FT - Coach", label: "FT - Coach" },
-  { value: "PT - Coach", label: "PT - Coach" },
+  { value: "FT Coach", label: "FT Coach" },
+  { value: "PT Coach", label: "PT Coach" },
   { value: "BM", label: "BM" },
   { value: "INT", label: "INT" },
 ];
+
+// Coach roles, used by Academy-scoped filters. The legacy hyphenated forms
+// ("FT - Coach" / "PT - Coach") are included so those filters keep matching any
+// rows that predate the role-naming standardisation migration. Once the
+// migration is confirmed across all environments the legacy entries can be
+// dropped, leaving just the canonical values.
+export const COACH_ROLES = ["FT Coach", "PT Coach"] as const;
+export const COACH_ROLES_WITH_LEGACY = ["FT Coach", "PT Coach", "FT - Coach", "PT - Coach"] as const;
 
 export const CONTRACT_OPTIONS = [
   { value: "", label: "None" },
@@ -57,16 +104,11 @@ export const CONTRACT_OPTIONS = [
   { value: "12 MONTH", label: "12 Month" },
   { value: "15 MONTH", label: "15 Month" },
   { value: "18 MONTH", label: "18 Month" },
+  { value: "PERMANENT", label: "Permanent" },
 ];
 
 export const BRANCH_OPTIONS = [
   { value: "HQ", label: "HQ" },
-  { value: "OD", label: "OD" },
-  { value: "MKT", label: "MKT" },
-  { value: "ACD", label: "ACD" },
-  { value: "IOP", label: "IOP" },
-  { value: "FNC", label: "FNC" },
-  { value: "HR", label: "HR" },
   { value: "ONL", label: "ONL" },
   { value: "ST", label: "ST" },
   { value: "SP", label: "SP" },
@@ -88,6 +130,7 @@ export const BRANCH_OPTIONS = [
   { value: "KW", label: "KW" },
   { value: "KTG", label: "KTG" },
   { value: "DPU", label: "DPU" },
+  { value: "TSB", label: "TSB" },
 ];
 
 export const GENDER_OPTIONS = [

@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Sidebar from "./Sidebar";
 import { ALL_ROLES } from "@/lib/roles";
+import { DASHBOARD_TREE, canAccess, parseOverrides, type DashboardOverrides, type DashboardNode } from "@/lib/dashboard-access";
 
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -14,8 +15,9 @@ interface UserAccount {
   email: string;
   role: string;
   branchName: string | null;
-  status: string;
   createdAt: string;
+  lastLoggedInAt: string | null;
+  dashboardOverrides?: unknown;
 }
 
 type ModalMode = "create" | "edit" | "permission" | null;
@@ -31,6 +33,17 @@ function formatDate(iso: string) {
     day: "2-digit",
     month: "short",
     year: "numeric",
+  });
+}
+
+function formatLastLogin(iso: string | null) {
+  if (!iso) return "Never";
+  return new Date(iso).toLocaleString("en-MY", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
   });
 }
 
@@ -53,19 +66,116 @@ function RoleBadge({ role }: { role: string }) {
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  return status === "ACTIVE" ? (
-    <span className="flex items-center gap-1.5 text-xs font-semibold text-green-700">
-      <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
-      Active
-    </span>
-  ) : (
-    <span className="flex items-center gap-1.5 text-xs font-semibold text-gray-400">
-      <span className="w-1.5 h-1.5 rounded-full bg-gray-400 inline-block" />
-      Inactive
-    </span>
+// ─── Permission editor (editable tree) ───────────────────────────────────────
+//
+// Renders the dashboard tree from lib/dashboard-access.ts with a checkbox per
+// node. Each toggle writes an explicit override on top of the role default.
+// "Reset to role default" clears every override. Saved as a JSON column on
+// the User row — see /api/users PATCH update-permissions.
+
+// Every key in `node` plus all of its descendants, at any depth.
+function subtreeKeys(node: DashboardNode): string[] {
+  return [node.key, ...(node.children ?? []).flatMap(subtreeKeys)];
+}
+
+function TreeRow({
+  node,
+  role,
+  overrides,
+  onChange,
+  depth,
+}: {
+  node: DashboardNode;
+  role: string;
+  overrides: DashboardOverrides;
+  onChange: (next: DashboardOverrides) => void;
+  depth: number;
+}) {
+  const children = node.children ?? [];
+  const allowed = canAccess(role, node.key, overrides);
+  const descendantKeys = subtreeKeys(node).slice(1); // excludes node.key itself
+  const someDescendantAllowed = descendantKeys.some((k) => canAccess(role, k, overrides));
+  const allDescendantsAllowed = descendantKeys.length > 0 && descendantKeys.every((k) => canAccess(role, k, overrides));
+  const indeterminate = children.length > 0 && (allowed || someDescendantAllowed) && !(allowed && allDescendantsAllowed);
+  const rowType: "Role Default" | "Custom" = node.key in overrides ? "Custom" : "Role Default";
+
+  // Ticking/unticking a node with children is a bulk action over the whole
+  // subtree (self + every descendant at any depth) — matches admin intuition:
+  // checking "Manpower Planning" should grant all of its sub-pages too.
+  // Leaf nodes just flip their own key.
+  function toggle() {
+    const allOn = allowed && allDescendantsAllowed;
+    const value: "ALLOWED" | "DENIED" = children.length > 0 ? (allOn ? "DENIED" : "ALLOWED") : (allowed ? "DENIED" : "ALLOWED");
+    const next = { ...overrides };
+    for (const k of subtreeKeys(node)) next[k] = value;
+    onChange(next);
+  }
+
+  return (
+    <div style={depth > 0 ? { marginLeft: depth * 24 } : undefined} className={depth === 0 ? "px-3 py-2" : "mt-1"}>
+      <div className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          checked={allowed}
+          ref={(el) => { if (el) el.indeterminate = indeterminate; }}
+          onChange={toggle}
+          className={depth === 0 ? "h-4 w-4 accent-blue-600 cursor-pointer" : "h-3.5 w-3.5 accent-blue-600 cursor-pointer"}
+        />
+        {depth === 0 && <span className="text-base">{node.icon}</span>}
+        <span className={`${depth === 0 ? "text-sm font-semibold" : "text-xs"} flex-1 ${allowed ? (depth === 0 ? "text-gray-800" : "text-gray-700") : "text-gray-400"}`}>
+          {node.label}
+        </span>
+        <span className={`text-[10px] uppercase font-semibold tracking-wider ${rowType === "Custom" ? "text-blue-600" : "text-gray-400"}`}>
+          {rowType}
+        </span>
+      </div>
+      {children.length > 0 && (
+        <div className={depth === 0 ? "ml-7 mt-1 space-y-1" : "space-y-1"}>
+          {children.map((child) => (
+            <TreeRow key={child.key} node={child} role={role} overrides={overrides} onChange={onChange} depth={depth + 1} />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
+
+function PermissionTree({
+  role,
+  overrides,
+  onChange,
+}: {
+  role: string;
+  overrides: DashboardOverrides;
+  onChange: (next: DashboardOverrides) => void;
+}) {
+  return (
+    <div className="border border-gray-200 rounded-lg overflow-hidden">
+      <div className="bg-gray-50 px-3 py-2 border-b border-gray-200 flex items-center justify-between">
+        <span className="text-xs font-semibold uppercase tracking-wider text-gray-600">
+          Dashboard access
+        </span>
+        <button
+          type="button"
+          onClick={() => onChange({})}
+          className="text-[11px] text-blue-600 hover:text-blue-800 hover:underline disabled:opacity-50"
+          disabled={Object.keys(overrides).length === 0}
+        >
+          Reset to role defaults
+        </button>
+      </div>
+      <div className="max-h-80 overflow-y-auto divide-y divide-gray-100">
+        {DASHBOARD_TREE.map((parent) => (
+          <TreeRow key={parent.key} node={parent} role={role} overrides={overrides} onChange={onChange} depth={0} />
+        ))}
+      </div>
+      <div className="px-3 py-2 bg-gray-50 border-t border-gray-200 text-[11px] text-gray-500">
+        Defaults come from the user&apos;s role. Toggling a row marks it <span className="text-blue-600 font-semibold">Custom</span>.
+      </div>
+    </div>
+  );
+}
+
 
 // ─── Modal ────────────────────────────────────────────────────────────────────
 
@@ -86,12 +196,18 @@ function UserModal({ mode, user, onClose, onSaved }: ModalProps) {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  // Per-user dashboard overrides — only used in permission mode. Seeded from
+  // the user row the table already has; we don't re-fetch.
+  const [overrides, setOverrides] = useState<DashboardOverrides>(
+    () => parseOverrides(user?.dashboardOverrides),
+  );
+
   const title =
     mode === "create"
       ? "Add User"
       : mode === "edit"
       ? "Edit User"
-      : "Change Role";
+      : "Manage Permissions";
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -100,15 +216,27 @@ function UserModal({ mode, user, onClose, onSaved }: ModalProps) {
 
     try {
       if (mode === "permission") {
-        // PATCH change-role
-        const res = await fetch("/api/users", {
+        // If role changed, persist that first so role-default lookups on the
+        // server line up with the overrides we're about to write.
+        if (role !== user!.role) {
+          const roleRes = await fetch("/api/users", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: user!.id, action: "change-role", role }),
+          });
+          if (!roleRes.ok) {
+            const d = await roleRes.json();
+            throw new Error(d.error ?? "Failed to change role");
+          }
+        }
+        const permRes = await fetch("/api/users", {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: user!.id, action: "change-role", role }),
+          body: JSON.stringify({ id: user!.id, action: "update-permissions", overrides }),
         });
-        if (!res.ok) {
-          const d = await res.json();
-          throw new Error(d.error ?? "Failed to change role");
+        if (!permRes.ok) {
+          const d = await permRes.json();
+          throw new Error(d.error ?? "Failed to save permissions");
         }
       } else if (mode === "create") {
         if (!password) throw new Error("Password is required");
@@ -145,7 +273,7 @@ function UserModal({ mode, user, onClose, onSaved }: ModalProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+      <div className={`bg-white rounded-2xl shadow-2xl w-full ${mode === "permission" ? "max-w-lg" : "max-w-md"} mx-4 overflow-hidden`}>
         {/* Header */}
         <div className="px-6 py-4 bg-blue-600 flex items-center justify-between">
           <h2 className="text-white font-bold text-lg">{title}</h2>
@@ -178,6 +306,11 @@ function UserModal({ mode, user, onClose, onSaved }: ModalProps) {
               ))}
             </select>
           </div>
+
+          {/* Editable permission tree — only in permission mode */}
+          {mode === "permission" && (
+            <PermissionTree role={role} overrides={overrides} onChange={setOverrides} />
+          )}
 
           {/* Full fields only for create/edit */}
           {mode !== "permission" && (
@@ -285,44 +418,27 @@ export default function AccountManagement() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [filterRole, setFilterRole] = useState("ALL");
-  const [filterStatus, setFilterStatus] = useState("ALL");
 
   const [modalMode, setModalMode] = useState<ModalMode>(null);
   const [selectedUser, setSelectedUser] = useState<UserAccount | null>(null);
-  const [togglingId, setTogglingId] = useState<number | null>(null);
 
   const fetchUsers = useCallback(async () => {
     try {
       const res = await fetch("/api/users");
-      if (!res.ok) throw new Error("Failed to fetch");
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error(`HTTP ${res.status}: ${body}`);
+      }
       const data: UserAccount[] = await res.json();
       setUsers(data);
-    } catch {
-      console.error("Failed to load users");
+    } catch (err) {
+      console.error("Failed to load users:", err);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => { fetchUsers(); }, [fetchUsers]);
-
-  async function handleToggleStatus(user: UserAccount) {
-    setTogglingId(user.id);
-    try {
-      const res = await fetch("/api/users", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: user.id, action: "toggle-status" }),
-      });
-      if (!res.ok) throw new Error("Failed");
-      const updated: UserAccount = await res.json();
-      setUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
-    } catch {
-      alert("Failed to update status.");
-    } finally {
-      setTogglingId(null);
-    }
-  }
 
   function openModal(mode: ModalMode, user: UserAccount | null = null) {
     setSelectedUser(user);
@@ -346,9 +462,14 @@ export default function AccountManagement() {
       (u.name ?? "").toLowerCase().includes(search.toLowerCase()) ||
       u.email.toLowerCase().includes(search.toLowerCase());
     const matchRole = filterRole === "ALL" || u.role === filterRole;
-    const matchStatus = filterStatus === "ALL" || u.status === filterStatus;
-    return matchSearch && matchRole && matchStatus;
+    return matchSearch && matchRole;
   });
+
+  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const activeRecently = users.filter(
+    (u) => u.lastLoggedInAt && new Date(u.lastLoggedInAt).getTime() >= sevenDaysAgo,
+  ).length;
+  const neverLoggedIn = users.filter((u) => !u.lastLoggedInAt).length;
 
   return (
     <div className="flex min-h-screen bg-blue-50">
@@ -384,16 +505,12 @@ export default function AccountManagement() {
               <p className="text-sm text-gray-500 mt-1 font-medium">Total Accounts</p>
             </div>
             <div className="bg-white rounded-xl shadow-md p-6 flex flex-col items-center">
-              <p className="text-4xl font-bold text-green-600">
-                {users.filter((u) => u.status === "ACTIVE").length}
-              </p>
-              <p className="text-sm text-gray-500 mt-1 font-medium">Active</p>
+              <p className="text-4xl font-bold text-green-600">{activeRecently}</p>
+              <p className="text-sm text-gray-500 mt-1 font-medium">Logged in (last 7 days)</p>
             </div>
             <div className="bg-white rounded-xl shadow-md p-6 flex flex-col items-center">
-              <p className="text-4xl font-bold text-gray-400">
-                {users.filter((u) => u.status === "INACTIVE").length}
-              </p>
-              <p className="text-sm text-gray-500 mt-1 font-medium">Inactive</p>
+              <p className="text-4xl font-bold text-gray-400">{neverLoggedIn}</p>
+              <p className="text-sm text-gray-500 mt-1 font-medium">Never logged in</p>
             </div>
           </div>
 
@@ -416,15 +533,6 @@ export default function AccountManagement() {
                 <option key={r} value={r}>{r.replace(/_/g, " ")}</option>
               ))}
             </select>
-            <select
-              value={filterStatus}
-              onChange={(e) => setFilterStatus(e.target.value)}
-              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="ALL">All Status</option>
-              <option value="ACTIVE">Active</option>
-              <option value="INACTIVE">Inactive</option>
-            </select>
             <span className="ml-auto text-sm text-gray-400">
               {filtered.length} of {users.length} accounts
             </span>
@@ -440,7 +548,7 @@ export default function AccountManagement() {
                     <th className="px-4 py-3 text-left text-sm font-semibold">Email</th>
                     <th className="px-4 py-3 text-left text-sm font-semibold">Role</th>
                     <th className="px-4 py-3 text-left text-sm font-semibold">Branch</th>
-                    <th className="px-4 py-3 text-left text-sm font-semibold">Status</th>
+                    <th className="px-4 py-3 text-left text-sm font-semibold">Last Logged In</th>
                     <th className="px-4 py-3 text-left text-sm font-semibold">Date Joined</th>
                     <th className="px-4 py-3 text-left text-sm font-semibold">Actions</th>
                   </tr>
@@ -460,21 +568,23 @@ export default function AccountManagement() {
                     </tr>
                   ) : (
                     filtered.map((u) => (
-                      <tr key={u.id} className={`border-b border-gray-100 hover:bg-gray-50 transition-colors ${u.status === "INACTIVE" ? "opacity-60" : ""}`}>
+                      <tr key={u.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-3">
                             <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-bold uppercase">
-                              {(u.name ?? u.email).slice(0, 2)}
+                              {(u.branchName ?? u.email).slice(0, 2)}
                             </div>
                             <span className="text-sm font-semibold text-gray-800">
-                              {u.name ?? <span className="text-gray-400 font-normal italic">—</span>}
+                              {u.branchName ?? <span className="text-gray-400 font-normal italic">—</span>}
                             </span>
                           </div>
                         </td>
                         <td className="px-4 py-3 text-sm text-gray-600">{u.email}</td>
                         <td className="px-4 py-3"><RoleBadge role={u.role} /></td>
                         <td className="px-4 py-3 text-sm text-gray-500">{u.branchName ?? "—"}</td>
-                        <td className="px-4 py-3"><StatusBadge status={u.status} /></td>
+                        <td className={`px-4 py-3 text-sm ${u.lastLoggedInAt ? "text-gray-500" : "text-gray-400 italic"}`}>
+                          {formatLastLogin(u.lastLoggedInAt)}
+                        </td>
                         <td className="px-4 py-3 text-sm text-gray-500">{formatDate(u.createdAt)}</td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
@@ -500,30 +610,6 @@ export default function AccountManagement() {
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                                   d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                               </svg>
-                            </button>
-
-                            {/* Activate / Deactivate */}
-                            <button
-                              onClick={() => handleToggleStatus(u)}
-                              disabled={togglingId === u.id}
-                              title={u.status === "ACTIVE" ? "Deactivate" : "Activate"}
-                              className={`p-1.5 rounded-lg transition-colors disabled:opacity-40 ${
-                                u.status === "ACTIVE"
-                                  ? "text-red-500 hover:bg-red-50"
-                                  : "text-green-500 hover:bg-green-50"
-                              }`}
-                            >
-                              {u.status === "ACTIVE" ? (
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                    d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
-                                </svg>
-                              ) : (
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                    d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                </svg>
-                              )}
                             </button>
                           </div>
                         </td>

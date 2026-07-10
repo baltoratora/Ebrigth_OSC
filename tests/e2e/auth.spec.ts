@@ -6,7 +6,8 @@ test.describe('Authentication smoke', () => {
     await expect(page).toHaveURL(/\/home/);
 
     // 7 modules visible by title
-    const titles = ['Library', 'Internal Dashboard', 'HRMS', 'CRM', 'SMS', 'Inventory', 'Academy'];
+    // 'CNS' (renamed from 'CRM' in the rebrand — Client Nexus System).
+    const titles = ['Library', 'Internal Dashboard', 'HRMS', 'CNS', 'SMS', 'Inventory', 'Academy'];
     for (const t of titles) {
       await expect(page.getByText(t, { exact: true }).first()).toBeVisible();
     }
@@ -15,15 +16,16 @@ test.describe('Authentication smoke', () => {
     await expect(page.getByText('Locked', { exact: false })).toHaveCount(0);
   });
 
-  test('BRANCH_MANAGER (Ampang) logs in and sees only HRMS unlocked', async ({ page }) => {
+  test('BRANCH_MANAGER (Ampang) logs in and sees HRMS and Inventory unlocked', async ({ page }) => {
     await login(page, 'ampang');
     await expect(page).toHaveURL(/\/home/);
 
-    // HRMS card should not show the Locked pill
+    // HRMS and Inventory cards should not show the Locked pill
     const hrmsCard = page.locator('a, div').filter({ hasText: 'HRMS' }).first();
     await expect(hrmsCard).toBeVisible();
 
-    // The other 6 modules should each show a Locked pill
-    await expect(page.getByText('Locked', { exact: false })).toHaveCount(6);
+    // BMs can access HRMS, Inventory, CNS and SMS (4 of 7 tiles); the
+    // remaining 3 (Library, Internal Dashboard, Academy) show a Locked pill.
+    await expect(page.getByText('Locked', { exact: false })).toHaveCount(3);
   });
 });

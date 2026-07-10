@@ -2,10 +2,18 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
-import { BRANCH_OPTIONS, ROLE_OPTIONS, CONTRACT_OPTIONS, GENDER_OPTIONS, ROLE_CODES } from "@/lib/constants";
-import { isSuperAdmin } from "@/lib/roles";
+import { BRANCH_OPTIONS, DEPARTMENT_OPTIONS, ROLE_OPTIONS, CONTRACT_OPTIONS, GENDER_OPTIONS, ROLE_CODES, COACH_ROLES_WITH_LEGACY } from "@/lib/constants";
+import { isAdmin, isAcademy, isHR } from "@/lib/roles";
+import { isInTraining } from "@/lib/training";
 import EmployeeIdInput from "@/app/components/EmployeeIdInput";
 import { splitEmployeeId, composeEmployeeId, isValidSuffix, isValidEmployeeId } from "@/lib/employeeId";
+
+// Department applies only to HQ staff; Rate only to part-time coaches (paid
+// hourly). Both fields are conditionally shown based on these checks.
+const isPartTimeCoach = (role?: string | null) => {
+  const r = (role ?? "").trim().toUpperCase();
+  return r === "PT COACH" || r.startsWith("PT - COACH");
+};
 
 interface User {
   id: string;
@@ -21,6 +29,7 @@ interface User {
   dob: string;
   homeAddress: string;
   branch: string;
+  department: string;
   role: string;
   contract: string;
   startDate: string;
@@ -39,9 +48,10 @@ interface User {
   Bank_Account?: string;
   University?: string;
   accessStatus: string;
-  biometricTemplate: string | null;
   registeredAt: string;
   updatedAt: string;
+  trainingStartDate?: string;
+  trainingEndDate?: string;
 }
 
 interface UserManagementProps {
@@ -63,7 +73,7 @@ function hasUnrecognizedPrefix(employeeId: string | undefined): boolean {
 }
 
 // Defaults to "" so that a caller forgetting to pass userRole fails closed
-// via `isSuperAdmin("") === false`, rather than silently granting admin access.
+// via `isAdmin("") === false`, rather than silently granting admin access.
 export default function UserManagement({ userRole = "" }: UserManagementProps) {
   const [loading, setLoading] = useState(true);
   const [users, setUsers] = useState<User[]>([]);
@@ -80,7 +90,9 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
   const searchParams = useSearchParams();
   const targetEmployeeId = searchParams.get("employeeId");
 
-  const isAuthorized = isSuperAdmin(userRole);
+  const academyView = isAcademy(userRole);
+  const hrView = isHR(userRole);
+  const isAuthorized = isAdmin(userRole) || academyView;
 
   useEffect(() => {
     if (!isAuthorized) { setLoading(false); return; }
@@ -150,19 +162,41 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
 
   const handleSave = async () => {
     if (!editData) return;
-    // Validate employeeId only if it changed
+    if (editData.trainingStartDate && editData.trainingEndDate &&
+        editData.trainingStartDate > editData.trainingEndDate) {
+      setError("Training end date must be on or after start date.");
+      return;
+    }
+    // Only send employeeId if BOTH parts are filled and valid; otherwise skip
+    // it from the payload so other field edits can still save.
     const original = splitEmployeeId(selectedUser?.employeeId || "");
     const idChanged = empIdPrefix !== original.prefix || empIdSuffix !== original.suffix;
-    if (idChanged) {
-      if (!empIdPrefix) { setEmpIdError("Select a role code"); return; }
-      if (!isValidSuffix(empIdSuffix)) { setEmpIdError("Enter exactly 6 digits"); return; }
-    }
+    const idIsComplete = !!empIdPrefix && isValidSuffix(empIdSuffix);
     setEmpIdError("");
     try {
-      const newEmployeeId = idChanged ? composeEmployeeId(empIdPrefix, empIdSuffix) : undefined;
-      const payload = newEmployeeId !== undefined
+      const newEmployeeId = idChanged && idIsComplete
+        ? composeEmployeeId(empIdPrefix, empIdSuffix)
+        : undefined;
+      const fullPayload: Partial<User> = newEmployeeId !== undefined
         ? { ...editData, employeeId: newEmployeeId }
         : editData;
+      // HR can edit everything except training fields; strip them so the
+      // server-side guard (which 403s on any HR PUT containing those keys)
+      // doesn't reject unrelated edits.
+      const stripTraining = (p: typeof fullPayload) => {
+        const { trainingStartDate: _ts, trainingEndDate: _te, ...rest } = p;
+        void _ts; void _te;
+        return rest;
+      };
+      const payload = academyView
+        ? {
+            id: editData.id,
+            trainingStartDate: editData.trainingStartDate || "",
+            trainingEndDate: editData.trainingEndDate || "",
+          }
+        : hrView
+          ? stripTraining(fullPayload)
+          : fullPayload;
       const response = await fetch("/api/employees", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -199,18 +233,24 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
     } else if (name === "accessStatus") {
       updates.Emp_Status = value === "AUTHORIZED" ? "Active" : value === "UNAUTHORIZED" ? "Inactive" : editData.Emp_Status;
     }
+    // Department only applies to HQ; Rate only to part-time coaches. Clear the
+    // stale value when the controlling field changes so it isn't saved.
+    if (name === "branch" && value !== "HQ") updates.department = "";
+    if (name === "role" && !isPartTimeCoach(value)) updates.rate = "";
     setEditData({ ...editData, ...updates });
   };
 
   const getDisplayName = (user: User) =>
     user.fullName || `${user.firstName ?? ""} ${user.lastName ?? ""}`.trim() || "-";
 
-  const filteredUsers = users.filter(
-    (user) =>
-      getDisplayName(user).toLowerCase().includes(searchTerm.toLowerCase()) ||
-      user.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      user.employeeId.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredUsers = users
+    .filter((u) => !academyView || (COACH_ROLES_WITH_LEGACY as readonly string[]).includes(u.role))
+    .filter(
+      (user) =>
+        getDisplayName(user).toLowerCase().includes(searchTerm.toLowerCase()) ||
+        user.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        user.employeeId.toLowerCase().includes(searchTerm.toLowerCase())
+    );
 
   const inp = (label: string, name: keyof User, type = "text", extraClass = "") => (
     <div>
@@ -317,6 +357,12 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
                   }`}>
                     {selectedUser.accessStatus === "AUTHORIZED" ? "✓ Authorized" : "✗ Unauthorized"}
                   </span>
+                  {isInTraining(selectedUser.trainingStartDate, selectedUser.trainingEndDate) && (
+                    <span className="px-3 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-800"
+                          title={`Training: ${selectedUser.trainingStartDate} → ${selectedUser.trainingEndDate}`}>
+                      🎓 In Training
+                    </span>
+                  )}
                   {!editMode && (
                     <div className="flex gap-2">
                       <button
@@ -331,7 +377,7 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
                       >
                         ✏️ Edit
                       </button>
-                      {selectedUser.accessStatus !== "ARCHIVED" && (
+                      {!academyView && selectedUser.accessStatus !== "ARCHIVED" && (
                         <button
                           onClick={() => handleArchive(selectedUser.id)}
                           className="bg-yellow-500 hover:bg-yellow-600 text-white text-sm font-medium py-1.5 px-4 rounded-lg transition-colors"
@@ -339,18 +385,64 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
                           Archive
                         </button>
                       )}
-                      <button
-                        onClick={() => handleDelete(selectedUser.id)}
-                        className="bg-red-600 hover:bg-red-700 text-white text-sm font-medium py-1.5 px-4 rounded-lg transition-colors"
-                      >
-                        Delete
-                      </button>
+                      {!academyView && (
+                        <button
+                          onClick={() => handleDelete(selectedUser.id)}
+                          className="bg-red-600 hover:bg-red-700 text-white text-sm font-medium py-1.5 px-4 rounded-lg transition-colors"
+                        >
+                          Delete
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
               </div>
 
-              {editMode ? (
+              {editMode && academyView ? (
+                <div className="space-y-6 max-h-[70vh] overflow-y-auto pr-1">
+                  {/* Academy edit: read-only employment + editable training */}
+                  <section>
+                    <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide border-b pb-2 mb-4">Employment</h4>
+                    <div className="grid grid-cols-2 gap-3">
+                      {field("Full Name", getDisplayName(selectedUser))}
+                      {field("Phone", selectedUser.phone)}
+                      {field("Role", selectedUser.role)}
+                      {field("Branch", selectedUser.branch)}
+                      {field("Department", selectedUser.department)}
+                      {field("Contract", selectedUser.contract)}
+                      {field("Start Date", selectedUser.startDate)}
+                      {field("Status", selectedUser.Emp_Status)}
+                    </div>
+                  </section>
+
+                  <section>
+                    <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide border-b pb-2 mb-4">Training</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {inp("Training Start Date", "trainingStartDate", "date")}
+                      {inp("Training End Date", "trainingEndDate", "date")}
+                    </div>
+                    {editData?.trainingStartDate && editData?.trainingEndDate &&
+                      editData.trainingStartDate > editData.trainingEndDate && (
+                      <p className="text-xs text-red-600 mt-2">End date must be on or after start date.</p>
+                    )}
+                  </section>
+
+                  <div className="flex gap-3 pt-2 border-t">
+                    <button onClick={handleSave}
+                      className="flex-1 bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition-colors">
+                      💾 Save
+                    </button>
+                    <button onClick={() => {
+                      setEditMode(false);
+                      setEditData({ ...selectedUser });
+                      setEmpIdError("");
+                    }}
+                      className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 font-medium py-2 px-4 rounded-lg transition-colors">
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : editMode ? (
                 <div className="space-y-6 max-h-[70vh] overflow-y-auto pr-1">
                   {/* Personal Info */}
                   <section>
@@ -364,6 +456,7 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
                           onSuffixChange={(v) => { setEmpIdSuffix(v); if (empIdError) setEmpIdError(""); }}
                           error={empIdError}
                           warning={hasUnrecognizedPrefix(selectedUser?.employeeId) ? "Existing ID has unrecognized role code" : undefined}
+                          required={false}
                         />
                       </div>
                       <div className="md:col-span-2">
@@ -394,12 +487,22 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
                     <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide border-b pb-2 mb-4">Employment</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Branch/Dept</label>
-                        <select name="branch" value={editData?.branch || "HQ"} onChange={handleInputChange}
+                        <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Branch</label>
+                        <select name="branch" value={editData?.branch || ""} onChange={handleInputChange}
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                          <option value="">— None —</option>
                           {BRANCH_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                         </select>
                       </div>
+                      {editData?.branch === "HQ" && (
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Department</label>
+                          <select name="department" value={editData?.department || ""} onChange={handleInputChange}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            {DEPARTMENT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                          </select>
+                        </div>
+                      )}
                       <div>
                         <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Role</label>
                         <select name="role" value={editData?.role || ""} onChange={handleInputChange}
@@ -417,7 +520,8 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
                       {inp("Start Date", "startDate", "date")}
                       {inp("Probation", "probation", "date")}
                       {inp("End Date", "endDate", "date")}
-                      {inp("Rate", "rate", "number")}
+                      {/* Rate — only for part-time coaches (paid hourly) */}
+                      {isPartTimeCoach(editData?.role) && inp("Rate", "rate", "number")}
                       {inp("Hire Date", "Emp_Hire_Date", "date")}
                       {inp("Signed Date", "Signed_Date", "date")}
                       {inp("Employee Type", "Emp_Type")}
@@ -441,12 +545,34 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
                     </div>
                   </section>
 
+                  {/* Training — HR cannot edit; only Admin/SuperAdmin/Academy can */}
+                  <section>
+                    <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide border-b pb-2 mb-4">Training</h4>
+                    {hrView ? (
+                      <div className="grid grid-cols-2 gap-3">
+                        {field("Training Start Date", selectedUser.trainingStartDate)}
+                        {field("Training End Date", selectedUser.trainingEndDate)}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {inp("Training Start Date", "trainingStartDate", "date")}
+                          {inp("Training End Date", "trainingEndDate", "date")}
+                        </div>
+                        {editData?.trainingStartDate && editData?.trainingEndDate &&
+                          editData.trainingStartDate > editData.trainingEndDate && (
+                          <p className="text-xs text-red-600 mt-2">End date must be on or after start date.</p>
+                        )}
+                      </>
+                    )}
+                  </section>
+
                   {/* Emergency Contact */}
                   <section>
                     <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide border-b pb-2 mb-4">Emergency Contact</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {inp("Contact Number", "Emc_Number", "tel")}
-                      {inp("Contact Email", "Emc_Email", "email")}
+                      {inp("Full Name", "Emc_Email", "text")}
                       <div className="md:col-span-2">{inp("Relationship", "Emc_Relationship")}</div>
                     </div>
                   </section>
@@ -477,6 +603,30 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
                     </button>
                   </div>
                 </div>
+              ) : academyView ? (
+                <div className="space-y-6 max-h-[70vh] overflow-y-auto pr-1">
+                  {/* Academy read-only view */}
+                  <section>
+                    <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide border-b pb-2 mb-4">Employment</h4>
+                    <div className="grid grid-cols-2 gap-3">
+                      {field("Full Name", getDisplayName(selectedUser))}
+                      {field("Phone", selectedUser.phone)}
+                      {field("Role", selectedUser.role)}
+                      {field("Branch", selectedUser.branch)}
+                      {field("Department", selectedUser.department)}
+                      {field("Contract", selectedUser.contract)}
+                      {field("Start Date", selectedUser.startDate)}
+                      {field("Status", selectedUser.Emp_Status)}
+                    </div>
+                  </section>
+                  <section>
+                    <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide border-b pb-2 mb-4">Training</h4>
+                    <div className="grid grid-cols-2 gap-3">
+                      {field("Training Start Date", selectedUser.trainingStartDate)}
+                      {field("Training End Date", selectedUser.trainingEndDate)}
+                    </div>
+                  </section>
+                </div>
               ) : (
                 <div className="space-y-6 max-h-[70vh] overflow-y-auto pr-1">
                   {/* Personal Info */}
@@ -500,7 +650,8 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
                   <section>
                     <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide border-b pb-2 mb-4">Employment</h4>
                     <div className="grid grid-cols-2 gap-3">
-                      {field("Branch/Dept", selectedUser.branch)}
+                      {field("Branch", selectedUser.branch)}
+                      {field("Department", selectedUser.department)}
                       {field("Role", selectedUser.role)}
                       {field("Contract", selectedUser.contract)}
                       {field("Start Date", selectedUser.startDate)}
@@ -512,8 +663,16 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
                       {field("Employee Type", selectedUser.Emp_Type)}
                       {field("Employee Status", selectedUser.Emp_Status)}
                       {field("Access Status", selectedUser.accessStatus)}
-                      {field("Biometrics", selectedUser.biometricTemplate ? "✓ Enrolled" : "✗ Not Enrolled")}
                       {field("Registered On", selectedUser.registeredAt ? new Date(selectedUser.registeredAt).toLocaleDateString() : "")}
+                    </div>
+                  </section>
+
+                  {/* Training */}
+                  <section>
+                    <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide border-b pb-2 mb-4">Training</h4>
+                    <div className="grid grid-cols-2 gap-3">
+                      {field("Training Start Date", selectedUser.trainingStartDate)}
+                      {field("Training End Date", selectedUser.trainingEndDate)}
                     </div>
                   </section>
 
@@ -522,7 +681,7 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
                     <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide border-b pb-2 mb-4">Emergency Contact</h4>
                     <div className="grid grid-cols-2 gap-3">
                       {field("Contact Number", selectedUser.Emc_Number)}
-                      {field("Contact Email", selectedUser.Emc_Email)}
+                      {field("Full Name", selectedUser.Emc_Email)}
                       <div className="col-span-2">{field("Relationship", selectedUser.Emc_Relationship)}</div>
                     </div>
                   </section>

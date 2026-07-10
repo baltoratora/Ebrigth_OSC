@@ -16,6 +16,14 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Ebright HR System",
   description: "Ebright HR Management System",
+  // Explicit, cache-busted favicon. The App Router serves app/favicon.ico at a
+  // static, un-hashed /favicon.ico that browsers cache aggressively — pointing
+  // at /01.ico with a version query forces the new portal icon to load.
+  icons: {
+    icon: "/01.ico?v=2",
+    shortcut: "/01.ico?v=2",
+    apple: "/01.ico?v=2",
+  },
 };
 
 export default function RootLayout({
