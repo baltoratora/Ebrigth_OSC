@@ -106,10 +106,10 @@ function DashCard({ title, subtitle, color, lightColor, records, dateField, date
             const highlight = alertNames || within2w;
             const days = daysFromNow(r[dateField]);
             return (
-              <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 20px", background: highlight ? lightColor : "transparent", borderLeft: highlight ? `3px solid ${color}` : "3px solid transparent" }}>
+              <div key={i} className="dashCardRow" style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 20px", background: highlight ? lightColor : "transparent", borderLeft: highlight ? `3px solid ${color}` : "3px solid transparent" }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: highlight ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</div>
-                  <div style={{ fontSize: 10, color: C.muted, display: "flex", gap: 6, marginTop: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: highlight ? 700 : 600, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</div>
+                  <div style={{ fontSize: 10, color: "#475569", display: "flex", gap: 6, marginTop: 1 }}>
                     <span>{r.position || r.department_branch}</span>
                     {r.position && r.department_branch && <span>· {r.department_branch}</span>}
                     {typeField && r[typeField] && <span style={{ fontWeight: 700, color }}>· {r[typeField]}</span>}
@@ -122,7 +122,7 @@ function DashCard({ title, subtitle, color, lightColor, records, dateField, date
                   )}
                 </div>
                 <div style={{ textAlign: "right", flexShrink: 0 }}>
-                  <div style={{ fontSize: 11, fontWeight: 500 }}>{fmtDate(r[dateField])}</div>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: C.text }}>{fmtDate(r[dateField])}</div>
                   <DaysLabel days={days} />
                 </div>
               </div>
@@ -154,7 +154,7 @@ function DetailHeader({ title, color, subtitle, onBack }: any) {
   return (
     <div className="detailHeader" style={{ background: `linear-gradient(135deg, ${color}, color-mix(in srgb, ${color} 70%, black))`, color: "#fff", borderRadius: 12, padding: "20px 24px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, boxShadow: "0 4px 12px rgba(0,0,0,0.15)" }}>
       <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: 20, fontWeight: 700 }}>{title}</div>
+        <div className="detailHeaderTitle" style={{ fontSize: 20, fontWeight: 700 }}>{title}</div>
         <div style={{ fontSize: 12, opacity: 0.85, marginTop: 4 }}>{subtitle}</div>
       </div>
       <button onClick={onBack} style={{ background: "rgba(255,255,255,0.2)", color: "#fff", border: "none", padding: "7px 14px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", flexShrink: 0 }}>← Back</button>
@@ -168,7 +168,7 @@ function SignedDetailView({ title, color, records, onBack }: any) {
     <div>
       <DetailHeader title={title} color={color} subtitle={`${records.length} signed in ${monthLabel}`} onBack={onBack} />
       <div style={{ ...cardStyle, overflowX: "auto", padding: 0 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <table className="detailTable" style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead><tr><th style={th}>#</th><th style={th}>Name</th><th style={th}>Position</th><th style={th}>Dept / Branch</th><th style={th}>Signed Date</th><th style={th}>Start Date</th></tr></thead>
           <tbody>
             {records.length === 0 ? (
@@ -176,7 +176,7 @@ function SignedDetailView({ title, color, records, onBack }: any) {
             ) : records.map((r: any, i: number) => (
               <tr key={r.id}>
                 <td style={{ ...td, color: C.muted, fontSize: 11 }}>{i + 1}</td>
-                <td style={{ ...td, fontSize: 13 }}><strong>{r.name}</strong></td>
+                <td style={{ ...td, fontSize: 13, color: C.text }}><strong>{r.name}</strong></td>
                 <td style={{ ...td, fontSize: 12 }}>{r.position || "—"}</td>
                 <td style={{ ...td, fontSize: 12 }}>{r.department_branch || "—"}</td>
                 <td style={{ ...td, whiteSpace: "nowrap", fontSize: 12, fontWeight: 500 }}>{fmtDate(r.signed_date)}</td>
@@ -225,7 +225,7 @@ function DetailView({ title, color, lightColor, records, dateField, datesField, 
     <div>
       <DetailHeader title={title} color={color} subtitle={`${records.length} staff · Highlighted = within 2 weeks`} onBack={onBack} />
       <div style={{ ...cardStyle, overflowX: "auto", padding: 0 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <table className="detailTable" style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead><tr><th style={th}>#</th><th style={th}>Name</th><th style={th}>Position</th><th style={th}>Dept / Branch</th>{typeField && <th style={th}>{typeLabel || "Leave Type"}</th>}<th style={th}>{dateLabel}</th>{showAction && <th style={th}>HR Action</th>}<th style={th}></th></tr></thead>
           <tbody>
             {records.length === 0 ? (
@@ -237,7 +237,7 @@ function DetailView({ title, color, lightColor, records, dateField, datesField, 
               return (
                 <tr key={r.id ?? i} style={highlight ? { background: lightColor } : {}}>
                   <td style={{ ...td, color: C.muted, fontSize: 11 }}>{i + 1}</td>
-                  <td style={{ ...td, fontSize: 13 }}>
+                  <td style={{ ...td, fontSize: 13, color: C.text }}>
                     {highlight && <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: "50%", background: color, marginRight: 8 }} />}
                     <strong>{r.name}</strong>
                   </td>
@@ -280,7 +280,7 @@ function DetailView({ title, color, lightColor, records, dateField, datesField, 
 
       {popup && (
         <div onClick={() => setPopup(null)} style={{ position: "fixed", inset: 0, zIndex: 50, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-          <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, boxShadow: "0 10px 40px rgba(0,0,0,0.25)", maxWidth: 420, width: "100%", padding: 24 }}>
+          <div className="hrModalCard" onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 16, boxShadow: "0 10px 40px rgba(0,0,0,0.25)", maxWidth: 420, width: "100%", padding: 24 }}>
             <div style={{ fontSize: 18, fontWeight: 700, color: C.text }}>Mark action complete?</div>
             <p style={{ fontSize: 14, color: "#475569", marginTop: 10, lineHeight: 1.5 }}>
               Confirm you have done the <strong style={{ color: C.text }}>{popup.label}</strong> for <strong style={{ color: C.text }}>{popup.name}</strong>.
@@ -357,7 +357,7 @@ function TPEntry({ entry, stage, onChanged }: { entry: any; stage: TPStage; onCh
   }
 
   return (
-    <div style={{ padding: "10px 16px", borderBottom: `1px solid ${C.border}` }}>
+    <div className="tpEntry" style={{ padding: "10px 16px", borderBottom: `1px solid ${C.border}` }}>
       <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{entry.name || "—"}</div>
       {(entry.position || entry.branch || entry.department) && (
         <div style={{ fontSize: 11, color: C.muted, marginBottom: entry.warning_date ? 2 : 6, display: "flex", flexWrap: "wrap", gap: 4 }}>
@@ -385,7 +385,7 @@ function TPEntry({ entry, stage, onChanged }: { entry: any; stage: TPStage; onCh
         placeholder="Write feedback…"
         style={{ width: "100%", marginTop: 3, fontSize: 12, padding: "6px 8px", border: `1px solid ${C.border}`, borderRadius: 8, resize: "vertical", boxSizing: "border-box" }} />
       {err && <div style={{ fontSize: 11, color: C.brand, marginTop: 4 }}>{err}</div>}
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+      <div className="tpFeedbackButtons" style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
         <button disabled={busy || !dirty} onClick={() => run(() => tpPatch({ id: entry.id, [fbKey]: text }))}
           style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 8, border: `1px solid ${C.border}`, background: "#fff", color: dirty ? s.color : C.muted, cursor: dirty ? "pointer" : "default", opacity: busy ? 0.5 : 1 }}>
           Save feedback
@@ -508,7 +508,8 @@ export default function HRDashboardPage() {
   const miaMissingToday = (data?.miaMissingToday || [])
     .filter((m: any) => !miaCodes.has(m.code))
     .map((m: any) => ({ ...m, flag_label: "Missing today", reason: null, last_date: miaMissingDate }));
-  const miaCombined = [...mia, ...miaMissingToday];
+  // Missing today goes first — highest urgency, HR should see it before UL history.
+  const miaCombined = [...miaMissingToday, ...mia];
 
   const SIGNED_BUCKETS: Record<string, { title: string; bucket: string }> = {
     "signed-partTime": { title: "Part Time — Signed This Month", bucket: "partTime" },
@@ -530,10 +531,23 @@ export default function HRDashboardPage() {
           .tpColBorder { border-left: none !important; border-top: 1px solid ${C.border}; }
         }
         @media (max-width: 640px) {
-          .hrDashRoot { padding: 14px 12px !important; }
-          .dashCardHeader { flex-wrap: wrap; row-gap: 10px; }
-          .dashCardStats { flex-wrap: wrap; row-gap: 8px; justify-content: flex-start !important; }
-          .detailHeader { flex-wrap: wrap; }
+          .hrDashRoot { padding: 14px 10px !important; }
+          .hrDashTitle { font-size: 20px !important; }
+          .hrDashSubtitle { font-size: 12px !important; }
+          .dashCardHeader { flex-wrap: wrap; row-gap: 10px; padding: 12px 14px !important; }
+          .dashCardStats { flex-wrap: wrap; row-gap: 8px; justify-content: flex-start !important; gap: 8px !important; width: 100%; }
+          .dashCardRow { padding-left: 12px !important; padding-right: 12px !important; padding-top: 8px !important; padding-bottom: 8px !important; }
+          .detailHeader { flex-wrap: wrap; padding: 14px 16px !important; row-gap: 10px; }
+          .detailHeaderTitle { font-size: 17px !important; }
+          .detailTable { min-width: 640px; }
+          .tpEntry { padding: 10px 14px !important; }
+          .tpFeedbackButtons { gap: 4px !important; }
+          .tpFeedbackButtons button { flex: 1 1 auto; min-width: 0; }
+          .hrModalCard { padding: 18px !important; max-width: calc(100vw - 24px) !important; }
+        }
+        @media (max-width: 380px) {
+          .hrDashRoot { padding: 10px 6px !important; }
+          .dashCardRow { gap: 6px !important; }
         }
       `}</style>
       <div style={{ display: "flex", flexDirection: "column", gap: 24, maxWidth: 1280, margin: "0 auto" }}>
@@ -542,8 +556,8 @@ export default function HRDashboardPage() {
             <span style={{ fontSize: 16 }}>←</span><span>Back to HRMS</span>
           </Link>
           <div style={{ marginTop: 16 }}>
-            <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-0.03em", margin: "0 0 6px", color: C.text }}>HR Overview Dashboard</h1>
-            <p style={{ fontSize: 14, color: "#475569", margin: 0 }}>Onboarding · Offboarding · Annual Leave · MC · Flagged · MIA · Trial &amp; Probation</p>
+            <h1 className="hrDashTitle" style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-0.03em", margin: "0 0 6px", color: C.text }}>HR Overview Dashboard</h1>
+            <p className="hrDashSubtitle" style={{ fontSize: 14, color: "#475569", margin: 0 }}>Onboarding · Offboarding · Annual Leave · MC · Flagged · MIA · Trial &amp; Probation</p>
           </div>
         </div>
 

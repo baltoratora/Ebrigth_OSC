@@ -1880,3 +1880,20 @@ model RecResume {
   @@index([uploadedAt])
   @@map("rec_resume")
 }
+
+// Editable rich-text body for each Academy syllabus chapter page.
+// Keyed by (level, grade, chapter) so one row backs one URL like
+// /academy/syllabus/jnr/3/5. Stored as Tiptap JSON.
+model academy_chapter_content {
+  id        String   @id @default(uuid())
+  level     String   // "jnr" | "mdr" | "snr"
+  grade     Int      // 1..8
+  chapter   Int      // 1..12
+  content   Json     // Tiptap JSONContent
+  updatedBy String?  // user email (best-effort attribution)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([level, grade, chapter])
+  @@map("academy_chapter_content")
+}

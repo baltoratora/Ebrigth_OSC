@@ -168,7 +168,6 @@ export default function DashboardHome({ userRole }: { userRole?: string; userEma
             const isDisabled = !canSeeKey(effectiveRole, dashboard.id, overrides);
 
 const targetHref =
-  dashboard.id === "academy" ? "/academy" :
   dashboard.id === "inventory" ? "/api/launch-inventory" :
   dashboard.id === "fa-system" ? "/fa-system" :
   dashboard.id === "pcm-system" ? "/pcm-system" :

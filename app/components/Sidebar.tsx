@@ -21,7 +21,7 @@ const navigationItems = [
   { key: "crm",                name: "CNS",                 href: "/dashboards/crm",                icon: "🤝" },
   { key: "sms",                name: "SMS",                 href: "/dashboards/sms",                icon: "💬" },
   { key: "inventory",          name: "Inventory",           href: "/dashboards/inventory",          icon: "📦" },
-  { key: "academy",            name: "Academy",             href: "/academy",                       icon: "🎓" },
+  { key: "academy",            name: "Academy",             href: "/dashboards/academy",            icon: "🎓" },
   { key: "hrms.attendance",    name: "Attendance",          href: "/attendance",                    icon: "📅" },
   { key: "hrms.account",       name: "Account Management",  href: "/account-management",            icon: "🔐" },
   { key: "annual-showcase",   name: "Annual Showcase",     href: "/annual-showcase",               icon: "🎪" },

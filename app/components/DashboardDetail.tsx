@@ -108,8 +108,8 @@ const dashboards: DashboardCard[] = [
     icon: "🎓",
     color: "bg-indigo-600",
     items: [
-      { key: "academy.events",  name: "Event Management", href: "/academy", icon: "📅" },
-      { key: "academy.courses", name: "Courses",          href: "#",        icon: "📖" },
+      { key: "academy.events",  name: "Academy Dashboard", href: "/academy/dashboard", icon: "📅" },
+      { key: "academy.courses", name: "Ebright Class Syllabus", href: "/academy/syllabus", icon: "📚" },
     ],
   },
 ];

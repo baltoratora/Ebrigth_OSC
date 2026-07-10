@@ -149,11 +149,11 @@ export const DASHBOARD_TREE: DashboardNode[] = [
   {
     key: "academy",
     label: "Academy",
-    href: "/academy",
+    href: "/dashboards/academy",
     icon: "🎓",
     children: [
-      { key: "academy.events",  label: "Event Management", href: "/academy" },
-      { key: "academy.courses", label: "Courses",          href: "#" },
+      { key: "academy.events",  label: "Academy Dashboard", href: "/academy/dashboard" },
+      { key: "academy.courses", label: "Ebright Class Syllabus", href: "/academy/syllabus" },
     ],
   },
 
