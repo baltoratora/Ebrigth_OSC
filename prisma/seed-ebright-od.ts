@@ -1,27 +1,26 @@
 /**
- * Provisions the "00 Ebright OD" stress-test branch + branch manager.
+ * Provisions the "Ebright Marketing" branch + branch manager.
  *
  * What this creates / upserts:
- *   - crm_branch                  → "00 Ebright OD"
- *   - crm_pipeline + 16 stages    → standard lead pipeline (NL, FU1, ..., DND, SG)
- *   - crm_auth_user               → od@ebright.com
+ *   - crm_branch                  → "Ebright Marketing" (renamed from "00 Ebright OD")
+ *   - crm_pipeline + 16 stages    → standard lead pipeline (NL, FU1, ..., DND, SG);
+ *                                   pipeline NAME stays as "00 Ebright OD" so the
+ *                                   stage UUIDs and pipeline.id stay stable across
+ *                                   the rename.
+ *   - crm_auth_user               → test@ebright.my
  *   - crm_auth_account            → bcrypt-hashed password "admin123"
- *   - crm_user_branch             → BRANCH_MANAGER role on the new branch
+ *   - crm_user_branch             → BRANCH_MANAGER role on the renamed branch
+ *
+ * Marketing is the fallback destination for leads with no resolvable branch:
+ * leadIngestWorker routes anything that fails branch resolution here so the
+ * Marketing BM can triage and (optionally) transfer to the correct branch
+ * via the per-lead transfer panel (max 3 transfers per lead).
  *
  * Why a script instead of plain SQL:
  *   - bcrypt hashing for the password — Postgres has no native bcrypt
  *   - idempotent — safe to re-run; upserts by natural keys (email, branch name)
  *
  * Run: `npm run seed:od`
- *
- * IMPORTANT: this branch is intentionally NOT added to `branch_mapping` in
- * ebrightleads_db, so external form submissions (Wix / Meta / TikTok) can
- * never resolve their `clean_branch` to "Ebright OD". The only paths that
- * land leads on this branch are:
- *   - in-CRM form submissions by an authenticated user
- *   - manual contact creation from the UI
- * Stress-test data stays isolated by branchId — query
- * `WHERE branchId = '<OD branch id>'` to slice it out cleanly.
  */
 
 import 'dotenv/config'
@@ -39,11 +38,18 @@ const prisma = new PrismaClient({ datasourceUrl: process.env.DATABASE_URL })
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 const TENANT_SLUG = 'ebright'
-const BRANCH_NAME = '00 Ebright OD'
+const BRANCH_NAME = 'Ebright Marketing'
+// Pipeline name preserved across the OD → Marketing rename so the pipeline.id
+// and per-stage UUIDs stay stable for anything pointing at them.
+const PIPELINE_NAME = '00 Ebright OD'
+// Legacy branch name we're upgrading from. We look it up on each run and
+// rename it in place to BRANCH_NAME, so the seed self-heals environments
+// that haven't run rename-od-to-marketing.sql yet.
+const LEGACY_BRANCH_NAME = '00 Ebright OD'
 
 const USER = {
   email: 'test@ebright.my',
-  name:  'OD Test Branch Manager',
+  name:  'Ebright Marketing Branch Manager',
   password: 'admin123',
 }
 
@@ -58,10 +64,12 @@ const STAGES = [
   { name: 'Follow-Up 2nd Attempt', shortCode: 'FU2',   color: 'slate'   },
   { name: 'Follow-Up 3rd Attempt', shortCode: 'FU3',   color: 'slate'   },
   { name: 'Reschedule',            shortCode: 'RSD',   color: 'slate'   },
+  { name: 'Trial Buffer',          shortCode: 'CTB',   color: 'cyan'    },
   { name: 'Confirmed for Trial',   shortCode: 'CT',    color: 'emerald' },
   { name: 'Confirmed No-Show',     shortCode: 'CNS',   color: 'amber'   },
   { name: 'Show-Up',               shortCode: 'SU',    color: 'emerald' },
   { name: 'Show-Up No-Enroll',     shortCode: 'SNE',   color: 'yellow'  },
+  { name: 'Enroll Buffer',         shortCode: 'ENRB',  color: 'cyan'    },
   { name: 'Enrolled',              shortCode: 'ENR',   color: 'emerald' },
   { name: 'Unresponsive Week 1',   shortCode: 'UR_W1', color: 'slate'   },
   { name: 'Unresponsive Week 2',   shortCode: 'UR_W2', color: 'slate'   },
@@ -90,7 +98,21 @@ async function main() {
   }
   console.log(`✓ Tenant         ${tenant.name}`)
 
-  // 2. Branch
+  // 2. Branch — rename the legacy "00 Ebright OD" row in place if found,
+  //    otherwise create fresh as "Ebright Marketing". The rename is a no-op
+  //    once the environment has been migrated.
+  const legacyBranch = await prisma.crm_branch.findFirst({
+    where: { tenantId: tenant.id, name: LEGACY_BRANCH_NAME },
+    select: { id: true },
+  })
+  if (legacyBranch && LEGACY_BRANCH_NAME !== (BRANCH_NAME as string)) {
+    await prisma.crm_branch.update({
+      where: { id: legacyBranch.id },
+      data:  { name: BRANCH_NAME },
+    })
+    console.log(`✓ Renamed branch ${LEGACY_BRANCH_NAME} → ${BRANCH_NAME}`)
+  }
+
   const existingBranch = await prisma.crm_branch.findFirst({
     where: { tenantId: tenant.id, name: BRANCH_NAME },
     select: { id: true },
@@ -103,15 +125,17 @@ async function main() {
       })
   console.log(`✓ Branch         ${BRANCH_NAME} (${branch.id})`)
 
-  // 3. Pipeline + stages (one pipeline named after the branch)
+  // 3. Pipeline + stages — pipeline NAME stays "00 Ebright OD" per the
+  //    rename spec, so consumers that referenced the pipeline by name (rare)
+  //    keep working.
   const existingPipeline = await prisma.crm_pipeline.findFirst({
-    where: { tenantId: tenant.id, branchId: branch.id, name: BRANCH_NAME },
+    where: { tenantId: tenant.id, branchId: branch.id },
     select: { id: true },
   })
   const pipeline = existingPipeline
     ? existingPipeline
     : await prisma.crm_pipeline.create({
-        data: { tenantId: tenant.id, branchId: branch.id, name: BRANCH_NAME },
+        data: { tenantId: tenant.id, branchId: branch.id, name: PIPELINE_NAME },
         select: { id: true },
       })
 

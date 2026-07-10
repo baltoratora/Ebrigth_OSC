@@ -14,8 +14,8 @@ export default function DashboardPage() {
   const userRole = (session?.user as { role?: string } | undefined)?.role || "";
 
   return (
-    <div className="min-h-screen bg-gray-100">
-      <header className="bg-gradient-to-r from-blue-600 to-blue-800 text-white shadow-lg">
+    <div className="h-screen flex flex-col bg-gray-100 overflow-hidden">
+      <header className="shrink-0 bg-gradient-to-r from-blue-600 to-blue-800 text-white shadow-lg">
         <div className="flex justify-between items-center pl-14 pr-4 py-6">
           <div className="flex items-center gap-4">
             <Link
@@ -45,10 +45,10 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      <div className="flex h-[calc(100vh-100px)]">
+      <div className="flex flex-1 min-h-0">
         <Sidebar sidebarOpen={sidebarOpen} onToggle={() => setSidebarOpen(p => !p)} />
 
-        <main className="flex-1 overflow-y-auto px-8 py-8">
+        <main className="flex-1 min-h-0 overflow-y-auto px-8 py-8">
           <EmployeeTable userRole={userRole} />
         </main>
       </div>

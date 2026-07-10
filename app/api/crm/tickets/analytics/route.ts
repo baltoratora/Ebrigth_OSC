@@ -81,21 +81,30 @@ export async function GET(req: NextRequest) {
     const { from, to } = parseRange(sp)
 
     const isAdmin = ctx.role === 'super_admin' || ctx.role === 'platform_admin'
+    const deptParam = sp.get('dept')
 
-    // Branch-scope guard: non-admin users see only their assigned branches.
-    // Admins see every ticket in the tenant.
-    const branchFilter =
-      !isAdmin && ctx.branchIds.length > 0
-        ? { branch_id: { in: ctx.branchIds } }
-        : !isAdmin
-          ? { branch_id: '__none__' } // user has no branches → no tickets
-          : {}
+    // Scope, mirroring the triage board so each account's dashboard reflects
+    // exactly the tickets it can act on:
+    //   • scoped DEPARTMENT account → only its directed tickets (by sub_type)
+    //   • super admin viewing a department (?dept=) → that department's tickets
+    //   • non-admin branch user → only its branch(es)
+    //   • super admin → every ticket in the tenant
+    const scopeFilter =
+      ctx.departmentSubType
+        ? { sub_type: ctx.departmentSubType }
+        : isAdmin && deptParam
+          ? { sub_type: deptParam }
+          : !isAdmin && ctx.branchIds.length > 0
+            ? { branch_id: { in: ctx.branchIds } }
+            : !isAdmin
+              ? { branch_id: '__none__' } // user has no branches → no tickets
+              : {}
 
     const tickets = await prisma.tkt_ticket.findMany({
       where: {
         tenant_id: ctx.tenantId,
         created_at: { gte: from, lte: to },
-        ...branchFilter,
+        ...scopeFilter,
       },
       include: {
         platform: { select: { id: true, name: true, code: true, accent_color: true } },

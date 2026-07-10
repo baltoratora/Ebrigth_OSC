@@ -141,7 +141,7 @@ function FileUploadButton({
           />
           {uploaded ? (
             <div className="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm dark:border-emerald-800 dark:bg-emerald-950">
-              <Paperclip className="h-4 w-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
+              <Paperclip className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
               <span className="flex-1 truncate text-emerald-700 dark:text-emerald-300">
                 {uploaded.name}
               </span>
@@ -440,8 +440,12 @@ export function PlatformFieldsForm({
     )
   }
 
-  // Lead tickets get an extra Stage dropdown above the Remarks textarea —
-  // applies to every lead sub-type (missing / duplicate / delete / others).
+  // Lead tickets need:
+  //   - Stage (which kanban column the issue concerns)
+  //   - Opportunity Name / Contact / Email (so the admin handling the
+  //     ticket can find the lead in the CRM without guesswork)
+  //   - Remarks (free-text description)
+  // Applies to every lead sub-type (missing / duplicate / delete / others).
   if (platformSlug === 'lead') {
     return (
       <div className="space-y-4">
@@ -450,6 +454,27 @@ export function PlatformFieldsForm({
           label="Stage"
           options={LEAD_STAGE_OPTIONS}
           placeholder="Select stage…"
+          required
+          control={control}
+          errors={errors}
+        />
+        <TextField
+          name="opportunityName"
+          label="Opportunity Name"
+          required
+          control={control}
+          errors={errors}
+        />
+        <TextField
+          name="opportunityContact"
+          label="Opportunity Contact"
+          required
+          control={control}
+          errors={errors}
+        />
+        <TextField
+          name="opportunityEmail"
+          label="Opportunity Email"
           required
           control={control}
           errors={errors}

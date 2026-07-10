@@ -23,11 +23,86 @@ jobs:
           # these are missing or look like placeholders. Mirrors the export
           # block in staging-deploy.yml so the two environments stay aligned.
           script: |
+            # Free disk space before building to avoid OOM/disk-full failures.
+            docker system prune -f 2>/dev/null || true
+
+            # Pull latest code. Try known candidate paths for the project.
+            for CANDIDATE in /home/staff1/ebright-osc /home/staff1/osc /home/staff1/Ebrigth_OSC_fresh /root/ebright-osc /opt/ebright-osc; do
+              if [ -f "$CANDIDATE/docker-compose.yml" ]; then
+                PROJECT_DIR="$CANDIDATE"
+                break
+              fi
+            done
+            if [ -n "$PROJECT_DIR" ]; then
+              echo "Found project at $PROJECT_DIR — pulling latest main"
+              cd "$PROJECT_DIR"
+              git fetch origin
+              git reset --hard origin/main
+              echo "Source now at: $(git log --oneline -1)"
+            else
+              echo "WARNING: project dir not found, will build from existing source"
+            fi
+
+            # Remove stale containers (keep image for layer-cache) so the
+            # new containers start fresh from the rebuilt image.
+            docker rm -f ebright-osc-osc-1 ebright-osc-worker-1 2>/dev/null || true
+
             export NEXTAUTH_SECRET='${{ secrets.NEXTAUTH_SECRET }}'
             export BETTER_AUTH_SECRET='${{ secrets.BETTER_AUTH_SECRET }}'
             export ENCRYPTION_KEY='${{ secrets.ENCRYPTION_KEY }}'
             export DATABASE_URL='${{ secrets.DATABASE_URL }}'
+            export HRFS_DATABASE_URL='${{ secrets.HRFS_DATABASE_URL }}'
             export CRM_PREVIEW_MODE='${{ secrets.CRM_PREVIEW_MODE }}'
             export SHARED_SSO_SECRET='${{ secrets.SHARED_SSO_SECRET }}'
             export INVENTORY_URL='${{ secrets.INVENTORY_URL }}'
+            # SMTP for clock-in/out attendance emails (lib/mailer.ts). The
+            # email watcher (lib/hikvision-email-sync.ts) only runs when
+            # HIKVISION_EMAIL_SYNC=on, so leaving that secret blank keeps it off.
+            export SMTP_HOST='${{ secrets.SMTP_HOST }}'
+            export SMTP_PORT='${{ secrets.SMTP_PORT }}'
+            export SMTP_USER='${{ secrets.SMTP_USER }}'
+            export SMTP_PASS='${{ secrets.SMTP_PASS }}'
+            export HIKVISION_EMAIL_SYNC='on'
+            export MISSING_REMINDER_EMAIL='on'
+            export HR_JUSTIFY_EMAIL='hr@ebright.my'
             /home/staff1/deploy-prod.sh osc
+
+            # ── Health check ──────────────────────────────────────────────
+            echo "===== container status ====="
+            docker ps -a | grep ebright || echo "WARNING: no ebright containers running"
+
+            echo "===== port bindings ====="
+            docker port ebright-osc-osc-1 2>&1 || echo "Could not get port info"
+
+            echo "===== osc container logs (last 80 lines) ====="
+            docker logs ebright-osc-osc-1 --tail 80 2>&1 || echo "Could not get osc logs"
+
+            echo "===== is port 3003 listening on host? ====="
+            ss -tlnp | grep 3003 || echo "port 3003 NOT listening on host"
+
+            echo "===== local curl to port 3003 ====="
+            curl -s -o /dev/null -w "HTTP %{http_code}\n" http://127.0.0.1:3003/ 2>&1 || echo "curl failed"
+
+            # Reload nginx/openresty — try sudo in case staff1 lacks permission.
+            echo "===== reloading nginx ====="
+            sudo nginx -s reload 2>&1 || sudo openresty -s reload 2>&1 || nginx -s reload 2>&1 || openresty -s reload 2>&1 || echo "nginx reload skipped"
+
+            # If containers are not running, fail loudly so the job shows red.
+            docker inspect --format='{{.State.Running}}' ebright-osc-osc-1 2>/dev/null | grep -q true \
+              || { echo "FATAL: osc container is not running"; exit 1; }
+
+            # Self-healing burnlist tables: idempotent DDL run inside the
+            # worker container. Creates burnlist_week / burnlist_entry in
+            # both `crm` and `public` schemas of whichever DATABASE_URL
+            # the prod env points at. No-op on subsequent deploys.
+            echo "===== ensuring burnlist tables exist ====="
+            docker exec ebright-osc-worker-1 node scripts/ensure-burnlist-tables.mjs \
+              || echo "WARN: burnlist tables ensure failed (non-fatal — page may show DB error until fixed)"
+
+            echo "===== cleaning up legacy department platforms ====="
+            docker exec ebright-osc-worker-1 node scripts/cleanup-department-platforms.mjs \
+              || echo "WARN: department platform cleanup failed (non-fatal)"
+
+            echo "===== setting up recruitment in ebright_hrfs (+ migrate from crm) ====="
+            docker exec ebright-osc-worker-1 node scripts/ensure-recruitment-schema.mjs \
+              || echo "WARN: recruitment hrfs setup failed (non-fatal)"

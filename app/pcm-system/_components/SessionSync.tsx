@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { useSession } from "next-auth/react";
 import { useFAStore } from "@pcm/_lib/store";
-import { matchBranchByName, isBackOfficeRole } from "@pcm/_types";
+import { matchBranchByName, isBackOfficeRole, isRegionalManagerRole, regionForEmail } from "@pcm/_types";
 import { useFATheme } from "@pcm/_lib/theme";
 
 /** Bridges NextAuth (the real auth) to the PCM system's zustand store.
@@ -67,6 +67,22 @@ export function SessionSync() {
           `[PCM SessionSync] BRANCH_MANAGER ${session.user.email ?? ""} has ` +
           `branchName="${branchName}" which doesn't resolve to any PCM branch. ` +
           `Add it to the ALIASES map in _types/index.ts or fix the User row.`
+        );
+        if (currentUserId !== null) logout();
+      }
+      return;
+    }
+
+    if (isRegionalManagerRole(role)) {
+      // Regional Manager → locked to the region matched from their email.
+      const region = regionForEmail(session.user.email);
+      const required = region ? `u-rm-${region.toLowerCase()}` : null;
+      if (required && currentUserId !== required) {
+        login(required);
+      } else if (!required) {
+        console.warn(
+          `[PCM SessionSync] REGIONAL_MANAGER ${session.user.email ?? ""} isn't in ` +
+          `RM_REGION_BY_EMAIL — add their email→region in _types/index.ts.`
         );
         if (currentUserId !== null) logout();
       }

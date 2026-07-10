@@ -48,7 +48,11 @@ export async function GET(req: NextRequest) {
     const where: Prisma.tkt_ticketWhereInput = { tenant_id: ctx.tenantId }
 
     // Role-scoped visibility
-    if (ctx.role === 'user') {
+    if (ctx.departmentSubType) {
+      // Scoped department account — only tickets directed to its department
+      // (by sub_type), regardless of which "Others"-platform row they carry.
+      where.sub_type = ctx.departmentSubType
+    } else if (ctx.role === 'user') {
       // Basic users: see all tickets submitted from their branch(es).
       // Fall back to own tickets only if no branch assignments exist.
       if (ctx.branchIds.length > 0) {
@@ -63,7 +67,7 @@ export async function GET(req: NextRequest) {
 
     // Platform filter — accept either slug or UUID.
     if (platformId) {
-      if (ctx.role === 'platform_admin' && !ctx.platformIds.includes(platformId)) {
+      if (!ctx.departmentSubType && ctx.role === 'platform_admin' && !ctx.platformIds.includes(platformId)) {
         return Response.json({ data: [], total: 0, page, pageSize })
       }
       where.platform_id = platformId
@@ -73,7 +77,7 @@ export async function GET(req: NextRequest) {
         select: { id: true },
       })
       if (plat) {
-        if (ctx.role === 'platform_admin' && !ctx.platformIds.includes(plat.id)) {
+        if (!ctx.departmentSubType && ctx.role === 'platform_admin' && !ctx.platformIds.includes(plat.id)) {
           return Response.json({ data: [], total: 0, page, pageSize })
         }
         where.platform_id = plat.id

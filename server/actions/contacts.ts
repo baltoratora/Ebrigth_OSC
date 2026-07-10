@@ -7,6 +7,8 @@ import { prisma } from '@/lib/crm/db'
 import { scopedPrisma } from '@/lib/crm/tenancy'
 import { logAudit } from '@/lib/crm/audit'
 import { normalizePhone } from '@/lib/crm/utils'
+import { resolveBranchAccess } from '@/lib/crm/branch-access'
+import { hasPermission, type CrmRole } from '@/lib/crm/permissions'
 import {
   CreateContactSchema,
   UpdateContactSchema,
@@ -14,27 +16,24 @@ import {
   type UpdateContactInput,
 } from '@/lib/crm/validations/contact'
 
-// ─── Helper: resolve tenantId for the current session user ───────────────────
+// ─── Helper: resolve tenantId + role for the current session user ─────────────
 
-async function getSessionAndTenant(): Promise<{ userId: string; userEmail: string; tenantId: string }> {
+async function getSessionAndTenant(): Promise<{ userId: string; userEmail: string; tenantId: string; role: CrmRole }> {
   const session = await auth.api.getSession({ headers: await headers() })
   if (!session?.user?.id) {
     throw new Error('Unauthorized')
   }
 
-  const userBranch = await prisma.crm_user_branch.findFirst({
-    where: { userId: session.user.id },
-    select: { tenantId: true },
-  })
-
-  if (!userBranch) {
+  const access = await resolveBranchAccess(session.user.id)
+  if (!access) {
     throw new Error('User has no branch assignment')
   }
 
   return {
     userId: session.user.id,
     userEmail: session.user.email ?? '',
-    tenantId: userBranch.tenantId,
+    tenantId: access.tenantId,
+    role: access.role,
   }
 }
 
@@ -45,7 +44,10 @@ export async function createContact(
   data: CreateContactInput,
 ): Promise<{ success: true; contactId: string } | { success: false; error: string }> {
   try {
-    const { userId, userEmail, tenantId } = await getSessionAndTenant()
+    const { userId, userEmail, tenantId, role } = await getSessionAndTenant()
+    if (!hasPermission(role, 'contacts:write')) {
+      return { success: false, error: 'Your role cannot create leads.' }
+    }
     const scope = scopedPrisma(tenantId)
 
     // Validate
@@ -59,17 +61,30 @@ export async function createContact(
     // Normalize phone
     const normalizedPhone = input.phone ? normalizePhone(input.phone) : undefined
 
-    // Check for duplicates by phone or email within this tenant
+    // Duplicate guard — only reject an EXACT match on name + phone + email.
+    // Siblings deliberately share a phone/email (one parent contact, a generated
+    // per-branch email) but have DIFFERENT names, so a phone/email match alone
+    // must not block — the name is what distinguishes them. Only when the name,
+    // phone AND email are all identical is this a true re-entry of the same
+    // person. (Was: OR(phone,email), which wrongly blocked siblings.)
     if (normalizedPhone || (input.email && input.email !== '')) {
-      const orClauses: Array<{ phone?: string; email?: string }> = []
-      if (normalizedPhone) orClauses.push({ phone: normalizedPhone })
-      if (input.email && input.email !== '') orClauses.push({ email: input.email })
+      const emailNorm = input.email && input.email !== '' ? input.email : null
+      const firstName = (input.firstName ?? '').trim()
+      const lastName = (input.lastName ?? '').trim()
 
       const existing = await prisma.crm_contact.findFirst({
         where: {
           ...scope.whereOnly(),
           deletedAt: null,
-          OR: orClauses,
+          firstName: { equals: firstName, mode: 'insensitive' },
+          // lastName is nullable; treat missing as null-or-empty.
+          ...(lastName
+            ? { lastName: { equals: lastName, mode: 'insensitive' } }
+            : { OR: [{ lastName: null }, { lastName: '' }] }),
+          // `?? null` makes an absent value match IS NULL (not "ignore filter"),
+          // so all three must genuinely line up.
+          phone: normalizedPhone ?? null,
+          email: emailNorm,
         },
         select: { id: true, firstName: true, lastName: true },
       })
@@ -77,7 +92,7 @@ export async function createContact(
       if (existing) {
         return {
           success: false,
-          error: `Duplicate contact: ${existing.firstName}${existing.lastName ? ' ' + existing.lastName : ''} already exists with this phone/email.`,
+          error: `Duplicate contact: ${existing.firstName}${existing.lastName ? ' ' + existing.lastName : ''} already exists with the same name, phone and email.`,
         }
       }
     }
@@ -130,7 +145,10 @@ export async function updateContact(
   userId: string,
 ): Promise<{ success: true } | { success: false; error: string }> {
   try {
-    const { userEmail, tenantId } = await getSessionAndTenant()
+    const { userEmail, tenantId, role } = await getSessionAndTenant()
+    if (!hasPermission(role, 'contacts:write')) {
+      return { success: false, error: 'Your role cannot edit leads.' }
+    }
     const scope = scopedPrisma(tenantId)
 
     // Validate
@@ -192,7 +210,10 @@ export async function deleteContact(
   userId: string,
 ): Promise<{ success: true } | { success: false; error: string }> {
   try {
-    const { userEmail, tenantId } = await getSessionAndTenant()
+    const { userEmail, tenantId, role } = await getSessionAndTenant()
+    if (!hasPermission(role, 'contacts:delete')) {
+      return { success: false, error: 'Only a super admin can delete a lead.' }
+    }
     const scope = scopedPrisma(tenantId)
 
     await prisma.crm_contact.update({
@@ -225,7 +246,11 @@ export async function bulkAssignContacts(
   requestingUserId: string,
 ): Promise<{ success: true; updated: number } | { success: false; error: string }> {
   try {
-    const { userEmail, tenantId } = await getSessionAndTenant()
+    const { userEmail, tenantId, role } = await getSessionAndTenant()
+    // Reassigning leads is a lead edit — AGENCY_ADMIN is read-only on leads.
+    if (!hasPermission(role, 'contacts:write')) {
+      return { success: false, error: 'Your role cannot reassign leads.' }
+    }
     const scope = scopedPrisma(tenantId)
 
     const result = await prisma.crm_contact.updateMany({

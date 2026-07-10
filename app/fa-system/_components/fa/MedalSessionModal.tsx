@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import { Check } from "lucide-react";
 import { Modal } from "@fa/_components/shared/Modal";
 import { useFAStore } from "@fa/_lib/store";
-import { FAEvent, Invitation, Student } from "@fa/_types";
+import { FAEvent, Invitation, Student, countsAsAttended } from "@fa/_types";
 
 interface Props {
   open: boolean;
@@ -30,7 +30,7 @@ export function MedalSessionModal({ open, onClose, event, sessionId }: Props) {
   // (so MKT can pack grade-by-grade) then by name within a grade.
   const attendees = useMemo(() => {
     return allInvitations
-      .filter(i => i.sessionId === sessionId && (i.status === "confirmed" || i.status === "attended"))
+      .filter(i => i.sessionId === sessionId && (i.status === "confirmed" || countsAsAttended(i.status)))
       .map(i => ({ inv: i, student: allStudents.find(s => s.id === i.studentId) ?? null }))
       .filter((x): x is { inv: Invitation; student: Student } => x.student !== null)
       .sort((a, b) => a.student.grade - b.student.grade || a.student.name.localeCompare(b.student.name));

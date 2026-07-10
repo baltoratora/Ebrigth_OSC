@@ -6,7 +6,7 @@ import { useFAStore } from "@fa/_lib/store";
 import { useCurrentUser } from "@fa/_hooks/useCurrentUser";
 import { Modal } from "@fa/_components/shared/Modal";
 import { StatusPill } from "@fa/_components/fa/StatusPill";
-import { Invitation, Session, isStudentEligible, hasBacklog, invitableGradesFor, FA_CURRENT_GRADE_MIN_CHAPTER } from "@fa/_types";
+import { DayPolicy, Invitation, Session, isStudentEligible, hasBacklog, invitableGradesFor, gradeLabel } from "@fa/_types";
 
 export interface InvitePick {
   studentId: string;
@@ -43,20 +43,24 @@ export function InviteStudentsModal({
     );
   }, [overrides, session.eventId, user?.branch]);
   const multiGradeAllowed = !!branchOverride;
+  // Which extra invites this branch may issue (defaults to legacy same-day).
+  const dayPolicy: DayPolicy = branchOverride?.dayPolicy ?? "SAME_DAY";
 
   const [search, setSearch] = useState("");
   // Pick map keyed by `${studentId}:${grade}` so multi-grade students can have
   // multiple picks at once. Stored grade is the actual target grade.
   const [picks, setPicks] = useState<Map<string, { studentId: string; grade: number }>>(new Map());
-  const [filterMode, setFilterMode] = useState<"eligible" | "all">("eligible");
+  const [filterMode, setFilterMode] = useState<"eligible" | "all" | "archived">("eligible");
+  const archivedCount = useMemo(() => students.filter(s => s.archived).length, [students]);
   const [gradeFilter, setGradeFilter] = useState<number | "all">("all");
 
   const inviteCap = quota * 3;
   const remaining = inviteCap - currentInvitations.length;
 
   // Build per-student summary of existing invites in this event:
-  //   - bookedGrades: set of grades already invited for
-  //   - bookedDay:    the day they're scheduled on (all invites must share it)
+  //   - grades: set of grades already invited for (dedup is day-independent)
+  //   - days:   every day they're already booked on (a student may be on more
+  //             than one day once DIFF_DAY / BOTH policies are in play)
   // Used both for the visibility gate and to suppress "duplicate" grade pills.
   const sessionById = useMemo(() => {
     const m = new Map<string, Session>();
@@ -65,15 +69,16 @@ export function InviteStudentsModal({
   }, [allSessions]);
 
   const bookingByStudent = useMemo(() => {
-    const m = new Map<string, { day: number; grades: Set<number> }>();
+    const m = new Map<string, { days: Set<number>; grades: Set<number> }>();
     for (const inv of allInvitationsForEvent) {
       const sess = sessionById.get(inv.sessionId);
       if (!sess) continue;
       const existing = m.get(inv.studentId);
       if (existing) {
         existing.grades.add(inv.targetGrade);
+        existing.days.add(sess.dayNumber);
       } else {
-        m.set(inv.studentId, { day: sess.dayNumber, grades: new Set([inv.targetGrade]) });
+        m.set(inv.studentId, { days: new Set([sess.dayNumber]), grades: new Set([inv.targetGrade]) });
       }
     }
     return m;
@@ -81,7 +86,14 @@ export function InviteStudentsModal({
 
   const visibleStudents = useMemo(() => {
     let list = students;
-    if (filterMode === "eligible") list = list.filter(s => isStudentEligible(s));
+    // Archived students are kept in their own tab. The eligible/all tabs show
+    // only the live roster; the archived tab shows only archived students.
+    if (filterMode === "archived") {
+      list = list.filter(s => s.archived);
+    } else {
+      list = list.filter(s => !s.archived);
+      if (filterMode === "eligible") list = list.filter(s => isStudentEligible(s));
+    }
     if (gradeFilter !== "all") list = list.filter(s => s.grade === gradeFilter);
     if (search) {
       const q = search.toLowerCase();
@@ -131,7 +143,11 @@ export function InviteStudentsModal({
               Multi-Grade unlocked
             </div>
             <div className="text-xs text-ink-700 mt-0.5">
-              Your branch may invite the same student to multiple grades on this day.
+              {dayPolicy === "DIFF_DAY"
+                ? "Your branch may invite the same student to additional grades, each on a different day."
+                : dayPolicy === "BOTH"
+                  ? "Your branch may invite the same student to multiple grades on the same day or a different day."
+                  : "Your branch may invite the same student to multiple grades on the same day (different sessions)."}
               <span className="text-ink-400 ml-1">
                 Granted by <span className="font-mono">{branchOverride.grantedBy}</span>
                 {" · "}
@@ -161,8 +177,8 @@ export function InviteStudentsModal({
           aria-label="Filter by grade"
         >
           <option value="all">All grades</option>
-          {[1, 2, 3, 4, 5, 6, 7, 8].map(g => (
-            <option key={g} value={g}>Grade {g}</option>
+          {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].map(g => (
+            <option key={g} value={g}>{gradeLabel(g)}</option>
           ))}
         </select>
 
@@ -183,11 +199,28 @@ export function InviteStudentsModal({
           >
             All active
           </button>
+          <button
+            onClick={() => setFilterMode("archived")}
+            className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+              filterMode === "archived" ? "bg-white text-ink-900 shadow-sm" : "text-ink-500"
+            }`}
+          >
+            Archived{archivedCount > 0 ? ` (${archivedCount})` : ""}
+          </button>
         </div>
 
         <div className="text-sm text-ink-500">
           <strong className="text-ink-900">{picks.size}</strong> / {remaining} selected
         </div>
+      </div>
+
+      {/* Legend — the green ✓ is COMPLETION history (from Heidi), not an
+          invitation. Spelled out so a tick is never mistaken for "invited". */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-3 text-[11px] text-ink-500">
+        <span><span className="text-success font-mono">G✓</span> completed (history)</span>
+        <span><span className="text-danger font-mono">G✗</span> not done — can invite</span>
+        <span><span className="font-mono line-through text-ink-400">G✓</span> already invited this event</span>
+        <span><span className="font-mono text-brand-600">G✓</span> selected now</span>
       </div>
 
       {/* List */}
@@ -204,19 +237,26 @@ export function InviteStudentsModal({
               const booking = bookingByStudent.get(student.id);
               const hasPriorBookingInEvent = !!booking;
 
-              // Visibility / lock rules:
+              // Visibility / lock rules (the branch's dayPolicy drives the day
+              // dimension; a different grade is always required either way):
               //   • No prior booking → eligible, all invitable grades pickable.
               //   • Prior booking, toggle OFF → fully locked (old behaviour).
-              //   • Prior booking, prior day ≠ this session's day → fully locked
-              //     (rule: all of a student's invites must share one day).
-              //   • Prior booking, same day, toggle ON → pickable for any
-              //     invitable grade NOT already booked.
+              //   • Toggle ON, SAME_DAY → locked if booked on a different day
+              //     (all invites must share one day).
+              //   • Toggle ON, DIFF_DAY → locked if already booked on THIS day
+              //     (extra invites must land on a different day).
+              //   • Toggle ON, BOTH → never day-locked; pick any unbooked grade.
               let lockReason: null | "already-invited" | string = null;
               if (hasPriorBookingInEvent) {
                 if (!multiGradeAllowed) {
                   lockReason = "already-invited";
-                } else if (booking!.day !== session.dayNumber) {
-                  lockReason = `Booked on day ${booking!.day}`;
+                } else if (dayPolicy === "SAME_DAY") {
+                  const otherDay = Array.from(booking!.days).find(d => d !== session.dayNumber);
+                  if (otherDay !== undefined) lockReason = `Booked on day ${otherDay}`;
+                } else if (dayPolicy === "DIFF_DAY") {
+                  if (booking!.days.has(session.dayNumber)) {
+                    lockReason = `Already on day ${session.dayNumber}`;
+                  }
                 }
               }
 
@@ -248,8 +288,10 @@ export function InviteStudentsModal({
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-medium text-ink-900">{student.name}</span>
-                      <span className="font-mono text-xs text-ink-400">G{student.grade}·C{student.credit}</span>
-                      {!student.active && (
+                      <span className="font-mono text-xs text-ink-400">{gradeLabel(student.grade)}·C{student.credit}</span>
+                      {student.archived ? (
+                        <StatusPill tone="warning" showDot={false}>Archived</StatusPill>
+                      ) : !student.active && (
                         <StatusPill tone="danger" showDot={false}>Inactive</StatusPill>
                       )}
                       {eligible && !lockReason && !hasPriorBookingInEvent && (
@@ -287,14 +329,6 @@ export function InviteStudentsModal({
                         </div>
                         {(() => {
                           const grades = invitableGradesFor(student);
-                          if (grades.length === 0) {
-                            return (
-                              <div className="text-[11px] text-ink-400 italic">
-                                Not yet at C{FA_CURRENT_GRADE_MIN_CHAPTER} of G{student.grade} —
-                                FA tickbox unlocks once the student reaches it.
-                              </div>
-                            );
-                          }
                           return (
                             <div className="flex items-center gap-1 flex-wrap">
                               {grades.map(g => {
@@ -319,14 +353,16 @@ export function InviteStudentsModal({
                                     disabled={disabled}
                                     title={
                                       alreadyBooked
-                                        ? `Already invited for G${g} in this event`
-                                        : `Grade ${g}: ${done ? "completed" : "not yet"}`
+                                        ? `Already invited for ${gradeLabel(g)} in this event`
+                                        : done
+                                          ? `${gradeLabel(g)} already completed (history) — not an invitation. Pickable if you want to re-appraise.`
+                                          : `${gradeLabel(g)} not done yet — click to invite`
                                     }
                                     className={`text-[11px] font-mono px-2 py-1 rounded border transition-colors ${baseCls} ${
                                       disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"
                                     }`}
                                   >
-                                    G{g} {marker}
+                                    {gradeLabel(g)} {marker}
                                   </button>
                                 );
                               })}

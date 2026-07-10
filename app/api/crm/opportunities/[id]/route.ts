@@ -8,6 +8,7 @@ import { UpdateOpportunitySchema } from '@/lib/crm/validations/opportunity'
 import { scopedPrisma } from '@/lib/crm/tenancy'
 import { logAudit } from '@/lib/crm/audit'
 import { resolveBranchAccess } from '@/lib/crm/branch-access'
+import { hasPermission } from '@/lib/crm/permissions'
 
 async function resolveSession(_req: NextRequest) {
   const session = await auth.api.getSession({ headers: await headers() })
@@ -22,6 +23,7 @@ async function resolveSession(_req: NextRequest) {
     branchId: access.primaryBranchId,
     branchIds: access.branchIds,
     elevated: access.elevated,
+    role: access.role,
   }
 }
 
@@ -82,6 +84,12 @@ export async function PATCH(
     const ctx = await resolveSession(req)
     if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+    // Leads are read-only for AGENCY_ADMIN — only roles with opportunities:write
+    // (super / regional / branch / staff) may edit.
+    if (!hasPermission(ctx.role, 'opportunities:write')) {
+      return NextResponse.json({ error: 'Your role cannot edit leads.' }, { status: 403 })
+    }
+
     const { id } = await params
     const denied = await assertBranchAccess(ctx, id)
     if (denied) return denied
@@ -133,6 +141,12 @@ export async function DELETE(
   try {
     const ctx = await resolveSession(req)
     if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    // Lead deletion is SUPER_ADMIN-only (branch/regional managers + agency
+    // admins cannot delete leads).
+    if (!hasPermission(ctx.role, 'opportunities:delete')) {
+      return NextResponse.json({ error: 'Only a super admin can delete a lead.' }, { status: 403 })
+    }
 
     const { id } = await params
     const denied = await assertBranchAccess(ctx, id)

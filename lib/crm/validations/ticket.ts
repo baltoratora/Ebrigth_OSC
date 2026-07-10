@@ -97,24 +97,25 @@ export const ticketFieldSchemas = {
     }),
   },
 
-  lead: {
-    missing: z.object({
-      stage:   z.string().min(1, 'Stage is required'),
-      remarks: z.string().min(5, 'Remarks must be at least 5 characters'),
-    }),
-    duplicate: z.object({
-      stage:   z.string().min(1, 'Stage is required'),
-      remarks: z.string().min(5, 'Remarks must be at least 5 characters'),
-    }),
-    delete: z.object({
-      stage:   z.string().min(1, 'Stage is required'),
-      remarks: z.string().min(5, 'Remarks must be at least 5 characters'),
-    }),
-    others: z.object({
-      stage:   z.string().min(1, 'Stage is required'),
-      remarks: z.string().min(5, 'Remarks must be at least 5 characters'),
-    }),
-  },
+  // Lead tickets all carry the same field shape: Stage + Opportunity
+  // identifiers (Name / Contact / Email) + Remarks. The opportunity
+  // identifiers let the admin handling the ticket locate the lead in
+  // the CRM kanban without back-and-forth.
+  lead: (() => {
+    const leadFields = z.object({
+      stage:              z.string().min(1, 'Stage is required'),
+      opportunityName:    z.string().min(1, 'Opportunity name is required'),
+      opportunityContact: z.string().min(1, 'Opportunity contact is required'),
+      opportunityEmail:   z.string().email('A valid opportunity email is required'),
+      remarks:            z.string().min(5, 'Remarks must be at least 5 characters'),
+    })
+    return {
+      missing:   leadFields,
+      duplicate: leadFields,
+      delete:    leadFields,
+      others:    leadFields,
+    }
+  })(),
 
   // For the "Others" platform the sub_type IS the department (chosen via
   // department-cards on step 2), so each department gets the same Position

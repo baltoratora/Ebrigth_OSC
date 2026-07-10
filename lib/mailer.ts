@@ -1,4 +1,4 @@
-import nodemailer, { type SendMailOptions } from 'nodemailer';
+import nodemailer, { type SendMailOptions, type SentMessageInfo } from 'nodemailer';
 
 // Gmail throttles when the same account performs many fresh logins in a short
 // window ("454-4.7.0 Too many login attempts"). Pooling reuses a single
@@ -63,7 +63,7 @@ function fmtRemaining(ms: number): string {
   return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
 }
 
-async function safeSend(msg: SendMailOptions): Promise<void> {
+async function safeSend(msg: SendMailOptions): Promise<SentMessageInfo> {
   const now = Date.now();
   if (now < cooldownUntil) {
     const remaining = cooldownUntil - now;
@@ -75,8 +75,9 @@ async function safeSend(msg: SendMailOptions): Promise<void> {
   }
 
   try {
-    await transporter.sendMail(msg);
+    const info = await transporter.sendMail(msg);
     cooldownLogged = false; // success — reset for next cooldown event
+    return info;
   } catch (err) {
     if (isRateLimitOrAuthError(err)) {
       cooldownUntil = Date.now() + COOLDOWN_MS;
@@ -99,6 +100,16 @@ transporter.verify().then(
   },
 );
 
+/**
+ * Generic SMTP send — used by the CRM email layer (lib/crm/email.ts) so all
+ * CRM mail (ticket digest, ticket-event notifications, automation Send-Email)
+ * goes through this same authenticated, pooled, cooldown-protected transport.
+ * Throws on failure (and trips the shared cooldown on auth/rate-limit errors).
+ */
+export async function sendMail(msg: SendMailOptions): Promise<SentMessageInfo> {
+  return safeSend(msg);
+}
+
 export async function sendClockInEmail(to: string, name: string, time: string): Promise<void> {
   await safeSend({
     from: `"Ebright Attendance" <${process.env.SMTP_USER}>`,
@@ -120,6 +131,74 @@ export async function sendClockInEmail(to: string, name: string, time: string): 
         </div>
         <p style="font-size:13px;color:#9ca3af;margin-top:24px;">
           This is an automated message from the Ebright HR System. Please do not reply.
+        </p>
+      </div>
+    `,
+  });
+}
+
+/**
+ * Daily "you're marked missing today" reminder, asking the employee to email
+ * HR to justify their absence. NOT a clock-in/out email — sent by the
+ * missing-reminder sweep once a person is 15 min past their scheduled start
+ * without having clocked in.
+ */
+export async function sendMissingReminderEmail(
+  to: string,
+  name: string,
+  opts: { branch: string; date: string; hrEmail?: string; startTime?: string },
+): Promise<void> {
+  const hrEmail = opts.hrEmail || 'hr@ebright.my';
+  const hrLink = `<a href="mailto:${hrEmail}" style="color:#b45309;">${hrEmail}</a>`;
+  // startTime is the person's own scheduled start time for that day (from
+  // BranchStaff.workingHours), not a fixed company-wide time — see callers.
+  const timeline = opts.startTime ? `${opts.date} ${opts.startTime}` : opts.date;
+  await safeSend({
+    from: `"Ebright HR" <${process.env.SMTP_USER}>`,
+    to,
+    subject: `Action Required: Attendance Justification for ${opts.date}`,
+    html: `
+      <div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px;color:#111827;">
+        <p style="font-size:15px;">Dear <strong>${name}</strong>,</p>
+
+        <p style="font-size:15px;">
+          Please be informed that we are missing your biometric clock-in record for the following shift:
+        </p>
+
+        <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:14px;">
+          <tr>
+            <td style="padding:6px 0;color:#6b7280;width:160px;">Affected Branch:</td>
+            <td style="padding:6px 0;"><strong>${opts.branch}</strong></td>
+          </tr>
+          <tr>
+            <td style="padding:6px 0;color:#6b7280;">Timeline / Date:</td>
+            <td style="padding:6px 0;"><strong>${timeline}</strong></td>
+          </tr>
+        </table>
+
+        <p style="font-size:15px;">
+          To ensure company compliance and protect your monthly payroll from errors, you must justify this
+          missing log. Please reply to this email or contact us at ${hrLink} in 24 hour with your status update:
+        </p>
+
+        <p style="font-size:14px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;margin:16px 0;">
+          <strong>Scenario A (Working):</strong> I was at work at the branch but missed the scan because
+          [Provide Reason: Forgot / System Error] and my true arrival time was [Insert Time].
+        </p>
+
+        <p style="font-size:14px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;margin:16px 0;">
+          <strong>Scenario B (Not Working):</strong> I was absent from the branch because
+          [Provide Reason: Sick Leave / Rest Day / Leave].
+        </p>
+
+        <p style="font-size:13px;color:#6b7280;">
+          Please ignore this automated notice if you are on prior approved leave or have already corrected
+          your attendance log.
+        </p>
+
+        <p style="font-size:14px;margin-top:24px;">
+          Sincerely,<br />
+          The HR Attendance Desk
         </p>
       </div>
     `,

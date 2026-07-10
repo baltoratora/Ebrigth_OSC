@@ -5,6 +5,7 @@ import { prisma } from '@/lib/crm/db'
 import { bulkMoveOpportunities } from '@/server/actions/opportunities'
 import { BulkMoveSchema } from '@/lib/crm/validations/opportunity'
 import { resolveBranchAccess } from '@/lib/crm/branch-access'
+import { hasPermission } from '@/lib/crm/permissions'
 
 async function resolveSession() {
   const session = await auth.api.getSession({ headers: await headers() })
@@ -16,6 +17,7 @@ async function resolveSession() {
     userId: session.user.id,
     branchIds: access.branchIds,
     elevated: access.elevated,
+    role: access.role,
   }
 }
 
@@ -23,6 +25,11 @@ export async function POST(req: NextRequest) {
   try {
     const ctx = await resolveSession()
     if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    // Moving leads is lead editing — read-only for AGENCY_ADMIN.
+    if (!hasPermission(ctx.role, 'opportunities:write')) {
+      return NextResponse.json({ error: 'Your role cannot move leads.' }, { status: 403 })
+    }
 
     const body = await req.json()
     const parsed = BulkMoveSchema.safeParse(body)

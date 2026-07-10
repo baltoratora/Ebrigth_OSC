@@ -13,6 +13,7 @@ import { HeroCard } from "@pcm/_components/fa/HeroCard";
 import { EventRow } from "@pcm/_components/fa/EventRow";
 import { ArchiveRow } from "@pcm/_components/fa/ArchiveRow";
 import { MultiGradeManagerModal } from "@pcm/_components/fa/MultiGradeManagerModal";
+import { DuplicateEventModal } from "@pcm/_components/fa/DuplicateEventModal";
 import { Z } from "@pcm/_lib/zIndex";
 import { EventStatus, FAEvent } from "@pcm/_types";
 
@@ -30,6 +31,7 @@ export default function MarketingEventsPage() {
   const [editEvent,    setEditEvent]    = useState<FAEvent | null>(null);
   const [savedToast,   setSavedToast]   = useState(false);
   const [multiGradeOpen, setMultiGradeOpen] = useState(false);
+  const [duplicateSource, setDuplicateSource] = useState<FAEvent | null>(null);
 
   // Total branches currently unlocked across all events — surfaced as a
   // counter pip on the "Multi-Grade" button so Academy notices at a
@@ -199,6 +201,7 @@ export default function MarketingEventsPage() {
             quotaTotal={quotaTotal(heroEvent.id)}
             onView={() => setPreviewEvent(heroEvent)}
             onEdit={() => setEditEvent(heroEvent)}
+            onDuplicate={() => setDuplicateSource(heroEvent)}
           />
         </section>
       )}
@@ -223,6 +226,7 @@ export default function MarketingEventsPage() {
                 quotaTotal={quotaTotal(event.id)}
                 onView={() => setPreviewEvent(event)}
                 onEdit={() => setEditEvent(event)}
+                onDuplicate={() => setDuplicateSource(event)}
               />
             ))}
           </div>
@@ -275,6 +279,13 @@ export default function MarketingEventsPage() {
       <MultiGradeManagerModal
         open={multiGradeOpen}
         onClose={() => setMultiGradeOpen(false)}
+      />
+
+      {/* ── Duplicate-event modal ───────────────────────────────────── */}
+      <DuplicateEventModal
+        open={!!duplicateSource}
+        onClose={() => setDuplicateSource(null)}
+        source={duplicateSource}
       />
 
       {/* ── Save toast ──────────────────────────────────────────────── */}

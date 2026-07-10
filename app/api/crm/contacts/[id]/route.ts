@@ -7,6 +7,7 @@ import { UpdateContactSchema } from '@/lib/crm/validations/contact'
 import { updateContact, deleteContact } from '@/server/actions/contacts'
 import { logAudit } from '@/lib/crm/audit'
 import { createHash } from 'crypto'
+import { isReadOnlyViewer } from '@/lib/crm/operation-accounts'
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 
@@ -34,13 +35,26 @@ async function resolveSession(req: NextRequest): Promise<{ userId: string; userE
     where: { userId: session.user.id },
     select: { tenantId: true },
   })
-  if (!userBranch) return null
-
-  return {
-    userId: session.user.id,
-    userEmail: session.user.email ?? '',
-    tenantId: userBranch.tenantId,
+  if (userBranch) {
+    return {
+      userId: session.user.id,
+      userEmail: session.user.email ?? '',
+      tenantId: userBranch.tenantId,
+    }
   }
+
+  // Read-only viewer (CEO) without a branch link: allow VIEWING a contact's
+  // detail. PATCH/DELETE here call updateContact/deleteContact, which enforce
+  // contacts:write/delete (AGENCY_ADMIN lacks both) — and middleware backstops.
+  if (isReadOnlyViewer(session.user.email)) {
+    const tenant =
+      (await prisma.crm_tenant.findFirst({ where: { slug: { in: ['ebright', 'ebright-demo'] } }, select: { id: true } })) ??
+      (await prisma.crm_tenant.findFirst({ orderBy: { createdAt: 'asc' }, select: { id: true } }))
+    if (tenant) {
+      return { userId: session.user.id, userEmail: session.user.email ?? '', tenantId: tenant.id }
+    }
+  }
+  return null
 }
 
 // ─── GET /api/crm/contacts/[id] ──────────────────────────────────────────────

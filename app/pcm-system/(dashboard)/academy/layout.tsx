@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { useCurrentUser } from "@pcm/_hooks/useCurrentUser";
 
 /** Route-group guard: any visitor under /pcm-system/academy/* must be MKT.
@@ -9,14 +10,19 @@ import { useCurrentUser } from "@pcm/_hooks/useCurrentUser";
 export default function MarketingLayout({ children }: { children: React.ReactNode }) {
   const user = useCurrentUser();
   const router = useRouter();
+  const { status } = useSession();
 
   useEffect(() => {
-    if (!user) {
+    // Don't bounce to /login while the session is still hydrating on refresh
+    // (SessionSync populates the PCM store right after). Only redirect when the
+    // session is definitively unauthenticated.
+    if (status === "loading") return;
+    if (status === "unauthenticated") {
       router.replace("/login");
-    } else if (user.role !== "MKT") {
+    } else if (user && user.role !== "MKT") {
       router.replace("/pcm-system/bm");
     }
-  }, [user, router]);
+  }, [user, status, router]);
 
   if (!user || user.role !== "MKT") return null;
   return <>{children}</>;

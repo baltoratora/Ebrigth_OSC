@@ -5,6 +5,7 @@ import { prisma } from '@/lib/crm/db'
 import { bulkDeleteOpportunities } from '@/server/actions/opportunities'
 import { BulkDeleteSchema } from '@/lib/crm/validations/opportunity'
 import { resolveBranchAccess } from '@/lib/crm/branch-access'
+import { hasPermission } from '@/lib/crm/permissions'
 
 async function resolveSession() {
   const session = await auth.api.getSession({ headers: await headers() })
@@ -16,6 +17,7 @@ async function resolveSession() {
     userId: session.user.id,
     branchIds: access.branchIds,
     elevated: access.elevated,
+    role: access.role,
   }
 }
 
@@ -23,6 +25,11 @@ export async function POST(req: NextRequest) {
   try {
     const ctx = await resolveSession()
     if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    // Lead deletion is SUPER_ADMIN-only.
+    if (!hasPermission(ctx.role, 'opportunities:delete')) {
+      return NextResponse.json({ error: 'Only a super admin can delete leads.' }, { status: 403 })
+    }
 
     const body = await req.json()
     const parsed = BulkDeleteSchema.safeParse(body)

@@ -8,6 +8,7 @@ import {
   PanelLeftOpen,
   Search,
   Bell,
+  BellOff,
   ChevronDown,
   Check,
   CheckCheck,
@@ -15,6 +16,7 @@ import {
   HelpCircle,
   Home,
   LogOut,
+  Loader2,
   RefreshCw,
   UserCircle,
   UserCog,
@@ -22,11 +24,17 @@ import {
   ChevronRight,
   RotateCcw,
   Share2,
+  Sun,
+  Moon,
 } from 'lucide-react'
+import { usePushSubscription } from '@/hooks/crm/usePushSubscription'
+import { useTheme } from 'next-themes'
 import { toast } from 'sonner'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/crm/utils'
+import { isOperationAccount, isHiddenForOperation } from '@/lib/crm/operation-accounts'
 import { useBranchContext, type BranchInfo } from './branch-context'
+import { DEPARTMENTS } from '@/lib/crm/departments'
 import { authClient } from '@/lib/crm/auth-client'
 import { useUnreadCount, useNotifications, useMarkNotificationRead, useMarkAllRead } from '@/hooks/crm/useNotifications'
 import type { SessionUser } from './providers'
@@ -103,6 +111,23 @@ function BranchSwitcher({ user }: { user: SessionUser }) {
     (user as { tktRole?: string | null }).tktRole === 'super_admin' ||
     user.email === 'admin@ebright.my'
 
+  // Operation accounts are elevated (all-branches) but get a single
+  // "Operation View" — NO Agency-View toggle, NO super-admin tooling — and the
+  // internal OD + Marketing branches are hidden from their branch list.
+  const isOperation = isOperationAccount(user.email)
+  // Only a real SUPER_ADMIN may use "Super Admin View". AGENCY_ADMIN accounts
+  // (incl. the CEO / agency-view accounts) get Agency View only.
+  const isRealSuper = viewerRole === 'SUPER_ADMIN'
+  // The Super↔Agency toggle and agency-only tooling are for real admins only.
+  const showViewToggle = isAdmin && !isOperation
+  // Force super (all-branches) semantics for operation; force agency for any
+  // elevated non-super (agency admins) so they never land in Super Admin View.
+  const effectiveViewMode: 'super' | 'agency' = isOperation
+    ? 'super'
+    : !isRealSuper
+      ? 'agency'
+      : viewMode
+
   useEffect(() => {
     setMounted(true)
     if (typeof window === 'undefined') return
@@ -130,6 +155,8 @@ function BranchSwitcher({ user }: { user: SessionUser }) {
   // without a numeric prefix sort alphabetically below the numbered set.
   const sorted = [...branches]
     .filter((b) => !/^Ebright HR$/i.test(b.name))
+    // Operation accounts don't see the internal OD + Marketing branches.
+    .filter((b) => !isOperation || !isHiddenForOperation(b.name))
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
 
   const filtered = query
@@ -141,11 +168,18 @@ function BranchSwitcher({ user }: { user: SessionUser }) {
     : sorted
 
   // Labels — keep server + first client render identical, then update after mount.
+  // Operation accounts always read "Operation View" (no Super/Agency wording).
+  const adminViewLabel = isOperation
+    ? 'Operation View'
+    : effectiveViewMode === 'agency' ? 'Agency View' : 'Super Admin View'
   const defaultPanelLabel = !mounted
-    ? isAdmin ? 'Super Admin View' : 'My Branch'
+    ? isAdmin ? (isOperation ? 'Operation View' : 'Super Admin View') : 'My Branch'
     : isAdmin
-      ? viewMode === 'agency' ? 'Agency View' : 'Super Admin View'
+      ? adminViewLabel
       : branches.length > 0 ? branches[0].name : 'My Branch'
+
+  // Branch count shown to operation excludes the hidden OD + Marketing branches.
+  const adminBranchCount = isOperation ? sorted.length : (branches.length || '—')
 
   const currentLabel = mounted ? (selectedBranch?.name ?? defaultPanelLabel) : defaultPanelLabel
   const currentSublabel = !mounted
@@ -156,7 +190,7 @@ function BranchSwitcher({ user }: { user: SessionUser }) {
         // branch-manager view — clearer than "Viewing all 23 branches".
         ? selectedBranch
           ? `Viewing as ${selectedBranch.name.replace(/^\d+\s+/, '')}`
-          : `Viewing all ${branches.length || '—'} branches`
+          : `Viewing all ${adminBranchCount} branches`
         : branches.length > 1
           ? `Viewing ${branches.length} accessible branches`
           : 'Your branch'
@@ -195,20 +229,23 @@ function BranchSwitcher({ user }: { user: SessionUser }) {
       {/* Dropdown */}
       {open && (
         <div className="absolute left-0 top-full z-50 mt-2 w-120 max-w-[90vw] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-800">
-          {/* Admin-only view-mode toggle (Super Admin ↔ Agency View) */}
-          {isAdmin && (
+          {/* Admin-only view-mode toggle (Super Admin ↔ Agency View).
+              Operation accounts don't get this — they have a single view. */}
+          {showViewToggle && (
             <div className="flex items-center gap-1 border-b border-slate-100 bg-slate-50 p-1.5 dark:border-slate-700 dark:bg-slate-900">
-              <button
-                onClick={() => setMode('super')}
-                className={cn(
-                  'flex-1 rounded-md px-3 py-1.5 text-xs font-semibold transition',
-                  viewMode === 'super'
-                    ? 'bg-white text-indigo-700 shadow-sm dark:bg-slate-800 dark:text-indigo-300'
-                    : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200',
-                )}
-              >
-                Super Admin View
-              </button>
+              {isRealSuper && (
+                <button
+                  onClick={() => setMode('super')}
+                  className={cn(
+                    'flex-1 rounded-md px-3 py-1.5 text-xs font-semibold transition',
+                    viewMode === 'super'
+                      ? 'bg-white text-indigo-700 shadow-sm dark:bg-slate-800 dark:text-indigo-300'
+                      : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200',
+                  )}
+                >
+                  Super Admin View
+                </button>
+              )}
               <button
                 onClick={() => setMode('agency')}
                 className={cn(
@@ -224,7 +261,7 @@ function BranchSwitcher({ user }: { user: SessionUser }) {
           )}
 
           {/* Agency-only: Manage branch access */}
-          {isAdmin && viewMode === 'agency' && (
+          {showViewToggle && effectiveViewMode === 'agency' && (
             <button
               onClick={() => { router.push('/crm/settings/branch-access'); setOpen(false) }}
               className="flex w-full items-center gap-3 border-b border-slate-100 bg-indigo-50/60 px-3 py-2.5 text-sm transition hover:bg-indigo-100 dark:border-slate-700 dark:bg-indigo-950/30 dark:hover:bg-indigo-950/50"
@@ -269,11 +306,55 @@ function BranchSwitcher({ user }: { user: SessionUser }) {
               </div>
               <span className="flex-1 text-left font-medium text-indigo-600 dark:text-indigo-400">
                 {isAdmin
-                  ? viewMode === 'agency' ? 'Switch to Agency View' : 'View all branches'
+                  ? effectiveViewMode === 'agency' ? 'Switch to Agency View' : 'View all branches'
                   : 'All my branches'}
               </span>
               {selectedBranch === null && <Check className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />}
             </button>
+          )}
+
+          {/* Regions — admins only. Deep-links into the Day Distribution
+              (Region) view pre-filtered to the chosen region. Branches are
+              grouped A/B/C in lib/crm/dashboard-metrics; this is the quick
+              jump the super admin asked for in the top-left dropdown. */}
+          {isAdmin && (
+            <div className="border-t border-slate-100 dark:border-slate-700">
+              <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                Regions
+              </div>
+              <div className="flex flex-wrap gap-1.5 px-3 pb-2">
+                {(['A', 'B', 'C'] as const).map((r) => (
+                  <button
+                    key={r}
+                    onClick={() => { router.push(`/crm/region?region=${r}`); setOpen(false); setQuery('') }}
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:border-indigo-300 hover:bg-indigo-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-indigo-500 dark:hover:bg-indigo-950/40"
+                  >
+                    Region {r}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Departments — admins only. Jumps to the ticket triage board
+              filtered to one department's directed tickets (by sub_type). */}
+          {isAdmin && (
+            <div className="border-t border-slate-100 dark:border-slate-700">
+              <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                Departments
+              </div>
+              <div className="flex flex-wrap gap-1.5 px-3 pb-2">
+                {DEPARTMENTS.map((d) => (
+                  <button
+                    key={d.subType}
+                    onClick={() => { router.push(`/crm/tickets/kanban?dept=${d.subType}`); setOpen(false); setQuery('') }}
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:border-indigo-300 hover:bg-indigo-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-indigo-500 dark:hover:bg-indigo-950/40"
+                  >
+                    {d.name}
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
 
           <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-700">
@@ -291,7 +372,7 @@ function BranchSwitcher({ user }: { user: SessionUser }) {
             ) : (
               filtered.map((branch: BranchInfo) => {
                 const selected = selectedBranch?.id === branch.id
-                const showShare = isAdmin && viewMode === 'agency'
+                const showShare = showViewToggle && effectiveViewMode === 'agency'
                 return (
                   <div
                     key={branch.id}
@@ -465,8 +546,46 @@ function HelpTooltip() {
 
 // ─── Global search ────────────────────────────────────────────────────────────
 
+interface SearchContactHit {
+  id: string
+  firstName: string
+  lastName: string | null
+  parentFullName: string | null
+  phone: string | null
+  email: string | null
+}
+
+// Quick-nav targets. Matched against label + keywords so "auto" → Automations,
+// "pipe" → Pipelines, etc. The destination page enforces its own role access.
+const SEARCH_PAGES: Array<{ label: string; href: string; kw: string }> = [
+  { label: 'Dashboard',              href: '/crm/dashboard',              kw: 'dashboard home metrics leads overview' },
+  { label: 'Opportunities',          href: '/crm/opportunities',          kw: 'opportunities kanban pipeline leads board cards' },
+  { label: 'Contacts',               href: '/crm/contacts',               kw: 'contacts leads people parents' },
+  { label: 'Tickets',                href: '/crm/tickets',                kw: 'tickets support issues helpdesk' },
+  { label: 'Automations',            href: '/crm/automations',            kw: 'automations automation workflow auto triggers' },
+  { label: 'Forms',                  href: '/crm/forms',                  kw: 'forms trial registration' },
+  { label: 'Analytics',              href: '/crm/analytics',              kw: 'analytics reports charts insights' },
+  { label: 'Notifications',          href: '/crm/notifications',          kw: 'notifications alerts' },
+  { label: 'Settings · Pipelines',   href: '/crm/settings/pipelines',     kw: 'settings pipelines stages buffer' },
+  { label: 'Settings · Team',        href: '/crm/settings/team',          kw: 'settings team users members staff' },
+  { label: 'Settings · Tags',        href: '/crm/settings/tags',          kw: 'settings tags labels' },
+  { label: 'Settings · Lead Sources', href: '/crm/settings/lead-sources', kw: 'settings lead sources channels' },
+  { label: 'Settings · Branch Access', href: '/crm/settings/branch-access', kw: 'settings branch access permissions' },
+]
+
 function GlobalSearch() {
+  const router = useRouter()
   const inputRef = useRef<HTMLInputElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [query, setQuery] = useState('')
+  const [debounced, setDebounced] = useState('')
+  const [open, setOpen] = useState(false)
+
+  // Debounce the contact lookup so we don't fire a request on every keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(query.trim()), 250)
+    return () => clearTimeout(t)
+  }, [query])
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -475,22 +594,116 @@ function GlobalSearch() {
         inputRef.current?.focus()
       }
       if (e.key === 'Escape') {
+        setOpen(false)
         inputRef.current?.blur()
       }
     }
+    function handleClickOutside(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false)
+    }
     window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
   }, [])
 
+  // Lead/contact search — reuses the branch-scoped /api/crm/contacts endpoint.
+  const { data, isFetching } = useQuery({
+    queryKey: ['crm', 'global-search', debounced],
+    queryFn: async (): Promise<{ data: SearchContactHit[] }> => {
+      const res = await fetch(`/api/crm/contacts?search=${encodeURIComponent(debounced)}&pageSize=6`)
+      if (!res.ok) throw new Error('Search failed')
+      return res.json()
+    },
+    enabled: debounced.length >= 2,
+    staleTime: 30_000,
+  })
+
+  const q = query.trim().toLowerCase()
+  const pageHits = q
+    ? SEARCH_PAGES.filter((p) => p.label.toLowerCase().includes(q) || p.kw.includes(q)).slice(0, 5)
+    : []
+  const contacts = debounced.length >= 2 ? data?.data ?? [] : []
+  const showDropdown = open && q.length > 0
+
+  function go(href: string) {
+    setOpen(false)
+    setQuery('')
+    inputRef.current?.blur()
+    router.push(href)
+  }
+
+  function contactName(c: SearchContactHit): string {
+    if (c.parentFullName) return c.parentFullName
+    return `${c.firstName} ${c.lastName ?? ''}`.trim() || 'Unnamed lead'
+  }
+
   return (
-    <div className="relative hidden sm:block">
+    <div ref={containerRef} className="relative hidden sm:block">
       <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 pointer-events-none" />
       <input
         ref={inputRef}
         type="search"
+        value={query}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true) }}
+        onFocus={() => setOpen(true)}
         placeholder="Search… (press /)"
         className="h-9 w-56 lg:w-72 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 pl-9 pr-3 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
       />
+
+      {showDropdown && (
+        <div className="absolute right-0 top-full z-50 mt-2 w-80 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-800">
+          {/* Quick page navigation */}
+          {pageHits.length > 0 && (
+            <div className="py-1">
+              <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Pages</div>
+              {pageHits.map((p) => (
+                <button
+                  key={p.href}
+                  onClick={() => go(p.href)}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-slate-50 dark:hover:bg-slate-700"
+                >
+                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                  <span className="text-slate-800 dark:text-slate-100">{p.label}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Leads / contacts */}
+          <div className={cn('py-1', pageHits.length > 0 && 'border-t border-slate-100 dark:border-slate-700')}>
+            <div className="flex items-center justify-between px-3 py-1">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Leads</span>
+              {isFetching && <Loader2 className="h-3 w-3 animate-spin text-slate-400" />}
+            </div>
+            {debounced.length < 2 ? (
+              <p className="px-3 py-2 text-xs text-slate-400">Type 2+ letters to search leads…</p>
+            ) : contacts.length === 0 && !isFetching ? (
+              <p className="px-3 py-2 text-xs text-slate-400">No leads match &ldquo;{query}&rdquo;.</p>
+            ) : (
+              contacts.map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => go(`/crm/contacts/${c.id}`)}
+                  className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-slate-700"
+                >
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-[10px] font-semibold text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300">
+                    {contactName(c).slice(0, 2).toUpperCase()}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium text-slate-900 dark:text-white">{contactName(c)}</div>
+                    <div className="truncate text-xs text-slate-500 dark:text-slate-400">
+                      {[c.phone, c.email].filter(Boolean).join(' · ') || '—'}
+                    </div>
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -633,6 +846,10 @@ function UserMenu({ user }: { user: SessionUser }) {
             <RotateCcw className="h-4 w-4 text-slate-400" />
             Reset to default admin
           </button>
+
+          <hr className="my-1 border-slate-100 dark:border-slate-700" />
+
+          <ThemeToggleRow />
 
           <hr className="my-1 border-slate-100 dark:border-slate-700" />
 
@@ -883,7 +1100,7 @@ function NotificationBell() {
             )}
           </div>
 
-          {/* Footer — link to the full page */}
+          {/* Footer — link to the full page + push toggle */}
           <div className="border-t border-slate-100 px-3 py-2 dark:border-slate-700">
             <button
               onClick={() => {
@@ -894,9 +1111,82 @@ function NotificationBell() {
             >
               View all notifications
             </button>
+            <PushNotificationToggle />
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── Push notification toggle (in notification dropdown footer) ──────────────
+//
+// Lets the user opt in/out of browser push for the in-app notifications they
+// already get via the bell. Toggle OFF removes only the push subscription —
+// notifications still write to crm_notification and appear on the bell list.
+//
+// The user's tenantId is read off the first accessible branch (every branch
+// in BranchContext carries it). Hidden when the browser doesn't support
+// the Push API or when no tenantId is available yet.
+
+function PushNotificationToggle() {
+  const { branches } = useBranchContext()
+  const tenantId = branches[0]?.tenantId ?? null
+  const push     = usePushSubscription(tenantId)
+
+  // Surface subscribe/unsubscribe failures so "the toggle won't turn on" is
+  // diagnosable instead of failing silently.
+  useEffect(() => {
+    if (push.error) toast.error(`Push notifications: ${push.error}`)
+  }, [push.error])
+
+  if (!push.ready)     return null
+  if (push.unsupported) return null
+
+  const handleClick = () => {
+    if (push.pending) return
+    if (push.subscribed) void push.unsubscribe()
+    else                 void push.subscribe()
+  }
+
+  return (
+    <div className="mt-1 flex items-center justify-between gap-2 rounded-md px-2 py-1.5">
+      <div className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-300">
+        {push.subscribed ? (
+          <Bell className="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400" />
+        ) : (
+          <BellOff className="h-3.5 w-3.5 text-slate-400" />
+        )}
+        <span>Browser push notifications</span>
+      </div>
+
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={push.pending || push.denied}
+        aria-pressed={push.subscribed}
+        title={
+          push.denied
+            ? 'Browser blocked notifications — re-enable in site settings'
+            : push.subscribed
+              ? 'Push is on. Click to turn off (in-app bell still works).'
+              : 'Push is off. Click to receive browser notifications too.'
+        }
+        className={cn(
+          'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
+          push.subscribed ? 'bg-indigo-500' : 'bg-slate-300 dark:bg-slate-600',
+          (push.pending || push.denied) && 'opacity-50 cursor-not-allowed',
+        )}
+      >
+        <span
+          className={cn(
+            'inline-flex h-3.5 w-3.5 transform items-center justify-center rounded-full bg-white shadow-sm transition-transform',
+            push.subscribed ? 'translate-x-4' : 'translate-x-1',
+          )}
+        >
+          {push.pending && <Loader2 className="h-2.5 w-2.5 animate-spin text-slate-500" />}
+        </span>
+      </button>
     </div>
   )
 }
@@ -954,5 +1244,51 @@ export function CrmTopbar({ collapsed, onToggleCollapse, session }: TopbarProps)
       {/* User menu */}
       <UserMenu user={session.user} />
     </header>
+  )
+}
+
+// ─── Theme toggle row (in user dropdown) ──────────────────────────────────────
+//
+// Reads + writes via next-themes. The ThemeProvider in components/crm/providers.tsx
+// is configured with attribute="class" defaultTheme="dark", so toggling here
+// flips the .dark class on <html> and all the dark: variants throughout the
+// CRM follow. Persists in localStorage automatically.
+//
+// Guarded against the server / hydration mismatch with a mounted flag —
+// next-themes is client-only.
+
+function ThemeToggleRow() {
+  const { theme, setTheme } = useTheme()
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => { setMounted(true) }, [])
+
+  // Treat anything other than 'light' as dark — covers the system / undefined
+  // edge cases without needing to wait for resolvedTheme.
+  const isDark = !mounted || theme !== 'light'
+
+  return (
+    <button
+      onClick={() => setTheme(isDark ? 'light' : 'dark')}
+      className="flex w-full items-center justify-between gap-2.5 px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
+    >
+      <span className="flex items-center gap-2.5">
+        {isDark ? <Moon className="h-4 w-4 text-slate-400" /> : <Sun className="h-4 w-4 text-amber-500" />}
+        {isDark ? 'Dark mode' : 'Light mode'}
+      </span>
+      <span
+        aria-hidden
+        className={cn(
+          'relative inline-flex h-5 w-9 items-center rounded-full transition-colors',
+          isDark ? 'bg-indigo-500' : 'bg-slate-300',
+        )}
+      >
+        <span
+          className={cn(
+            'inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform',
+            isDark ? 'translate-x-4' : 'translate-x-1',
+          )}
+        />
+      </span>
+    </button>
   )
 }

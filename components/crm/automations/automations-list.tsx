@@ -23,6 +23,7 @@ import {
   type SystemAutomationCategory,
 } from '@/lib/crm/system-automations'
 import { AUTOMATION_TEMPLATES } from '@/lib/crm/automation-templates'
+import { useReadOnlyViewer } from '@/lib/crm/use-read-only-viewer'
 import { TRIGGER_TYPE_LABELS, type TriggerType } from '@/lib/crm/validations/automation'
 
 interface AutomationsListClientProps {
@@ -33,6 +34,7 @@ type TabId = 'custom' | 'system'
 
 export function AutomationsListClient({ userId: _userId }: AutomationsListClientProps) {
   const router = useRouter()
+  const readOnly = useReadOnlyViewer()
   const { selectedBranch } = useBranchContext()
   const { data, isLoading } = useAutomations(selectedBranch?.id)
   const toggle = useToggleAutomation()
@@ -115,9 +117,11 @@ export function AutomationsListClient({ userId: _userId }: AutomationsListClient
             Build visual workflows that trigger when leads enter your CRM. Combine messages, tags, and stage moves.
           </p>
         </div>
-        <Button onClick={() => router.push('/crm/automations/new')}>
-          <Plus className="h-4 w-4 mr-1.5" /> New Automation
-        </Button>
+        {!readOnly && (
+          <Button onClick={() => router.push('/crm/automations/new')}>
+            <Plus className="h-4 w-4 mr-1.5" /> New Automation
+          </Button>
+        )}
       </div>
 
       {/* Stats strip */}
@@ -135,7 +139,7 @@ export function AutomationsListClient({ userId: _userId }: AutomationsListClient
       </div>
 
       {/* Starter templates */}
-      {automations.length === 0 && !isLoading && tab === 'custom' && (
+      {!readOnly && automations.length === 0 && !isLoading && tab === 'custom' && (
         <TemplatesRow onPick={createFromTemplate} pending={create.isPending} />
       )}
 
@@ -164,10 +168,12 @@ export function AutomationsListClient({ userId: _userId }: AutomationsListClient
             <div className="text-center py-12 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-dashed border-slate-200 dark:border-slate-800">
               <Zap className="mx-auto h-10 w-10 text-slate-300 mb-3" />
               <p className="text-slate-600 dark:text-slate-300 font-medium">No custom automations yet</p>
-              <p className="text-sm text-slate-400 mt-1">Pick a starter template above, or build one from scratch.</p>
-              <Button className="mt-4" onClick={() => router.push('/crm/automations/new')}>
-                <Plus className="h-4 w-4 mr-1.5" /> Build from scratch
-              </Button>
+              <p className="text-sm text-slate-400 mt-1">{readOnly ? 'No automations have been created yet.' : 'Pick a starter template above, or build one from scratch.'}</p>
+              {!readOnly && (
+                <Button className="mt-4" onClick={() => router.push('/crm/automations/new')}>
+                  <Plus className="h-4 w-4 mr-1.5" /> Build from scratch
+                </Button>
+              )}
             </div>
           )}
 
@@ -177,6 +183,7 @@ export function AutomationsListClient({ userId: _userId }: AutomationsListClient
                 <AutomationRow
                   key={a.id}
                   automation={a}
+                  readOnly={readOnly}
                   onEdit={() => router.push(`/crm/automations/${a.id}`)}
                   onToggle={() => handleToggle(a.id, a.enabled)}
                   onDuplicate={() => handleDuplicate(a.id)}
@@ -185,9 +192,11 @@ export function AutomationsListClient({ userId: _userId }: AutomationsListClient
               ))}
 
               {/* Show templates row below the list too, for adding more */}
-              <div className="mt-6">
-                <TemplatesRow onPick={createFromTemplate} pending={create.isPending} compact />
-              </div>
+              {!readOnly && (
+                <div className="mt-6">
+                  <TemplatesRow onPick={createFromTemplate} pending={create.isPending} compact />
+                </div>
+              )}
             </div>
           )}
         </>
@@ -295,12 +304,14 @@ function TemplatesRow({
 
 function AutomationRow({
   automation: a,
+  readOnly = false,
   onEdit,
   onToggle,
   onDuplicate,
   onDelete,
 }: {
   automation: AutomationListRow
+  readOnly?: boolean
   onEdit: () => void
   onToggle: () => void
   onDuplicate: () => void
@@ -335,22 +346,29 @@ function AutomationRow({
       </button>
 
       <div className="flex items-center gap-1 ml-4 shrink-0">
-        <button
-          onClick={onToggle}
-          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${a.enabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`}
-          title={a.enabled ? 'Disable' : 'Enable'}
-        >
-          <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${a.enabled ? 'translate-x-4' : 'translate-x-1'}`} />
-        </button>
-        <Button variant="ghost" size="icon" onClick={onEdit} title="Edit">
-          <Edit className="h-4 w-4" />
-        </Button>
-        <Button variant="ghost" size="icon" onClick={onDuplicate} title="Duplicate">
-          <Copy className="h-4 w-4" />
-        </Button>
-        <Button variant="ghost" size="icon" className="text-red-500 hover:text-red-700" onClick={onDelete} title="Delete">
-          <Trash2 className="h-4 w-4" />
-        </Button>
+        {readOnly ? (
+          // View-only: show enabled/disabled as a static badge, no controls.
+          <Badge variant="secondary" className="text-[10px]">{a.enabled ? 'Live' : 'Draft'}</Badge>
+        ) : (
+          <>
+            <button
+              onClick={onToggle}
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${a.enabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`}
+              title={a.enabled ? 'Disable' : 'Enable'}
+            >
+              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${a.enabled ? 'translate-x-4' : 'translate-x-1'}`} />
+            </button>
+            <Button variant="ghost" size="icon" onClick={onEdit} title="Edit">
+              <Edit className="h-4 w-4" />
+            </Button>
+            <Button variant="ghost" size="icon" onClick={onDuplicate} title="Duplicate">
+              <Copy className="h-4 w-4" />
+            </Button>
+            <Button variant="ghost" size="icon" className="text-red-500 hover:text-red-700" onClick={onDelete} title="Delete">
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </>
+        )}
       </div>
     </div>
   )

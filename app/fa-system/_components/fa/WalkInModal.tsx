@@ -130,7 +130,9 @@ export function WalkInModal({ open, onClose, event, preferredDay, onSuccess }: W
         // later if walk-ins need to clear backlog grades too.
         targetGrade: student.grade,
         invitedBy: user.id,
-        initialStatus: "confirmed",
+        // Walk-ins are recorded with their own status — they're already present
+        // (walked in without an invitation), so this counts as attended.
+        initialStatus: "walk_in",
         allowOverQuota: true,
       });
       if (!created) {

@@ -4,17 +4,11 @@ import { auth } from '@/lib/crm/auth'
 import { prisma } from '@/lib/crm/db'
 import { scopedPrisma } from '@/lib/crm/tenancy'
 import { logAudit } from '@/lib/crm/audit'
+import { resolveCrmAdminSession } from '@/lib/crm/admin-session'
 
-async function resolveSession() {
-  const session = await auth.api.getSession({ headers: await headers() })
-  if (!session?.user?.id) return null
-  const ub = await prisma.crm_user_branch.findFirst({
-    where: { userId: session.user.id },
-    select: { tenantId: true },
-  })
-  if (!ub) return null
-  return { tenantId: ub.tenantId, userId: session.user.id }
-}
+// Read-only viewer (CEO) gets a synthetic reader (viewerOnly) so Tags renders;
+// writes reject viewerOnly.
+const resolveSession = resolveCrmAdminSession
 
 export async function GET() {
   try {
@@ -36,6 +30,7 @@ export async function POST(req: NextRequest) {
   try {
     const ctx = await resolveSession()
     if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (ctx.viewerOnly) return NextResponse.json({ error: 'Read-only access' }, { status: 403 })
 
     const { name, color, branchId } = await req.json() as { name: string; color: string; branchId?: string }
     if (!name?.trim()) return NextResponse.json({ error: 'Name is required' }, { status: 422 })

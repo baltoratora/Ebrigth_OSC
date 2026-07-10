@@ -28,6 +28,78 @@ export const BRANCHES = [
 
 export type BranchCode = typeof BRANCHES[number]["code"];
 
+/**
+ * Operational regions used by Academy for cross-branch comparison.
+ * Branches in our BRANCHES list are bucketed into the three regions the
+ * academy uses internally. When a new branch is added to BRANCHES it MUST
+ * be added here too — the multi-select picker iterates BRANCH_REGIONS to
+ * group choices, and an un-mapped branch would simply not appear.
+ *
+ * If the academy renames a region or splits one, only this map needs to
+ * change — every consumer (Invitations page filter, Dashboard, etc.)
+ * reads it through the helpers below.
+ */
+export type BranchRegion = "A" | "B" | "C";
+
+export const BRANCH_REGIONS: Record<BranchCode, BranchRegion> = {
+  // Region A
+  ST:   "A",
+  SA:   "A",
+  DA:   "A",
+  EGR:  "A",
+  KLG:  "A",
+  RBY:  "A",
+  SHA:  "A",
+  // Region B
+  AMP:  "B",
+  BTHO: "B",
+  DK:   "B",
+  KTG:  "B",
+  KD:   "B",
+  SP:   "B",
+  TSG:  "B",
+  // Region C
+  BBB:  "C",
+  BSP:  "C",
+  CJY:  "C",
+  KW:   "C",
+  PJY:  "C",
+  ONL:  "C",
+};
+
+export const BRANCHES_BY_REGION: Record<BranchRegion, BranchCode[]> = (() => {
+  const out: Record<BranchRegion, BranchCode[]> = { A: [], B: [], C: [] };
+  for (const b of BRANCHES) out[BRANCH_REGIONS[b.code as BranchCode]].push(b.code as BranchCode);
+  return out;
+})();
+
+/** Authoritative region → branch codes per the ops sheet (10 Jun 2026), used
+ *  for Regional Manager scoping. String-typed because a few codes (AC, SBY,
+ *  DSH, SLY, DP, SNT, SBN) aren't in BRANCHES yet — kept so scoping is ready. */
+export const REGION_BRANCH_CODES: Record<BranchRegion, string[]> = {
+  A: ["AC", "DA", "EGR", "KLG", "RBY", "SA", "SHA", "ST", "SBY"],
+  B: ["AMP", "BTHO", "DK", "DSH", "KTG", "KD", "SLY", "SP", "TSG"],
+  C: ["BBB", "BSP", "CJY", "DP", "KW", "PJY", "SNT", "SBN", "ONL"],
+};
+
+/** Regional Manager accounts → the region they manage (matched by email). */
+export const RM_REGION_BY_EMAIL: Record<string, BranchRegion> = {
+  "irfanhairie02@gmail.com": "A",
+  "kirtikha19@gmail.com": "B",
+  "jothi2703@gmail.com": "C",
+};
+
+export function regionForEmail(email: string | null | undefined): BranchRegion | null {
+  if (!email) return null;
+  return RM_REGION_BY_EMAIL[email.trim().toLowerCase()] ?? null;
+}
+
+export function isRegionalManagerRole(role: string | null | undefined): boolean {
+  if (!role) return false;
+  const r = role.toUpperCase().replace(/\s+/g, "_");
+  return r === "REGIONAL_MANAGER" || r === "REGIONALMANAGER" || r === "RM";
+}
+
 /** NextAuth roles that count as "back-office" for PCM — they default to
  *  the Academy view but can switch into any Branch Manager view through
  *  the /pcm-system/login picker. PCM is academy-owned, so MARKETING is
@@ -113,15 +185,28 @@ export function matchBranchByName(raw: string | null | undefined): BranchCode | 
 // ----------------------------------------------------------------------------
 // Users & Auth
 // ----------------------------------------------------------------------------
-export type Role = "MKT" | "BM";
+export type Role = "MKT" | "BM" | "RM";
 
 export interface User {
   id: string;
   name: string;
   email: string;
   role: Role;
-  /** For BM users — the branch they manage. Null for MKT. */
+  /** For BM users — the branch they manage. Null otherwise. */
   branch: BranchCode | null;
+  /** For RM users — the region they manage. Null otherwise. */
+  region?: BranchRegion | null;
+}
+
+/** Branch codes a user may see/act on. `null` = all branches (MKT/back-office).
+ *  BM → just their branch. RM → every branch in their region. */
+export function allowedBranchCodes(
+  user: Pick<User, "role" | "branch" | "region"> | null | undefined,
+): string[] | null {
+  if (!user) return [];
+  if (user.role === "BM") return user.branch ? [user.branch] : [];
+  if (user.role === "RM") return user.region ? REGION_BRANCH_CODES[user.region] : [];
+  return null; // MKT / back-office → all branches
 }
 
 // ----------------------------------------------------------------------------
@@ -200,6 +285,11 @@ export interface Student {
   parentPhone: string;
   enrolmentDate: string;        // ISO date
   active: boolean;
+  /** True when this row comes from the `archived_students` table rather than
+   *  the live `studentrecords` table. Archived students still appear in the
+   *  list and can be invited to PCM events — they carry an "Archived" badge
+   *  and live in their own tab of the invite picker. */
+  archived: boolean;
 }
 
 /** Eligibility rule: a student is eligible for FA when they have at least
@@ -233,6 +323,9 @@ export interface StudentLoadReport {
   /** True if the `ade_group` join succeeded. When false, age-category labels
    *  are still derived from grade as a fallback. */
   ageGroupJoinAvailable: boolean;
+  /** How many rows were loaded from the separate `archived_students` table
+   *  (counted toward `loaded` too). */
+  archivedLoaded?: number;
 }
 
 /** Check if student has a backlog — any completed grade below current where FA was not done. */
@@ -243,25 +336,46 @@ export function hasBacklog(student: Student): boolean {
   return false;
 }
 
-/** Chapter at which a student becomes eligible for their CURRENT-grade FA.
- *  The classroom rule: a student must have progressed to C9 within their
- *  current grade before they can sit for that grade's Pro-Class Mastery.
- *  Grades they've already completed (i.e., grades below current) are always
- *  available — they've moved past, so the tickbox is just recording history. */
+/** Retained for display/labels only — no longer gates eligibility.
+ *  The classroom rule used to require reaching chapter C9 of the current grade
+ *  before a student could be invited to appraise it. That threshold changed too
+ *  often, so eligibility now simply follows the database: every student can be
+ *  invited for any grade up to and including their current grade, regardless of
+ *  chapter. (See invitableGradesFor below.) */
 export const FA_CURRENT_GRADE_MIN_CHAPTER = 9;
 
 /** The list of grades a student can be invited to appraise right now.
- *    - All grades below current grade are always returned (past grades).
- *    - The current grade is only returned if student.credit >= 9
- *      (the C9 threshold for current-grade FA eligibility).
- *  Returned in ascending order. */
+ *  Eligibility follows the database with NO chapter condition: every grade from
+ *  1 up to and including the student's current grade is invitable. Past grades
+ *  are history; the current grade is always available (the old C9 gate was
+ *  removed because the rule kept changing). Returned in ascending order. */
 export function invitableGradesFor(student: Student): number[] {
   const grades: number[] = [];
-  for (let g = 1; g < student.grade; g++) grades.push(g);
-  if (student.credit >= FA_CURRENT_GRADE_MIN_CHAPTER) {
-    grades.push(student.grade);
-  }
+  for (let g = 1; g <= student.grade; g++) grades.push(g);
   return grades;
+}
+
+/** Resolve the Student an invitation points at, tolerant of archived-id drift.
+ *  Active students are keyed by their raw id; archived students load as
+ *  `arch-<no>`. A few legacy/backfilled invitations stored the bare number for
+ *  an archived student, so when an exact match fails we retry with the `arch-`
+ *  prefix. Returns undefined only when the id exists in neither form (a
+ *  genuinely orphaned invitation — no student record anywhere). */
+export function resolveStudentById<T extends { id: string }>(students: T[], studentId: string): T | undefined {
+  const exact = students.find(s => s.id === studentId);
+  if (exact) return exact;
+  if (/^\d+$/.test(studentId)) return students.find(s => s.id === `arch-${studentId}`);
+  return undefined;
+}
+
+/** Render a numeric grade back to its curriculum label. The ladder runs
+ *  G1..G8 (1..8), then the GA series (9..12 → GA1..GA4), then the GB series
+ *  (13..16 → GB1..GB4). Use this everywhere a grade is shown so advanced
+ *  students read as "GA2" / "GB1" rather than "G10" / "G13". */
+export function gradeLabel(grade: number): string {
+  if (grade >= 13 && grade <= 16) return `GB${grade - 12}`;
+  if (grade >= 9 && grade <= 12) return `GA${grade - 8}`;
+  return `G${grade}`;
 }
 
 // ----------------------------------------------------------------------------
@@ -279,6 +393,28 @@ export type InvitationStatus =
  *  (the normal flow, moving the student up a grade in pcm_progress_json)
  *  or a "Renewal" repeat for a grade the student has already passed. */
 export type InviteType = "progress" | "renewal";
+
+/** When the parent is expected to arrive relative to the branch's class. */
+export type ArrivalWindow = "before_class" | "after_class" | "during_class";
+
+export const ARRIVAL_WINDOW_LABEL: Record<ArrivalWindow, string> = {
+  before_class: "Before class",
+  after_class: "After class",
+  during_class: "During class",
+};
+
+/** Human label for an invitation's expected arrival, e.g. "Before class · 3:30 PM". */
+export function arrivalLabel(window?: ArrivalWindow, time?: string): string {
+  const w = window ? ARRIVAL_WINDOW_LABEL[window] : "";
+  const t = (time ?? "").trim();
+  if (w && t) return `${w} · ${t}`;
+  return w || t || "";
+}
+
+/** Renewal packages the academy sells, by duration in months. Picked when a
+ *  BM marks a renewal student as paid. */
+export const PACKAGE_OPTIONS = ["3M", "6M", "12M", "18M", "24M"] as const;
+export type PackageOption = typeof PACKAGE_OPTIONS[number];
 
 export interface Invitation {
   id: string;
@@ -298,23 +434,96 @@ export interface Invitation {
    *  to do a cross-DB join. Both null until the BM picks a coach. */
   coachId?: string;
   coachName?: string;
+  /** Did the student pay for this slot? Independent of attendance —
+   *  surfaced on dashboards as paid/unpaid/not-attended buckets. */
+  paid: boolean;
+  /** Which renewal package the student paid for. Set together with `paid`
+   *  (the BM picks one the moment they mark a renewal student as paid);
+   *  cleared back to null if paid is undone. */
+  package?: PackageOption | null;
+  /** Academy follow-up: was the absence make-up video sent to the parent?
+   *  Only meaningful (and editable) while status = no_show. */
+  videoSentToParent: boolean;
+  /** The absence make-up video link to send to the parent. Once set, the
+   *  "Video to Parent" control becomes a Send action. */
+  videoLink?: string | null;
+  /** When the parent/student is expected to arrive at the branch for PCM, so
+   *  responders can schedule without phoning the branch. The branch (BM) sets
+   *  it; optional. `arrivalWindow` is the quick before/after-class signal and
+   *  `arrivalTime` is an optional exact time (free text, e.g. "3:30 PM"). */
+  arrivalWindow?: ArrivalWindow;
+  arrivalTime?: string;
   invitedBy: string;            // User id (BM)
   invitedAt: string;
   confirmedAt?: string;
   attendanceMarkedAt?: string;
   attendanceMarkedBy?: string;
   notes?: string;
+  /** Denormalised from studentrecords at fetch time. Lets the list/roster
+   *  views show a student name even when /api/pcm/students skipped the
+   *  record for strict-validation reasons. All optional. */
+  studentName?: string;
+  studentGrade?: number;
+  studentParentName?: string;
+  studentParentPhone?: string;
+}
+
+// ----------------------------------------------------------------------------
+// PCM Assessment Report — coach-filled rubric attached to one invitation.
+// Doubles as the printable certificate.
+// ----------------------------------------------------------------------------
+export interface PcmReport {
+  id: string;
+  invitationId: string;
+  studentId: string;
+  studentName: string;        // snapshot at fill time
+  branch: BranchCode;
+  grade: number;
+  assessmentDate: string;     // ISO date
+  // Each criterion is a 1–5 score from the rubric.
+  confidenceScore: number;
+  voiceClarityScore: number;
+  eyeContactScore: number;
+  ideaExpressionScore: number;
+  strengths: string;
+  improvementPlan: string;
+  preparedBy: string;
+  preparedById?: string;
+  /** Coach signature stored as a base64 data URL (e.g. "data:image/png;base64,...").
+   *  Optional — rendered above the "Prepared by" dashed line on the
+   *  certificate when present. Capped to ~200 KB client-side at upload time. */
+  preparedBySignature?: string;
+  receivedBy: string;
+  /** Optional URL of a recorded performance — coach can paste a Google
+   *  Drive / Vimeo / YouTube link when filling the report so parents can
+   *  watch the student's actual session. Shown on the certificate as a
+   *  clickable link below the score block. */
+  videoLink?: string;
+  createdAt: string;          // ISO timestamp
+  updatedAt: string;          // ISO timestamp
 }
 
 // ----------------------------------------------------------------------------
 // Event branch overrides — per-event, per-branch toggle that lets a single
-// branch invite the same student to multiple grades within one event (all
-// on the same day, different sessions). Defaults to OFF for every branch on
-// every event. Only Academy/Admin can toggle it.
+// branch invite the same student to multiple grades within one event.
+// Defaults to OFF for every branch on every event. Only Academy/Admin can
+// toggle it. When ON, `dayPolicy` decides which extra invites are allowed.
 // ----------------------------------------------------------------------------
+
+/**
+ * Which extra multi-grade invites an unlocked branch may issue for the same
+ * student within one event. A different target_grade is ALWAYS required on top
+ * of this, regardless of policy.
+ *   • SAME_DAY — extra invites must be on the same day (different session). [default]
+ *   • DIFF_DAY — extra invites must be on a different day from existing ones.
+ *   • BOTH     — no day restriction; any day is allowed.
+ */
+export type DayPolicy = "SAME_DAY" | "DIFF_DAY" | "BOTH";
+
 export interface EventBranchOverride {
   eventId: string;
   branchCode: BranchCode;
+  dayPolicy: DayPolicy;         // which extra invites this branch may issue
   grantedBy: string;            // email of the Academy/Admin user who toggled it on
   grantedAt: string;            // ISO timestamp
   reason?: string;              // optional free-text audit note

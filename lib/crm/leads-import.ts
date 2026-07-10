@@ -17,7 +17,7 @@
 
 import type { PrismaClient } from '@prisma/client'
 import { Prisma } from '@prisma/client'
-import { normalizePhone } from './utils'
+import { normalizePhone, phoneSearchDigits } from './utils'
 import { createLeadNotifications } from './notifications'
 
 // Importing './queue' transitively pulls in BullMQ + ioredis, which try to
@@ -51,18 +51,26 @@ export interface UnifiedLeadRow {
   clean_branch: string | null   // resolved via branch_mapping in the view
   region: string | null
   submitted_at: Date | null
-  children_details: string | null  // raw JSON string from raw_wix_leads
+  // Source of truth for child names + ages. Shape depends on the caller:
+  //   - leadIngestWorker / seed-from-powerbi read this from a Postgres jsonb
+  //     column via node-postgres, which AUTO-PARSES it into a JS array. So in
+  //     the worker path, this is already WixChildEntry[].
+  //   - One-shot CSV / Power-BI imports read it as a raw JSON string.
+  // parseChildrenDetails() below normalises both shapes — never call
+  // JSON.parse on this field directly.
+  children_details: WixChildEntry[] | string | null
   sibling_index: number | null     // 1-based; >1 only for Wix multi-child submissions
   campaign_name: string | null     // marketing campaign label, stored verbatim; null when
                                    // the lead didn't come from a tracked campaign
 }
 
 export type ImportStatus =
-  | 'created'      // contact + opportunity inserted
-  | 'duplicate'    // already imported (unique constraint hit)
-  | 'no_branch'    // clean_branch couldn't be matched to any crm_branch
-  | 'no_pipeline'  // matched branch has no pipeline (seed not run for it)
-  | 'no_pii'       // row has no name/email/phone — not worth creating
+  | 'created'           // contact + opportunity inserted
+  | 'duplicate'         // already imported (same source row — unique constraint hit)
+  | 'duplicate_contact' // a different source row for the SAME human (phone + name) already exists
+  | 'no_branch'         // clean_branch couldn't be matched to any crm_branch
+  | 'no_pipeline'       // matched branch has no pipeline (seed not run for it)
+  | 'no_pii'            // row has no name/email/phone — not worth creating
 
 export interface ImportResult {
   status: ImportStatus
@@ -90,7 +98,31 @@ export interface ImportOptions {
    * submissions always start in 'NL'.
    */
   stageShortCode?: string
+  /**
+   * When true, before creating a new contact we look for an existing,
+   * non-deleted contact that represents the SAME human — matched on
+   * phone-digit-core AND normalized name within a recent window — and skip
+   * creation if found (`status: 'duplicate_contact'`).
+   *
+   * This catches the real-world duplicate the @@unique(sourceTable, sourceId)
+   * key can't: upstream sources (roadshow website form re-taps, Meta webhook
+   * re-delivery, form retries) emit MULTIPLE physical rows for one person, each
+   * with a distinct source_id, so every one otherwise mints a fresh card.
+   *
+   * Sibling-safe by design: siblings share a parent phone but have DIFFERENT
+   * names, so requiring the name to match too never merges them.
+   *
+   * OFF by default so the historical bulk seed (which sets stageShortCode and
+   * legitimately imports many rows fast) is unaffected. The realtime
+   * leadIngestWorker turns it ON.
+   */
+  dedupeByContact?: boolean
 }
+
+/** Days back to look for a same-human contact. Long enough to catch the
+ *  minutes-to-days re-submission bursts we see in the data, short enough that a
+ *  genuine re-inquiry months later still creates a fresh lead. */
+const DEDUP_WINDOW_DAYS = 30
 
 // ─── Caches ────────────────────────────────────────────────────────────────────
 // Each call would otherwise do 4 DB lookups (branch, pipeline, NL stage, lead_source).
@@ -107,6 +139,9 @@ export interface ImportCaches {
   stageByBranchByCode: Map<string, Map<string, string>>
   /** lead-source name (lower-cased) → lead_source.id */
   leadSourceByName: Map<string, string>
+  /** Fallback branch for leads with no resolvable clean_branch.
+   *  Cached as `null` once resolution fails so we don't re-query each row. */
+  fallbackBranch?: { id: string; tenantId: string } | null
 }
 
 export function makeEmptyCaches(): ImportCaches {
@@ -116,6 +151,28 @@ export function makeEmptyCaches(): ImportCaches {
     stageByBranchByCode: new Map(),
     leadSourceByName:    new Map(),
   }
+}
+
+const FALLBACK_BRANCH_NAME = 'Ebright Marketing'
+
+/**
+ * Look up the catch-all branch every lead with no resolvable clean_branch
+ * gets routed to. Cached per ImportCaches instance — checked once and
+ * stored (including the negative result, so a missing Marketing branch
+ * doesn't trigger 6M extra queries during a seed).
+ */
+async function resolveFallbackBranch(
+  prisma: PrismaClient,
+  tenantId: string,
+  caches: ImportCaches,
+): Promise<{ id: string; tenantId: string } | null> {
+  if (caches.fallbackBranch !== undefined) return caches.fallbackBranch
+  const branch = await prisma.crm_branch.findFirst({
+    where:  { tenantId, name: FALLBACK_BRANCH_NAME },
+    select: { id: true, tenantId: true },
+  })
+  caches.fallbackBranch = branch ?? null
+  return caches.fallbackBranch
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -129,6 +186,36 @@ function splitName(full: string | null): { firstName: string; lastName: string |
 }
 
 interface WixChildEntry { name?: string | null; age?: string | null }
+
+/**
+ * Normalise `children_details` into a WixChildEntry[]. The field shows up in
+ * two different shapes depending on the caller:
+ *
+ *   - node-postgres returns jsonb columns as already-parsed JS values, so the
+ *     leadIngestWorker and seed-from-powerbi paths see an array here.
+ *   - Some legacy / CSV import paths produce a raw JSON string instead.
+ *
+ * Calling JSON.parse on the pre-parsed array shape throws (it stringifies the
+ * array to "[object Object],[object Object]" first and then fails to parse),
+ * which used to silently fall through to the parent-name path — that's why
+ * Naufal / Naura siblings were rendering as "Child 3" on the kanban even
+ * though children_details clearly had their names.
+ */
+function parseChildrenDetails(value: unknown): WixChildEntry[] | null {
+  if (value == null) return null
+  if (Array.isArray(value)) return value as WixChildEntry[]
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) return null
+    try {
+      const parsed = JSON.parse(trimmed) as unknown
+      return Array.isArray(parsed) ? (parsed as WixChildEntry[]) : null
+    } catch {
+      return null
+    }
+  }
+  return null
+}
 
 /**
  * Pick the contact name for one row of master_leads_unified.
@@ -158,24 +245,20 @@ function pickContactName(row: UnifiedLeadRow): {
   parentFullName: string | null
 } {
   const idx = row.sibling_index
-  if (idx && idx > 0 && row.children_details) {
-    try {
-      const parsed = JSON.parse(row.children_details) as WixChildEntry[]
-      if (Array.isArray(parsed)) {
-        const child = parsed[idx - 1] as WixChildEntry | undefined
-        const childName = (child?.name ?? '').trim()
-        if (childName) {
-          const { firstName, lastName } = splitName(childName)
-          return {
-            firstName,
-            lastName,
-            childAge: child?.age ?? null,
-            parentFullName: row.full_name ?? null,
-          }
+  if (idx && idx > 0) {
+    const parsed = parseChildrenDetails(row.children_details)
+    if (parsed) {
+      const child = parsed[idx - 1] as WixChildEntry | undefined
+      const childName = (child?.name ?? '').trim()
+      if (childName) {
+        const { firstName, lastName } = splitName(childName)
+        return {
+          firstName,
+          lastName,
+          childAge: child?.age ?? null,
+          parentFullName: row.full_name ?? null,
         }
       }
-    } catch {
-      // children_details malformed — fall through to parent-name path.
     }
   }
   // Either a non-sibling row, OR a sibling row with no usable child name in
@@ -203,7 +286,29 @@ function normalizeSourceName(raw: string | null): string {
   if (lower.includes('walk')) return 'Walk-In'
   if (lower.includes('refer')) return 'Referral'
   if (lower.includes('self')) return 'Self-Generated'
+  // Roadshow is its own first-class source (was previously collapsed into
+  // "Others"), so it shows separately in every lead-source view/filter.
+  if (lower.includes('roadshow') || lower.includes('road show') || lower.includes('road-show')) return 'Roadshow'
   return 'Others'
+}
+
+/**
+ * The raw source label worth storing as `crm_contact.leadSourceDetail`, or null
+ * when the bucket already says everything the raw label does.
+ *
+ * normalizeSourceName collapses granular labels ("roadshow", "trial-class-e
+ * form", "website (organic)") into a handful of buckets. We keep the raw label
+ * around so the card can show "Others (roadshow)" — but only when it actually
+ * adds information. We compare on alphanumerics-only so cosmetic differences
+ * ("walk in" vs "Walk-In", "self generated" vs "Self-Generated", "others" vs
+ * "Others") are treated as equal and don't produce noisy "Walk-In (walk in)".
+ */
+export function sourceDetailFor(rawLabel: string | null): string | null {
+  const raw = (rawLabel ?? '').trim()
+  if (!raw) return null
+  const canon = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const bucket = normalizeSourceName(raw)
+  return canon(raw) !== canon(bucket) ? raw : null
 }
 
 /**
@@ -304,6 +409,55 @@ async function resolveLeadSourceId(
   return created.id
 }
 
+/**
+ * Collapse a first/last name pair into the canonical form used for duplicate
+ * matching: single-spaced, trimmed, lower-cased. MUST stay in lock-step with
+ * the SQL expression in findDuplicateContactId so JS and Postgres agree on
+ * what "the same name" means.
+ */
+function normalizeNameForMatch(firstName: string, lastName: string | null): string {
+  return `${firstName} ${lastName ?? ''}`.replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+/**
+ * Find an existing, non-deleted contact that represents the SAME human as the
+ * row we're about to import — matched on phone-digit-core AND normalized name,
+ * within DEDUP_WINDOW_DAYS. Returns its id, or null when there's no match.
+ *
+ * The stored `phone` column is a mix of E.164 ("+60123456789"), local
+ * ("0123456789") and raw form strings with spaces/dashes, so we reduce BOTH
+ * sides to the bare national significant number (drop non-digits, a leading
+ * Malaysian "60", then leading zeros) exactly like phoneSearchDigits does — a
+ * CNS-form "+60 18-576 3367" and a marketing "+60185763367" then compare equal.
+ *
+ * Requiring the name to match as well is what keeps this sibling-safe: siblings
+ * share the parent phone but differ in name, so they are never collapsed.
+ */
+async function findDuplicateContactId(
+  prisma: PrismaClient,
+  tenantId: string,
+  phoneDigits: string,
+  normalizedName: string,
+): Promise<string | null> {
+  const rows = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT id
+      FROM crm.crm_contact
+     WHERE "tenantId" = ${tenantId}
+       AND "deletedAt" IS NULL
+       AND "createdAt" > now() - (${DEDUP_WINDOW_DAYS} || ' days')::interval
+       AND regexp_replace(
+             regexp_replace(
+               regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'),
+             '^60', ''),
+           '^0+', '') = ${phoneDigits}
+       AND lower(btrim(regexp_replace(
+             coalesce("firstName", '') || ' ' || coalesce("lastName", ''),
+             '[[:space:]]+', ' ', 'g'))) = ${normalizedName}
+     LIMIT 1
+  `
+  return rows[0]?.id ?? null
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -326,11 +480,19 @@ export async function importLead(
     return { status: 'no_pii', reason: 'row has no name, phone, or email' }
   }
 
-  const branch = await resolveBranch(prisma, ctx.tenantId, row.clean_branch, caches)
+  let branch = await resolveBranch(prisma, ctx.tenantId, row.clean_branch, caches)
   if (!branch) {
-    return {
-      status: 'no_branch',
-      reason: `clean_branch="${row.clean_branch ?? 'null'}" did not match any crm_branch.name`,
+    // Fallback: leads with no resolvable clean_branch land on the
+    // "Ebright Marketing" catch-all branch instead of being dropped, so the
+    // Marketing BM can triage and transfer them to the correct branch.
+    branch = await resolveFallbackBranch(prisma, ctx.tenantId, caches)
+    if (!branch) {
+      return {
+        status: 'no_branch',
+        reason:
+          `clean_branch="${row.clean_branch ?? 'null'}" did not match any crm_branch.name ` +
+          `and fallback branch "${FALLBACK_BRANCH_NAME}" is not seeded`,
+      }
     }
   }
 
@@ -349,66 +511,69 @@ export async function importLead(
   }
 
   const leadSourceId = await resolveLeadSourceId(prisma, ctx.tenantId, row.lead_source, caches)
+  // Preserve the raw source label when normaliseSourceName collapsed it into a
+  // generic bucket (e.g. raw "roadshow" → bucket "Others"). Stored so the
+  // lead-detail card can show "Others (roadshow)". Null when the raw label
+  // already equals the bucket (no extra info to surface).
+  const rawSourceLabel = (row.lead_source ?? '').trim()
+  const leadSourceDetail = sourceDetailFor(rawSourceLabel)
   const phone = row.phone ? normalizePhone(row.phone) : null
   const submittedAt = row.submitted_at ?? new Date()
 
-  // Sibling-index inference: when the unified view doesn't supply
-  // sibling_index (non-Wix sources mostly) but children_details has more
-  // than one child, we infer which child this row represents by counting
-  // contacts already in the CRM that share this row's phone or email.
-  // First row in for this parent → child[0], second → child[1], etc.
-  // Without this fallback the contact's firstName would be saved as the
-  // parent's full name and every subsequent sibling card would look
-  // identical, which is exactly the "two Shuzana cards" bug from prod.
-  let effectiveSiblingIndex = row.sibling_index
-  if (effectiveSiblingIndex == null && row.children_details) {
-    try {
-      const parsed = JSON.parse(row.children_details) as WixChildEntry[]
-      if (Array.isArray(parsed) && parsed.length >= 1) {
-        const orClauses: Array<Record<string, unknown>> = []
-        if (phone) orClauses.push({ phone })
-        if (row.email && row.email.trim()) orClauses.push({ email: row.email })
-        if (orClauses.length > 0) {
-          const existing = await prisma.crm_contact.count({
-            where: { tenantId: ctx.tenantId, deletedAt: null, OR: orClauses },
-          })
-          const inferred = existing + 1
-          // Only adopt the inference when there's actually a corresponding
-          // child entry — otherwise we'd just rewrite a parent contact with
-          // garbage. Falls through to the parent-name branch in that case.
-          if (inferred <= parsed.length) {
-            effectiveSiblingIndex = inferred
-          }
-        }
+  const { firstName, lastName, childAge, parentFullName } = pickContactName(row)
+
+  // ── Content-level dedup (same human, different source row) ───────────────────
+  // The @@unique(sourceTable, sourceId) key only stops the SAME source row from
+  // importing twice. It can't stop the upstream sources from emitting SEVERAL
+  // rows for one person (roadshow form re-taps, Meta webhook re-delivery, form
+  // retries) — each carries a distinct source_id, so each would otherwise mint a
+  // fresh card minutes-to-hours apart. When the caller opts in (the realtime
+  // worker does; the bulk seed does not), skip creation if a contact with the
+  // same phone-digit-core AND name already exists in the recent window. Requiring
+  // BOTH keeps siblings (shared phone, different names) as separate contacts.
+  if (opts.dedupeByContact) {
+    const phoneDigits = row.phone ? phoneSearchDigits(row.phone) : null
+    const normalizedName = normalizeNameForMatch(firstName, lastName)
+    if (phoneDigits && normalizedName) {
+      const existingId = await findDuplicateContactId(
+        prisma,
+        ctx.tenantId,
+        phoneDigits,
+        normalizedName,
+      )
+      if (existingId) {
+        return { status: 'duplicate_contact', contactId: existingId, branchId: branch.id }
       }
-    } catch {
-      // children_details unparseable — keep effectiveSiblingIndex as null
-      // so pickContactName falls back to the parent's name.
     }
   }
 
-  const rowForName: UnifiedLeadRow =
-    effectiveSiblingIndex !== row.sibling_index
-      ? { ...row, sibling_index: effectiveSiblingIndex }
-      : row
-  const { firstName, lastName, childAge, parentFullName } = pickContactName(rowForName)
-
-  // Disambiguated externalSourceId. Historical seeds used `<base_id>#<sibling>`
-  // (e.g. "16391#1"), but master_leads_base.id is NOT unique over time —
-  // ids get reused for new submissions. That meant two contacts with the
-  // same source_id pointing at different real rows, and the per-day
-  // dashboard counts drifted because the worker can't tell them apart.
+  // ── Idempotency key ────────────────────────────────────────────────────────
+  // This MUST be a pure function of the source ROW so the unique constraint
+  // (tenantId, externalSourceTable, externalSourceId) actually catches a
+  // re-import. If any part of the key varies between runs, the LISTEN/NOTIFY
+  // worker and the polling backstop each mint a BRAND-NEW contact+opportunity
+  // on every pass — the "duplicate leads that keep re-appearing even after they
+  // were moved to another stage or deleted" bug. (A stable key hits P2002 →
+  // soft-skip/backfill instead, and a soft-deleted row still holds its key so
+  // it is never resurrected.)
   //
-  // Format `<base_id>-<submitted_unix>-<sibling>` adds the submission's
-  // epoch seconds so each contact's source_id is unique even when the
-  // base_id gets reused. The "#"-style legacy ids still in CRM stay
-  // valid; they just can't conflict with the new ones (different
-  // delimiter, different shape).
+  //   <base_id>-<submitted_unix>-<sibling>
+  //
+  // Two former sources of drift, now removed:
+  //   1. `submitted_at ?? new Date()` — a NULL submitted_at fell back to the
+  //      current wall-clock, so the key changed every second. We now derive the
+  //      epoch ONLY from the row (0 when the view has no submitted_at).
+  //   2. sibling index inferred from a live COUNT of existing contacts sharing
+  //      the phone/email — that count grew with each duplicate, so the key
+  //      changed on every pass and the duplication compounded. We now use the
+  //      view's own sibling_index only (1 when absent).
+  // Rows that were already imported correctly keep the exact same key (their
+  // submitted_at and sibling_index are unchanged), so this does not re-import
+  // them.
   const baseId = row.source_id.includes('#') ? row.source_id.split('#')[0] : row.source_id
-  // Use the inferred sibling index so two non-Wix children of the same parent
-  // get distinct externalSourceIds ("-1", "-2") instead of colliding on "-1".
-  const siblingIdx = effectiveSiblingIndex ?? 1
-  const externalSourceId = `${baseId}-${Math.floor(submittedAt.getTime() / 1000)}-${siblingIdx}`
+  const keyEpoch = row.submitted_at ? Math.floor(row.submitted_at.getTime() / 1000) : 0
+  const siblingIdx = row.sibling_index ?? 1
+  const externalSourceId = `${baseId}-${keyEpoch}-${siblingIdx}`
 
   try {
     const result = await prisma.$transaction(async (tx) => {
@@ -421,6 +586,7 @@ export async function importLead(
           email:               row.email,
           phone,
           leadSourceId,
+          leadSourceDetail,
           // childAge1 holds the sibling's age for Wix multi-child submissions
           // so the lead detail modal can show it. The contact itself IS the
           // child, so we don't fill childName1 (that would be redundant).
@@ -522,6 +688,7 @@ export async function importLead(
         if (row.campaign_name) updates.campaignName = row.campaign_name
         if (parentFullName)    updates.parentFullName = parentFullName
         if (childAge)          updates.childAge1 = childAge
+        if (leadSourceDetail)  updates.leadSourceDetail = leadSourceDetail
 
         if (Object.keys(updates).length > 0) {
           // updateMany allows the NULL-only filter and doesn't require knowing

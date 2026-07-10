@@ -5,8 +5,10 @@ import {
   upsertEventBranchOverrideRow,
   deleteEventBranchOverrideRow,
 } from "@pcm/_lib/events.server";
-import { BranchCode } from "@pcm/_types";
+import { BranchCode, DayPolicy } from "@pcm/_types";
 import { normalizeRole, ROLES } from "@/lib/roles";
+
+const VALID_DAY_POLICIES: ReadonlySet<DayPolicy> = new Set(["SAME_DAY", "DIFF_DAY", "BOTH"]);
 
 export const dynamic = "force-dynamic";
 
@@ -33,8 +35,8 @@ async function requireMarketingOrAdmin(): Promise<
   return { ok: true, email: session.user.email };
 }
 
-// POST — grant the override for (eventId, branchCode).
-// Body: { eventId: string, branchCode: BranchCode, reason?: string }
+// POST — grant (or update) the override for (eventId, branchCode).
+// Body: { eventId: string, branchCode: BranchCode, dayPolicy?: DayPolicy, reason?: string }
 export async function POST(req: NextRequest) {
   const guard = await requireMarketingOrAdmin();
   if (!guard.ok) return NextResponse.json(guard.body, { status: guard.status });
@@ -47,9 +49,19 @@ export async function POST(req: NextRequest) {
     if (!eventId || !branchCode) {
       return NextResponse.json({ error: "eventId and branchCode are required" }, { status: 400 });
     }
+    // Optional — defaults to SAME_DAY (legacy behaviour) when omitted/invalid.
+    const rawPolicy = String(body.dayPolicy ?? "SAME_DAY") as DayPolicy;
+    if (body.dayPolicy != null && !VALID_DAY_POLICIES.has(rawPolicy)) {
+      return NextResponse.json(
+        { error: "dayPolicy must be one of SAME_DAY, DIFF_DAY, BOTH" },
+        { status: 400 }
+      );
+    }
+    const dayPolicy: DayPolicy = VALID_DAY_POLICIES.has(rawPolicy) ? rawPolicy : "SAME_DAY";
     const override = await upsertEventBranchOverrideRow({
       eventId,
       branchCode,
+      dayPolicy,
       grantedBy: guard.email,
       reason,
     });

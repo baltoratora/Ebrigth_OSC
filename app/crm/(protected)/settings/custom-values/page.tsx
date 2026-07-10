@@ -14,6 +14,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { cn } from '@/lib/crm/utils'
+import { useReadOnlyViewer } from '@/lib/crm/use-read-only-viewer'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -195,6 +196,7 @@ function CustomValueModal({
 const col = createColumnHelper<CustomValue>()
 
 export default function CustomValuesPage() {
+  const readOnly = useReadOnlyViewer()
   const qc = useQueryClient()
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['crm', 'custom-values'],
@@ -264,6 +266,7 @@ export default function CustomValuesPage() {
       id: 'actions',
       header: '',
       cell: (info) => (
+        readOnly ? null : (
         <div className="flex items-center gap-1">
           <button
             onClick={() => setEditing(info.row.original)}
@@ -282,6 +285,7 @@ export default function CustomValuesPage() {
             }
           </button>
         </div>
+        )
       ),
     }),
   ]
@@ -301,13 +305,15 @@ export default function CustomValuesPage() {
             Key-value pairs injected into message templates as <code className="bg-slate-100 dark:bg-slate-800 px-1 rounded text-xs">{'{{custom_values.key}}'}</code>
           </p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition-colors"
-        >
-          <Plus className="h-4 w-4" />
-          Add value
-        </button>
+        {!readOnly && (
+          <button
+            onClick={() => setShowCreate(true)}
+            className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition-colors"
+          >
+            <Plus className="h-4 w-4" />
+            Add value
+          </button>
+        )}
       </div>
 
       <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden">
@@ -323,9 +329,11 @@ export default function CustomValuesPage() {
         ) : customValues.length === 0 ? (
           <div className="text-center py-16">
             <p className="text-slate-500 dark:text-slate-400 text-sm">No custom values yet.</p>
-            <button onClick={() => setShowCreate(true)} className="mt-3 text-sm text-indigo-600 hover:underline">
-              Add your first value
-            </button>
+            {!readOnly && (
+              <button onClick={() => setShowCreate(true)} className="mt-3 text-sm text-indigo-600 hover:underline">
+                Add your first value
+              </button>
+            )}
           </div>
         ) : (
           <table className="w-full text-sm">

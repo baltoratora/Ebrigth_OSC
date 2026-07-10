@@ -1,24 +1,70 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { hrfsPrisma } from "@/lib/hrfs";
 import { requireSession, canSeeAllBranches } from "@/lib/auth";
 import {
   getWorkingDaysForBranch,
   getTimeSlotsForDay,
   isOpeningClosingSlot,
   isAdminSlot,
-  COLUMNS,
+  ALL_COLUMNS,
+  TRAINING_DAY_HOURS,
+  STAR_COACH_RATE,
+  POOJA_EMPLOYEE_ID,
+  AMIN_EMPLOYEE_ID,
+  getWeekendDailyTarget,
 } from "@/lib/manpowerUtils";
 import { isEmployee, isBranchManager, isAcademy } from "@/lib/roles";
 import { normalizeLocation } from "@/lib/constants";
 
 const EXECUTIVE_RATE = 11;
 
+// Elevated exec rate paid for branch-manager-on-duty hours. See
+// MANAGER_ON_DUTY_OVERRIDES below.
+const BM_EXEC_RATE = 13;
+
+// Flat training rate. When a person is assigned to a TRAINING column on a given
+// day, that whole day is a full training day: TRAINING_DAY_HOURS paid at this
+// rate (10.5 × 8 = RM84/day), regardless of weekday/weekend. The slots they
+// appear in are shown as coach hours and the remainder as exec hours, but the
+// split is display-only — pay is always the flat day rate.
+const TRAINING_RATE = 8;
+
+// Stand-in manager overrides.
+//
+// Manager-on-duty slots live in the MANAGER column, which is OUTSIDE the regular
+// coach/exec grid (COLUMNS) — so they normally contribute zero hours and zero
+// pay to this report. The real branch managers are excluded from the report
+// anyway. But when a non-BM covers as Manager on Duty, those slots are genuine
+// paid hours that would otherwise vanish.
+//
+// `dates`   — when set, only applies on those specific dates (one-off leave cover).
+//             When omitted, applies every time that person appears in the MANAGER
+//             column for that branch (permanent replacement).
+// `modRate` — the hourly rate for the MANAGER-column hours. Defaults to
+//             BM_EXEC_RATE (13) when omitted. Residual exec time to reach the
+//             daily target always stays at EXECUTIVE_RATE (11).
+//
+//   16–17 May 2026 — Rimbayu's BM on leave; Iqbal covered all 7 weekend slots.
+//   BBB (Bandar Baru Bangi) — Sreedran & Aina permanently replace the BM on
+//   Saturdays and Sundays at 12.38/hr MOD rate, 11/hr exec rate.
+const MANAGER_ON_DUTY_OVERRIDES: { branch: string; managerValue: string; dates?: string[]; modRate?: number }[] = [
+  { branch: "Rimbayu",          managerValue: "IQBAL",    dates: ["2026-05-16", "2026-05-17"] },
+  { branch: "Bandar Baru Bangi", managerValue: "SREEDRAN", modRate: 12.38 },
+  { branch: "Bandar Baru Bangi", managerValue: "AINA",     modRate: 12.38 },
+];
+
 interface DailyHour {
   day: string;
+  date?: string;
   coachHrs: number;
   execHrs: number;
+  managerExecHrs?: number;
+  trainingHrs?: number;
   totalHrs: number;
   classCount: number;
+  starCoachClasses?: number;
+  starCoachHrs?: number;
 }
 
 interface StaffHourEntry {
@@ -29,13 +75,73 @@ interface StaffHourEntry {
   endDate: string;
   coachHrs: number;
   execHrs: number;
+  managerExecHrs: number;
+  trainingHrs: number;
   totalHrs: number;
   classCount: number;
+  starCoachClasses: number;
+  starCoachHrs: number;
   dailyBreakdown: DailyHour[];
+  modRate?: number;
+}
+
+/**
+ * Build the extra daily entries for every non-BM name found in the MANAGER
+ * column of this schedule. Each match becomes an exec-only day: `managerExecHrs`
+ * of the exec time is paid at the override's modRate (or BM_EXEC_RATE when
+ * unset), the rest (up to the daily target) at the normal EXECUTIVE_RATE.
+ *
+ * Actual BMs who appear in the MANAGER column are NOT excluded here — they are
+ * filtered out downstream by shouldExcludeStaff(). This means any coach placed
+ * in the MANAGER column will automatically have their hours tallied, without
+ * needing a MANAGER_ON_DUTY_OVERRIDES entry. The overrides list is only needed
+ * to attach a custom modRate or a date restriction to a specific person.
+ */
+function managerOnDutyEntries(
+  selections: Record<string, string>,
+  branch: string,
+  startDate: string,
+  toDate: (day: string, start: string) => string,
+): { name: string; day: string; date: string; execHrs: number; managerExecHrs: number; modRate?: number }[] {
+  // Build a lookup of optional constraints from MANAGER_ON_DUTY_OVERRIDES.
+  const overrideMap = new Map<string, { dates?: string[]; modRate?: number }>();
+  for (const o of MANAGER_ON_DUTY_OVERRIDES) {
+    if (branchesMatch(branch, o.branch)) {
+      overrideMap.set(norm(o.managerValue), { dates: o.dates, modRate: o.modRate });
+    }
+  }
+
+  // Collect every name that appears in a MANAGER column key, grouped by day.
+  const nameSlots: Record<string, Record<string, number>> = {};
+  for (const [key, val] of Object.entries(selections)) {
+    if (!key.endsWith("-MANAGER")) continue;
+    const name = val?.trim();
+    if (!name || name === "None") continue;
+    const day = key.slice(0, key.indexOf("-")); // day names contain no "-"
+    nameSlots[name] = nameSlots[name] || {};
+    nameSlots[name][day] = (nameSlots[name][day] || 0) + 1;
+  }
+
+  const out: { name: string; day: string; date: string; execHrs: number; managerExecHrs: number; modRate?: number }[] = [];
+
+  for (const [name, slotsPerDay] of Object.entries(nameSlots)) {
+    const override = overrideMap.get(norm(name));
+    for (const [day, slots] of Object.entries(slotsPerDay)) {
+      const date = toDate(day, startDate);
+      // When the override has specific dates, skip days not in that list.
+      if (override?.dates && !override.dates.includes(date)) continue;
+      const isWeekend = day === "Saturday" || day === "Sunday";
+      const dailyTarget = isWeekend ? getWeekendDailyTarget(branch, date) : 5.0;
+      const managerExecHrs = Math.min(slots * 1.25, dailyTarget);
+      out.push({ name, day, date, execHrs: dailyTarget, managerExecHrs, modRate: override?.modRate });
+    }
+  }
+  return out;
 }
 
 type StaffRecord = {
   id: number;
+  employeeId: string | null;
   name: string | null;
   nickname: string | null;
   branch: string | null;
@@ -44,7 +150,26 @@ type StaffRecord = {
   employment_type: string | null;
   rate: string | null;
   email: string | null;
+  start_date: string | null;
+  endDate: string | null;
+  contract: string | null;
+  status: string | null;
+  workingHours: unknown;
 };
+
+// Basic employment info a Branch Manager sees for each coach in their branch.
+interface RosterEntry {
+  id: number;
+  name: string;
+  nickname: string | null;
+  position: string | null;
+  employmentType: string | null;
+  isPT: boolean;
+  contract: string | null;
+  startDate: string | null;
+  endDate: string | null;
+  rate: number | null;
+}
 
 const norm = (v: string | null | undefined) => (v ?? "").toLowerCase().trim();
 
@@ -68,58 +193,111 @@ function branchesMatch(a: string | null | undefined, b: string | null | undefine
 
 function calculateHoursFromSelections(
   selections: Record<string, string>,
-  branch: string
-): Record<string, { coachHrs: number; execHrs: number; totalHrs: number; classCount: number; dailyBreakdown: DailyHour[] }> {
+  branch: string,
+  startDate: string
+): Record<string, { coachHrs: number; execHrs: number; trainingHrs: number; totalHrs: number; classCount: number; starCoachClasses: number; starCoachHrs: number; dailyBreakdown: DailyHour[] }> {
   const allNames = new Set<string>();
   Object.values(selections).forEach((val) => {
     if (val && val !== "" && val !== "None") allNames.add(val);
   });
 
-  const staffStats: Record<string, { coachHrs: number; execHrs: number; totalHrs: number; classCount: number; dailyBreakdown: DailyHour[] }> = {};
+  const staffStats: Record<string, { coachHrs: number; execHrs: number; trainingHrs: number; totalHrs: number; classCount: number; starCoachClasses: number; starCoachHrs: number; dailyBreakdown: DailyHour[] }> = {};
   allNames.forEach((name) => {
-    staffStats[name] = { coachHrs: 0, execHrs: 0, totalHrs: 0, classCount: 0, dailyBreakdown: [] };
+    staffStats[name] = { coachHrs: 0, execHrs: 0, trainingHrs: 0, totalHrs: 0, classCount: 0, starCoachClasses: 0, starCoachHrs: 0, dailyBreakdown: [] };
   });
+
+  const DOW: Record<string, number> = { Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Friday: 5, Saturday: 6 };
+  const [sy, sm, sd] = startDate.split("-").map(Number);
+  const weekStart = new Date(sy, sm - 1, sd);
+  const startDow = weekStart.getDay();
+  function dayDate(dayName: string): string {
+    let diff = (DOW[dayName] ?? 0) - startDow;
+    if (diff < 0) diff += 7;
+    const d = new Date(sy, sm - 1, sd + diff);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
 
   getWorkingDaysForBranch(branch).forEach((day) => {
     const isWeekend = day === "Saturday" || day === "Sunday";
-    const dailyTarget = isWeekend ? 10.5 : 5.0;
+    const actualDate = dayDate(day);
+    const dailyTarget = isWeekend ? getWeekendDailyTarget(branch, actualDate) : 5.0;
 
     allNames.forEach((emp) => {
       let coachingHoursForDay = 0;
+      let starCoachClassesForDay = 0;
+      let starCoachHoursForDay = 0;
+      let trainingSlotHoursForDay = 0;
       let classesForDay = 0;
       let workedThatDay = false;
+      let inTrainingThatDay = false;
 
-      getTimeSlotsForDay(day, branch).forEach((slot) => {
+      getTimeSlotsForDay(day, branch, actualDate).forEach((slot) => {
         if (isOpeningClosingSlot(slot, branch)) return;
-        COLUMNS.forEach((col) => {
-          if (selections[`${day}-${slot}-${col.id}`] === emp) {
-            workedThatDay = true;
-            const isAdmin = isAdminSlot(slot, branch);
-            const slotDuration = isAdmin ? 0.25 : 1.25;
-            if (col.type === "coach") {
-              coachingHoursForDay += slotDuration;
-              // A "class" is a regular (non-admin) coach slot — admin slots are
-              // short housekeeping blocks (0.25h) where no class is taught.
-              if (!isAdmin) classesForDay += 1;
+        ALL_COLUMNS.forEach((col) => {
+          if (selections[`${day}-${slot}-${col.id}`] !== emp) return;
+          workedThatDay = true;
+          const isAdmin = isAdminSlot(slot, branch);
+          const slotDuration = isAdmin ? 0.25 : 1.25;
+          if (col.type === "training") {
+            inTrainingThatDay = true;
+            trainingSlotHoursForDay += slotDuration;
+            return;
+          }
+          if (col.type === "star_coach") {
+            // Star Coach: counted as coaching hours/classes for display, but paid
+            // at STAR_COACH_RATE per class (not per hour at the coach's rate).
+            // starCoachHrs is tracked separately so regular coachPay can exclude it.
+            coachingHoursForDay += slotDuration;
+            starCoachHoursForDay += slotDuration;
+            if (!isAdmin) {
+              classesForDay += 1;
+              starCoachClassesForDay += 1;
             }
+            return;
+          }
+          if (col.type === "coach") {
+            coachingHoursForDay += slotDuration;
+            if (!isAdmin) classesForDay += 1;
           }
         });
       });
 
-      if (workedThatDay) {
-        const execHrs = Math.max(0, dailyTarget - coachingHoursForDay);
-        staffStats[emp].coachHrs += coachingHoursForDay;
-        staffStats[emp].execHrs += execHrs;
-        staffStats[emp].totalHrs = staffStats[emp].coachHrs + staffStats[emp].execHrs;
-        staffStats[emp].classCount += classesForDay;
+      if (!workedThatDay) return;
+
+      if (inTrainingThatDay) {
+        const dayCoachHrs = coachingHoursForDay + trainingSlotHoursForDay;
+        const dayExecHrs = Math.max(0, TRAINING_DAY_HOURS - dayCoachHrs);
+        staffStats[emp].trainingHrs += TRAINING_DAY_HOURS;
+        staffStats[emp].totalHrs = staffStats[emp].coachHrs + staffStats[emp].execHrs + staffStats[emp].trainingHrs;
         staffStats[emp].dailyBreakdown.push({
           day,
-          coachHrs: coachingHoursForDay,
-          execHrs,
-          totalHrs: coachingHoursForDay + execHrs,
-          classCount: classesForDay,
+          coachHrs: dayCoachHrs,
+          execHrs: dayExecHrs,
+          trainingHrs: TRAINING_DAY_HOURS,
+          totalHrs: TRAINING_DAY_HOURS,
+          classCount: 0,
         });
+        return;
       }
+
+      // coachingHoursForDay already includes star_coach; exec fills the remainder.
+      const execHrs = Math.max(0, dailyTarget - coachingHoursForDay);
+      staffStats[emp].coachHrs += coachingHoursForDay;
+      staffStats[emp].execHrs += execHrs;
+      staffStats[emp].starCoachClasses += starCoachClassesForDay;
+      staffStats[emp].starCoachHrs += starCoachHoursForDay;
+      staffStats[emp].totalHrs = staffStats[emp].coachHrs + staffStats[emp].execHrs + staffStats[emp].trainingHrs;
+      staffStats[emp].classCount += classesForDay;
+      staffStats[emp].dailyBreakdown.push({
+        day,
+        coachHrs: coachingHoursForDay,
+        execHrs,
+        trainingHrs: 0,
+        totalHrs: coachingHoursForDay + execHrs,
+        classCount: classesForDay,
+        starCoachClasses: starCoachClassesForDay,
+        starCoachHrs: starCoachHoursForDay,
+      });
     });
   });
 
@@ -224,6 +402,24 @@ function isPartTimeStaff(staff: StaffRecord): boolean {
   );
 }
 
+/**
+ * True when this staff member's hours on `day` should be treated as
+ * online-coach hours, paid on coaching hours only (no exec hours / no exec
+ * pay). `branch` must be the coach's HOME branch (the aggregated bucket's
+ * branch), not the schedule's: when an online coach covers a class for
+ * another branch they still hold it online, so their replacement days are
+ * also coach-hours-only. Day-aware special cases: Amin (FT) always keeps the
+ * standard coach+exec calculation; Pooja keeps it on Saturdays only, when she
+ * works from the office — any other day she's a regular online coach.
+ */
+function isOnlineCoachOnly(staff: StaffRecord | null, branch: string, day: string): boolean {
+  if (norm(normalizeLocation(branch)) !== "online") return false;
+  const empId = (staff?.employeeId ?? "").trim();
+  if (empId === AMIN_EMPLOYEE_ID) return false;
+  if (empId === POOJA_EMPLOYEE_ID) return day !== "Saturday";
+  return true;
+}
+
 function shouldExcludeStaff(staff: StaffRecord): boolean {
   const pos = (staff.position || staff.role || "").toUpperCase();
   const name = (staff.name || "").toUpperCase();
@@ -283,9 +479,10 @@ export async function GET(request: Request) {
     });
 
     // Source of truth: BranchStaff table only.
-    const allStaff: StaffRecord[] = await prisma.branchStaff.findMany({
+    const allStaff: StaffRecord[] = await hrfsPrisma.branchStaff.findMany({
       select: {
         id: true,
+        employeeId: true,
         name: true,
         nickname: true,
         branch: true,
@@ -294,6 +491,11 @@ export async function GET(request: Request) {
         employment_type: true,
         rate: true,
         email: true,
+        start_date: true,
+        endDate: true,
+        contract: true,
+        status: true,
+        workingHours: true,
       },
     });
 
@@ -312,6 +514,9 @@ export async function GET(request: Request) {
       );
       loggedInStaffId = me?.id ?? null;
     }
+    const employeeWorkingHours = isEmployeeView && loggedInStaffId !== null
+      ? (allStaff.find(s => s.id === loggedInStaffId)?.workingHours ?? null)
+      : null;
 
     const dayNameToDate = (dayName: string, startDate: string): string => {
       const dayMap: Record<string, number> = {
@@ -337,7 +542,7 @@ export async function GET(request: Request) {
       const selections = (schedule.selections || schedule.originalSelections || {}) as Record<string, string>;
       if (!selections || Object.keys(selections).length === 0) return;
 
-      const stats = calculateHoursFromSelections(selections, schedule.branch);
+      const stats = calculateHoursFromSelections(selections, schedule.branch, schedule.startDate);
 
       Object.entries(stats).forEach(([name, hours]) => {
         if (hours.totalHrs === 0) return;
@@ -347,9 +552,17 @@ export async function GET(request: Request) {
 
         if (dailyWithDates.length === 0) return;
 
-        const filteredCoachHrs = dailyWithDates.reduce((s, d) => s + d.coachHrs, 0);
-        const filteredExecHrs = dailyWithDates.reduce((s, d) => s + d.execHrs, 0);
+        // Training-day coach/exec hours are a display-only split of the flat
+        // training day — keep them out of the coach/exec buckets so they are
+        // never paid at the coach or exec rate on top of the training rate.
+        const nonTrainingDays = dailyWithDates.filter((d) => !(d.trainingHrs && d.trainingHrs > 0));
+        const filteredCoachHrs = nonTrainingDays.reduce((s, d) => s + d.coachHrs, 0);
+        const filteredExecHrs = nonTrainingDays.reduce((s, d) => s + d.execHrs, 0);
+        const filteredTrainingHrs = dailyWithDates.reduce((s, d) => s + (d.trainingHrs || 0), 0);
         const filteredClassCount = dailyWithDates.reduce((s, d) => s + (d.classCount || 0), 0);
+
+        const filteredStarCoachClasses = nonTrainingDays.reduce((s, d) => s + (d.starCoachClasses || 0), 0);
+        const filteredStarCoachHrs = nonTrainingDays.reduce((s, d) => s + (d.starCoachHrs || 0), 0);
 
         allEntries.push({
           name,
@@ -359,31 +572,75 @@ export async function GET(request: Request) {
           endDate: schedule.endDate,
           coachHrs: filteredCoachHrs,
           execHrs: filteredExecHrs,
-          totalHrs: filteredCoachHrs + filteredExecHrs,
+          managerExecHrs: 0,
+          trainingHrs: filteredTrainingHrs,
+          totalHrs: filteredCoachHrs + filteredExecHrs + filteredTrainingHrs,
           classCount: filteredClassCount,
+          starCoachClasses: filteredStarCoachClasses,
+          starCoachHrs: filteredStarCoachHrs,
           dailyBreakdown: dailyWithDates,
         });
       });
+
+      // Stand-in manager-on-duty days (see MANAGER_ON_DUTY_OVERRIDES). These
+      // come from the MANAGER column, which the regular grid above ignores.
+      managerOnDutyEntries(selections, schedule.branch, schedule.startDate, dayNameToDate)
+        .filter((e) => e.date >= monthStart && e.date < nextMonth)
+        .forEach((e) => {
+          allEntries.push({
+            name: e.name,
+            branch: schedule.branch,
+            weekLabel: `${schedule.startDate} - ${schedule.endDate}`,
+            startDate: schedule.startDate,
+            endDate: schedule.endDate,
+            coachHrs: 0,
+            execHrs: e.execHrs,
+            managerExecHrs: e.managerExecHrs,
+            trainingHrs: 0,
+            totalHrs: e.execHrs,
+            classCount: 0,
+            starCoachClasses: 0,
+            starCoachHrs: 0,
+            modRate: e.modRate,
+            dailyBreakdown: [{
+              day: e.day,
+              date: e.date,
+              coachHrs: 0,
+              execHrs: e.execHrs,
+              managerExecHrs: e.managerExecHrs,
+              totalHrs: e.execHrs,
+              classCount: 0,
+            }],
+          });
+        });
     });
 
     // Aggregate by BranchStaff.id so name variants ("Diena" / "IRDIENA" /
     // "NUR IRDIENA BATRISYIA BINTI ASMAWI") collapse into one row.
-    interface DailyEntry { date: string; day: string; coachHrs: number; execHrs: number; totalHrs: number; classCount: number; scheduleBranch?: string }
+    interface DailyEntry { date: string; day: string; coachHrs: number; execHrs: number; managerExecHrs: number; trainingHrs: number; totalHrs: number; classCount: number; starCoachClasses: number; starCoachHrs: number; scheduleBranch?: string }
 
     const aggregated: Record<string, {
       key: string;
       staffId: number | null;
+      employeeId: string | null;
       name: string;
       branch: string;
       rate: number | null;
+      modRate: number | null;
       employmentType: string | null;
       position: string | null;
       coachHrs: number;
       execHrs: number;
+      managerExecHrs: number;
+      trainingHrs: number;
       totalHrs: number;
       classCount: number;
+      starCoachClasses: number;
+      starCoachHrs: number;
       coachPay: number;
       execPay: number;
+      trainingPay: number;
+      starCoachPay: number;
       totalPay: number;
       days: DailyEntry[];
     }> = {};
@@ -410,27 +667,41 @@ export async function GET(request: Request) {
         aggregated[key] = {
           key,
           staffId: staff?.id ?? null,
+          employeeId: staff?.employeeId ?? null,
           name: displayName,
           branch: homeBranch,
           rate,
+          modRate: entry.modRate ?? null,
           employmentType,
           position,
           coachHrs: 0,
           execHrs: 0,
+          managerExecHrs: 0,
+          trainingHrs: 0,
           totalHrs: 0,
           classCount: 0,
+          starCoachClasses: 0,
+          starCoachHrs: 0,
           coachPay: 0,
           execPay: 0,
+          trainingPay: 0,
+          starCoachPay: 0,
           totalPay: 0,
           days: [],
         };
       }
 
       const bucket = aggregated[key];
+      // Carry modRate from any MOD override entry into the bucket (first one wins).
+      if (entry.modRate !== undefined && bucket.modRate === null) bucket.modRate = entry.modRate;
       bucket.coachHrs += entry.coachHrs;
       bucket.execHrs += entry.execHrs;
+      bucket.managerExecHrs += entry.managerExecHrs;
+      bucket.trainingHrs += entry.trainingHrs;
       bucket.totalHrs += entry.totalHrs;
       bucket.classCount += entry.classCount;
+      bucket.starCoachClasses += entry.starCoachClasses;
+      bucket.starCoachHrs += entry.starCoachHrs;
 
       // Mark a day as a "replacement" only when the schedule branch is
       // genuinely different from the staff's home branch. Compare via
@@ -443,8 +714,12 @@ export async function GET(request: Request) {
           day: d.day,
           coachHrs: d.coachHrs,
           execHrs: d.execHrs,
+          managerExecHrs: d.managerExecHrs || 0,
+          trainingHrs: d.trainingHrs || 0,
           totalHrs: d.totalHrs,
           classCount: d.classCount || 0,
+          starCoachClasses: d.starCoachClasses || 0,
+          starCoachHrs: d.starCoachHrs || 0,
           scheduleBranch: isReplacement ? scheduleBranch : undefined,
         });
       });
@@ -452,6 +727,32 @@ export async function GET(request: Request) {
 
     Object.values(aggregated).forEach((emp) => {
       emp.days.sort((a, b) => a.date.localeCompare(b.date));
+
+      // Merge multiple entries for the same date. This happens when two
+      // slot-name variants for the same BranchStaff (e.g. "RITHU" / "ISHINI")
+      // both appear on the same schedule day. Each name is processed separately
+      // in calculateHoursFromSelections, producing two daily entries that both
+      // end up in this bucket. Sum coach hours and classes; re-derive exec as
+      // dailyTarget − coachHrs to prevent exec from being double-counted.
+      const merged: DailyEntry[] = [];
+      for (const d of emp.days) {
+        const prev = merged[merged.length - 1];
+        if (prev && prev.date === d.date) {
+          prev.coachHrs += d.coachHrs;
+          prev.classCount = (prev.classCount || 0) + (d.classCount || 0);
+          prev.starCoachClasses = (prev.starCoachClasses || 0) + (d.starCoachClasses || 0);
+          prev.starCoachHrs = (prev.starCoachHrs || 0) + (d.starCoachHrs || 0);
+          prev.trainingHrs = (prev.trainingHrs || 0) + (d.trainingHrs || 0);
+          prev.managerExecHrs = (prev.managerExecHrs || 0) + (d.managerExecHrs || 0);
+          const isWeekend = prev.day === "Saturday" || prev.day === "Sunday";
+          const dailyTarget = (prev.trainingHrs || 0) > 0 ? TRAINING_DAY_HOURS : isWeekend ? getWeekendDailyTarget(emp.branch, prev.date) : 5.0;
+          prev.execHrs = Math.max(0, dailyTarget - prev.coachHrs);
+          prev.totalHrs = prev.coachHrs + prev.execHrs + (prev.trainingHrs || 0);
+        } else {
+          merged.push({ ...d });
+        }
+      }
+      emp.days = merged;
     });
 
     const results = Object.values(aggregated)
@@ -478,18 +779,69 @@ export async function GET(request: Request) {
                      roleStr.includes("PART-TIME") || roleStr.includes("PART TIME");
             })();
 
+        // Online coaches have no exec hours on their online days — drop that
+        // exec time so those days are paid on coaching hours only. Checked per
+        // day because Pooja is physical-style on Saturdays only. Training days
+        // pass through untouched: their coach/exec values are a display split
+        // of the flat 10.5h training day, not real exec time. Training hours
+        // are independent of this and always kept.
+        const days = emp.days.map((d) => {
+          if ((d.trainingHrs || 0) > 0) return d;
+          if (!isOnlineCoachOnly(staff ?? null, emp.branch, d.day)) return d;
+          return { ...d, execHrs: 0, managerExecHrs: 0, totalHrs: d.coachHrs };
+        });
+        // Re-derive the exec totals from the (possibly day-zeroed) days,
+        // skipping training days whose exec value is display-only.
+        const execHrs = days.reduce((s, d) => s + ((d.trainingHrs || 0) > 0 ? 0 : d.execHrs), 0);
+        const managerExecHrs = days.reduce((s, d) => s + ((d.trainingHrs || 0) > 0 ? 0 : (d.managerExecHrs || 0)), 0);
+        const trainingHrs = emp.trainingHrs;
+        const totalHrs = emp.coachHrs + execHrs + trainingHrs;
+
         const hasRate = emp.rate !== null && emp.rate > 0;
-        const coachPay = isPT && hasRate ? emp.coachHrs * (emp.rate || 0) : 0;
-        const execPay = isPT && hasRate ? emp.execHrs * EXECUTIVE_RATE : 0;
+        // emp.coachHrs includes star_coach hours; subtract them before applying the
+        // per-hour rate so star coach slots aren't also paid at rate/hr.
+        const starCoachHrs = emp.starCoachHrs || 0;
+        const regularCoachHrs = emp.coachHrs - starCoachHrs;
+        const coachPay = isPT && hasRate ? regularCoachHrs * (emp.rate || 0) : 0;
+        // Star Coach column: flat RM50/class regardless of stored rate.
+        const starCoachPay = isPT ? (emp.starCoachClasses || 0) * STAR_COACH_RATE : 0;
+        // Manager-on-duty hours: use the override modRate when set (e.g. stand-in managers
+        // with a custom agreed rate), otherwise fall back to the standard BM_EXEC_RATE.
+        // Stand-in managers may not have a DB coach rate — treat hasRate as true when
+        // they have a modRate so their exec pay is still calculated.
+        const effectiveModRate = emp.modRate ?? BM_EXEC_RATE;
+        const hasRateForExec = hasRate || (emp.modRate !== null && managerExecHrs > 0);
+        const effectiveIsPTForExec = isPT || (emp.modRate !== null && managerExecHrs > 0);
+        const regularExecHrs = Math.max(0, execHrs - managerExecHrs);
+        const execPay = effectiveIsPTForExec && hasRateForExec
+          ? regularExecHrs * EXECUTIVE_RATE + managerExecHrs * effectiveModRate
+          : 0;
+        // Training is paid at the flat TRAINING_RATE for everyone who logged
+        // training hours — independent of PT/FT status or coach rate.
+        const trainingPay = trainingHrs * TRAINING_RATE;
+        const isTraining = trainingHrs > 0;
 
         return {
           ...emp,
+          execHrs,
+          managerExecHrs,
+          trainingHrs,
+          totalHrs,
+          days,
           isPT,
+          isTraining,
+          staffRole: staff?.role ?? null,
           coachPay,
+          starCoachPay,
           execPay,
-          totalPay: coachPay + execPay,
+          trainingPay,
+          totalPay: coachPay + starCoachPay + execPay + trainingPay,
         };
       });
+
+    // Basic-info roster for Branch Managers — every active coach in their branch,
+    // independent of whether they logged scheduled hours this month.
+    let branchRoster: RosterEntry[] = [];
 
     // Role-based scoping. Fail closed: anything we can't resolve becomes [].
     //   FT / PT (isEmployeeView)   → own row only via loggedInStaffId.
@@ -506,11 +858,37 @@ export async function GET(request: Request) {
       results.push(...filtered);
     } else if (isBranchManager(userRole)) {
       const userBranch = sessionUser?.branchName as string | null | undefined;
+      // Use branchesMatch (not exact ===): r.branch is the normalized full name
+      // ("Bandar Rimbayu") while the BM's session branchName may be a short/variant
+      // form ("Rimbayu") or carry a typo ("Bandar Tun Huseein Onn").
       const filtered = userBranch
-        ? results.filter((r) => r.branch === userBranch)
+        ? results.filter((r) => branchesMatch(r.branch, userBranch))
         : [];
       results.length = 0;
       results.push(...filtered);
+
+      // Build the basic-info roster: all active coaches in the BM's branch,
+      // sourced directly from BranchStaff so coaches with no scheduled hours
+      // this month still appear. Excludes BMs / interns / training rows.
+      if (userBranch) {
+        branchRoster = allStaff
+          .filter((s) => branchesMatch(s.branch, userBranch))
+          .filter((s) => !shouldExcludeStaff(s))
+          .filter((s) => norm(s.status) === "active")
+          .map((s) => ({
+            id: s.id,
+            name: s.name || s.nickname || "",
+            nickname: s.nickname,
+            position: s.position || s.role,
+            employmentType: s.employment_type,
+            isPT: isPartTimeStaff(s),
+            contract: s.contract,
+            startDate: s.start_date,
+            endDate: s.endDate,
+            rate: s.rate ? parseFloat(s.rate) || null : null,
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+      }
     } else if (canSeeAllBranches(auth.session) || isAcademy(userRole)) {
       // No filter — caller sees all branches.
     } else {
@@ -526,18 +904,26 @@ export async function GET(request: Request) {
     const ptResults = results.filter((r) => r.isPT);
     const ftResults = results.filter((r) => !r.isPT);
 
+    const totalTrainingPay = results.reduce((s, r) => s + r.trainingPay, 0);
     const totals = {
       totalStaff: results.length,
       ptCount: ptResults.length,
       ftCount: ftResults.length,
       totalCoachHrs: results.reduce((s, r) => s + r.coachHrs, 0),
       totalExecHrs: results.reduce((s, r) => s + r.execHrs, 0),
+      totalTrainingHrs: results.reduce((s, r) => s + r.trainingHrs, 0),
       totalHrs: results.reduce((s, r) => s + r.totalHrs, 0),
       totalClasses: results.reduce((s, r) => s + r.classCount, 0),
       totalCoachPay: ptResults.reduce((s, r) => s + r.coachPay, 0),
+      totalStarCoachClasses: results.reduce((s, r) => s + r.starCoachClasses, 0),
+      totalStarCoachPay: ptResults.reduce((s, r) => s + r.starCoachPay, 0),
       totalExecPay: ptResults.reduce((s, r) => s + r.execPay, 0),
-      totalPay: ptResults.reduce((s, r) => s + r.totalPay, 0),
+      totalTrainingPay,
+      totalPay: ptResults.reduce((s, r) => s + r.totalPay, 0) + ftResults.reduce((s, r) => s + r.trainingPay, 0),
       executiveRate: EXECUTIVE_RATE,
+      bmExecRate: BM_EXEC_RATE,
+      trainingRate: TRAINING_RATE,
+      starCoachRate: STAR_COACH_RATE,
     };
 
     const weeksSet = new Set<string>();
@@ -554,7 +940,10 @@ export async function GET(request: Request) {
       totals,
       staff: results,
       isEmployeeView,
+      isBranchManagerView: isBranchManager(userRole),
+      branchRoster,
       availableWeeks,
+      employeeWorkingHours,
     });
   } catch (error) {
     console.error("Manpower cost calculation error:", error);

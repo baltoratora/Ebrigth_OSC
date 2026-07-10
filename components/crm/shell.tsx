@@ -27,7 +27,7 @@ export function CrmShell({ children, session }: CrmShellProps) {
   const [collapsed, setCollapsed] = useState(true)
 
   return (
-    <div className="flex h-screen overflow-hidden bg-slate-50 dark:bg-slate-950">
+    <div className="flex h-screen overflow-hidden bg-[#e8eef9] dark:bg-slate-950">
       {/* Sidebar */}
       <motion.div
         initial={false}

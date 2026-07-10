@@ -3,6 +3,32 @@ import { prisma } from '@/lib/crm/db'
 import { normalizePhone } from '@/lib/crm/utils'
 import { enqueueAutomation } from '@/lib/crm/queue'
 
+/**
+ * Pull the parent's free-text remark out of a form submission. The "Remarks"
+ * textarea is keyed by a generated field id, so walk the form schema for any
+ * field whose label looks like "remarks" and read that id from the body;
+ * fall back to common literal keys.
+ */
+function extractRemarks(schema: unknown, body: Record<string, string>): string | undefined {
+  const direct = body.remarks ?? body.message ?? body.notes
+  if (direct && String(direct).trim()) return String(direct).trim()
+
+  const ids: string[] = []
+  const walk = (node: unknown) => {
+    if (!node || typeof node !== 'object') return
+    if (Array.isArray(node)) { node.forEach(walk); return }
+    const obj = node as Record<string, unknown>
+    if (typeof obj.label === 'string' && /remark/i.test(obj.label) && typeof obj.id === 'string') ids.push(obj.id)
+    for (const v of Object.values(obj)) walk(v)
+  }
+  walk(schema)
+  for (const id of ids) {
+    const v = body[id]
+    if (v && String(v).trim()) return String(v).trim()
+  }
+  return undefined
+}
+
 export async function POST(req: NextRequest, { params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params
 
@@ -21,6 +47,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
   const rawPhone = body.phone ?? body.mobile ?? ''
   const phone = rawPhone ? normalizePhone(rawPhone) : undefined
 
+  // Parent's free-text "Remarks" — the textarea uses a generated field id, so
+  // resolve it from the form schema (any field labelled like "remarks") and
+  // fall back to common keys. Without this the remark never reaches the lead
+  // card (only the trial-submit form stored it before).
+  const remarks = extractRemarks(form.schema, body)
+
   // Find lead source for website
   const leadSource = await prisma.crm_lead_source.findFirst({
     where: { tenantId: form.tenantId, name: { contains: 'Website' } },
@@ -37,6 +69,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
 
   if (existing) {
     contactId = existing.id
+    // Existing contact re-submitting with a remark — keep the latest non-empty.
+    if (remarks) await prisma.crm_contact.update({ where: { id: existing.id }, data: { remarks } })
   } else {
     const contact = await prisma.crm_contact.create({
       data: {
@@ -50,6 +84,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
         childName1: body.childName ?? body.child_name ?? undefined,
         childAge1: body.childAge ?? body.child_age ?? undefined,
         preferredBranchId: body.preferredBranch ?? undefined,
+        remarks: remarks ?? null,
       },
     })
     contactId = contact.id

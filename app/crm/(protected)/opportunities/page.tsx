@@ -3,7 +3,10 @@ import { redirect } from 'next/navigation'
 import { auth } from '@/lib/crm/auth'
 import { prisma } from '@/lib/crm/db'
 import { KanbanBoard } from '@/components/crm/opportunities/kanban-board'
+import { WhatsappLeadsButton } from '@/components/crm/opportunities/whatsapp-leads-button'
+import { OppFilterProvider } from '@/components/crm/opportunities/opp-filter-context'
 import { resolveBranchAccess } from '@/lib/crm/branch-access'
+import { hasPermission } from '@/lib/crm/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -14,8 +17,11 @@ export default async function OpportunitiesPage() {
   const access = await resolveBranchAccess(session.user.id)
   if (!access) redirect('/login')
 
-  const { tenantId, primaryBranchId: branchId, branchIds, elevated } = access
+  const { tenantId, primaryBranchId: branchId, branchIds, elevated, role } = access
   const canSwitchBranches = elevated
+  // AGENCY_ADMIN has read-only leads; lead delete is SUPER_ADMIN-only.
+  const canEditLeads = hasPermission(role, 'opportunities:write')
+  const canDeleteLeads = hasPermission(role, 'opportunities:delete')
 
   // ── Role gate ──────────────────────────────────────────────────────────────
   // Lead opportunities page is for SUPER_ADMIN, AGENCY_ADMIN, BRANCH_MANAGER.
@@ -50,9 +56,10 @@ export default async function OpportunitiesPage() {
     '18 Ebright (Taman Sri Gombak)',
     '19 Ebright (Kota Warisan)',
     '20 Ebright (Kajang TTDI Grove)',
-    '21 Ebright (Dataran Puchong Utama)',
+    '21 Ebright (Tropicana Sungai Buloh)',
     '22 Ebright (Puncak Jalil)',
-    '23 Ebright (Tropicana Sungai Buloh)',
+    '23 Ebright (Puchong Utama)',
+    'Ebright Marketing',
   ]
 
   // Parallelise every independent query — the remote Postgres is on a round-
@@ -145,11 +152,15 @@ export default async function OpportunitiesPage() {
   }
 
   return (
+    <OppFilterProvider>
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-slate-700">
         <h1 className="text-lg font-semibold text-slate-900 dark:text-white">
           Opportunities
         </h1>
+        {/* Compulsory: branch managers must clear every inbound WhatsApp lead.
+            The button reads the kanban's day filter via OppFilterProvider. */}
+        <WhatsappLeadsButton />
       </div>
 
       <div className="flex-1 overflow-hidden">
@@ -160,8 +171,11 @@ export default async function OpportunitiesPage() {
           users={users}
           defaultBranchId={branchId}
           canSwitchBranches={canSwitchBranches}
+          canEditLeads={canEditLeads}
+          canDeleteLeads={canDeleteLeads}
         />
       </div>
     </div>
+    </OppFilterProvider>
   )
 }

@@ -126,6 +126,7 @@ async function fetchUnifiedRows(
        FROM public.master_leads_unified
       WHERE source_table = $1
         AND (source_id = $2 OR source_id LIKE $2 || '#%')
+        AND source_table <> 'cns_leads'
       ORDER BY sibling_index ASC NULLS FIRST`,
     [sourceTable, sourceId],
   )
@@ -157,6 +158,7 @@ async function processNotification(payload: string, pg: PgClient): Promise<void>
     try {
       result = await importLead(prisma, { tenantId: tid }, row, caches, {
         enqueueAutomation: enqueueAutomation ?? undefined,
+        dedupeByContact: true,
       })
     } catch (e) {
       console.error(`[leadIngest] importLead threw for ${label}:`, (e as Error).message)
@@ -174,6 +176,10 @@ function logResult(label: string, result: ImportResult): void {
     case 'duplicate':
       // Common during polling-backstop overlap with LISTEN — debug, not warn.
       console.log(`[leadIngest] = ${label} already imported`)
+      break
+    case 'duplicate_contact':
+      // A different source row for the same human (phone + name) already exists.
+      console.log(`[leadIngest] = ${label} same-contact dupe → ${result.contactId}`)
       break
     case 'no_branch':
       console.warn(`[leadIngest] ✗ ${label} ${result.reason}`)
@@ -202,7 +208,7 @@ async function runBackstop(pg: PgClient): Promise<void> {
 
   // No prior ingest → don't pull every historical row. Either run the seed
   // first, or set the watermark to "now" so only fresh inserts get picked up.
-  const watermark = since?.createdAt ?? new Date()
+  const watermark = since ? new Date(since.createdAt.getTime() + 1) : new Date()
 
   const res = await pg.query<UnifiedLeadRow>(
     `SELECT source_table, source_id, lead_source, full_name, phone, email,
@@ -210,6 +216,7 @@ async function runBackstop(pg: PgClient): Promise<void> {
             campaign_name
        FROM public.master_leads_unified
       WHERE submitted_at > $1
+        AND source_table <> 'cns_leads'
       ORDER BY submitted_at ASC, sibling_index ASC NULLS FIRST`,
     [watermark],
   )
@@ -225,9 +232,10 @@ async function runBackstop(pg: PgClient): Promise<void> {
     try {
       const r = await importLead(prisma, { tenantId: tid }, row, caches, {
         enqueueAutomation: enqueueAutomation ?? undefined,
+        dedupeByContact: true,
       })
       if (r.status === 'created') created++
-      else if (r.status === 'duplicate') dup++
+      else if (r.status === 'duplicate' || r.status === 'duplicate_contact') dup++
       else skipped++
     } catch (e) {
       console.error(

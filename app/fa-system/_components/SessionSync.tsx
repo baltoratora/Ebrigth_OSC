@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { useSession } from "next-auth/react";
 import { useFAStore } from "@fa/_lib/store";
-import { matchBranchByName, isBackOfficeRole } from "@fa/_types";
+import { matchBranchByName, isBackOfficeRole, isRegionalManagerRole, regionForEmail } from "@fa/_types";
 import { useFATheme } from "@fa/_lib/theme";
 
 /** Bridges NextAuth (the real auth) to the FA system's zustand store.
@@ -66,6 +66,22 @@ export function SessionSync() {
           `[FA SessionSync] BRANCH_MANAGER ${session.user.email ?? ""} has ` +
           `branchName="${branchName}" which doesn't resolve to any FA branch. ` +
           `Add it to the ALIASES map in _types/index.ts or fix the User row.`
+        );
+        if (currentUserId !== null) logout();
+      }
+      return;
+    }
+
+    if (isRegionalManagerRole(role)) {
+      // Regional Manager → locked to the region matched from their email.
+      const region = regionForEmail(session.user.email);
+      const required = region ? `u-rm-${region.toLowerCase()}` : null;
+      if (required && currentUserId !== required) {
+        login(required);
+      } else if (!required) {
+        console.warn(
+          `[FA SessionSync] REGIONAL_MANAGER ${session.user.email ?? ""} isn't in ` +
+          `RM_REGION_BY_EMAIL — add their email→region in _types/index.ts.`
         );
         if (currentUserId !== null) logout();
       }

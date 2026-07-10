@@ -8,13 +8,14 @@ import { HoverPreview } from "@pcm/_components/shared/HoverPreview";
 import { QuickActionButtons } from "@pcm/_components/fa/QuickActionButtons";
 import { EventPreview } from "@pcm/_components/fa/EventPreview";
 
-export function EventRow({ event, sessionCount, invitationCount, quotaTotal, onView, onEdit }: {
+export function EventRow({ event, sessionCount, invitationCount, quotaTotal, onView, onEdit, onDuplicate }: {
   event: FAEvent;
   sessionCount: number;
   invitationCount: number;
   quotaTotal: number;
   onView: () => void;
   onEdit: () => void;
+  onDuplicate?: () => void;
 }) {
   const startD = new Date(event.startDate);
   const dateStr = formatDateRange(event.startDate, event.endDate);
@@ -89,7 +90,7 @@ export function EventRow({ event, sessionCount, invitationCount, quotaTotal, onV
         </div>
       </div>
     </Link>
-    <QuickActionButtons eventId={event.id} onView={onView} onEdit={onEdit} />
+    <QuickActionButtons eventId={event.id} onView={onView} onEdit={onEdit} onDuplicate={onDuplicate} />
     </div>
     </HoverPreview>
   );

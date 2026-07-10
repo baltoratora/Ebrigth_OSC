@@ -12,6 +12,7 @@ import {
 import { toast } from 'sonner'
 import { useQueryClient } from '@tanstack/react-query'
 import { UserPlus, Loader2, X, Trash2, MoreHorizontal, Search, Users, ShieldCheck, UserCog, User } from 'lucide-react'
+import { useReadOnlyViewer } from '@/lib/crm/use-read-only-viewer'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -227,6 +228,7 @@ function ConfirmModal({
 const col = createColumnHelper<TeamUser>()
 
 export default function TeamPage() {
+  const readOnly = useReadOnlyViewer()
   const { data, isLoading, isError, refetch } = useTeam()
   const qc = useQueryClient()
 
@@ -328,15 +330,21 @@ export default function TeamPage() {
           {info.getValue().map((b) => (
             <div key={b.id} className="flex items-center gap-2">
               <span className="text-xs text-slate-500 dark:text-slate-400">{b.name}</span>
-              <select
-                value={b.role}
-                onChange={(e) => handleRoleChange(info.row.original.id, b.id, e.target.value)}
-                className="rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-1 py-0.5 text-xs text-slate-700 dark:text-slate-300 focus:outline-none"
-              >
-                {ROLES.map((r) => (
-                  <option key={r.value} value={r.value}>{r.label}</option>
-                ))}
-              </select>
+              {readOnly ? (
+                <span className="rounded border border-slate-200 dark:border-slate-700 px-1.5 py-0.5 text-xs text-slate-600 dark:text-slate-400">
+                  {ROLES.find((r) => r.value === b.role)?.label ?? b.role}
+                </span>
+              ) : (
+                <select
+                  value={b.role}
+                  onChange={(e) => handleRoleChange(info.row.original.id, b.id, e.target.value)}
+                  className="rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-1 py-0.5 text-xs text-slate-700 dark:text-slate-300 focus:outline-none"
+                >
+                  {ROLES.map((r) => (
+                    <option key={r.value} value={r.value}>{r.label}</option>
+                  ))}
+                </select>
+              )}
             </div>
           ))}
         </div>
@@ -354,6 +362,7 @@ export default function TeamPage() {
       id: 'actions',
       header: '',
       cell: (info) => (
+        readOnly ? null : (
         <button
           onClick={() => setConfirmDeactivate(info.row.original)}
           title="Remove user"
@@ -361,6 +370,7 @@ export default function TeamPage() {
         >
           <Trash2 className="h-4 w-4" />
         </button>
+        )
       ),
     }),
   ]
@@ -380,13 +390,15 @@ export default function TeamPage() {
             Manage team members and their roles.
           </p>
         </div>
-        <button
-          onClick={() => setShowInvite(true)}
-          className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition-colors"
-        >
-          <UserPlus className="h-4 w-4" />
-          Invite member
-        </button>
+        {!readOnly && (
+          <button
+            onClick={() => setShowInvite(true)}
+            className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition-colors"
+          >
+            <UserPlus className="h-4 w-4" />
+            Invite member
+          </button>
+        )}
       </div>
 
       {/* Stats */}

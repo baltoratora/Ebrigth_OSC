@@ -15,7 +15,7 @@ interface ContactPageProps {
 export async function generateMetadata({ params }: ContactPageProps) {
   const { id } = await params
   // Minimal metadata — title resolved client-side after data loads
-  return { title: `Contact — Ebright CRM` }
+  return { title: `Contact — Ebright Nexus` }
 }
 
 export default async function ContactPage({ params }: ContactPageProps) {

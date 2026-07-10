@@ -12,7 +12,7 @@ import { EventPickerGrid } from "@fa/_components/fa/EventPickerGrid";
 import { EventStatusPill } from "@fa/_components/fa/StatusPill";
 import { CertificatePreviewModal } from "@fa/_components/fa/CertificatePreviewModal";
 import { formatDateRange } from "@fa/_lib/date";
-import { BRANCHES } from "@fa/_types";
+import { BRANCHES, countsAsAttended } from "@fa/_types";
 
 // Stable empty default — keeps the Zustand selector referentially stable so
 // the page doesn't re-render on every unrelated store update.
@@ -75,7 +75,7 @@ export default function InventoryPage() {
     // medals, microphones and certificates: every kid we expect to be at
     // the showcase.
     const expectedAttendees = eventInvitations.filter(
-      i => i.status === "confirmed" || i.status === "attended"
+      i => i.status === "confirmed" || countsAsAttended(i.status)
     );
 
     // ── Grade counts (shared by medals + microphones). Uses the BM-picked

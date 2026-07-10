@@ -57,6 +57,15 @@ const CHECKS: EnvCheck[] = [
     placeholderMarkers: ['user:password', 'localhost:5432/postgres'],
   },
   {
+    // Direct connection to ebright_hrfs (public schema) where BranchStaff
+    // physically lives. When unset, lib/hrfs.ts falls back to DATABASE_URL
+    // (reads keep working via the crm view, but registration INSERTs fail),
+    // so this is a warning rather than critical.
+    name: 'HRFS_DATABASE_URL',
+    severity: 'warning',
+    placeholderMarkers: ['user:password', 'localhost:5432/postgres'],
+  },
+  {
     name: 'CRM_PREVIEW_MODE',
     severity: 'critical',
     productionOnly: true,

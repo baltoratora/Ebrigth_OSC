@@ -7,6 +7,7 @@ import {
   InvitationRejected,
 } from "@fa/_lib/events.server";
 import { BranchCode, InvitationStatus } from "@fa/_types";
+import { requireSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,9 @@ export const dynamic = "force-dynamic";
 // another day / etc.). The 409 code signals "valid request but conflicts
 // with current state" so the client can distinguish from a real server error.
 export async function POST(req: NextRequest) {
+  const auth = await requireSession();
+  if (auth.error) return auth.error;
+
   try {
     const body = await req.json();
     const { eventId, sessionId, studentId, branch, invitedBy } = body;
@@ -31,10 +35,13 @@ export async function POST(req: NextRequest) {
         { status: 404 }
       );
     }
-    if (
-      !allowOverQuota &&
-      (eventStatus === "closed" || eventStatus === "completed")
-    ) {
+    // A closed or completed event is locked — no new invitations, full stop.
+    // Enforced regardless of allowOverQuota: a BM always sends that flag (to
+    // relax the per-session quota), so gating the closed check behind it
+    // previously let BMs invite after the window had shut. Walk-ins added while
+    // the event is "ongoing" are unaffected (ongoing is neither closed nor
+    // completed).
+    if (eventStatus === "closed" || eventStatus === "completed") {
       return NextResponse.json(
         { invitation: null, reason: "Event is closed" },
         { status: 409 }

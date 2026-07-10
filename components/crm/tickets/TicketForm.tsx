@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useForm } from 'react-hook-form'
-import { ArrowLeft, ArrowRight, Loader2 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Loader2, Paperclip, X } from 'lucide-react'
+import { toast } from 'sonner'
 import { cn } from '@/lib/crm/utils'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
@@ -95,6 +96,44 @@ export function TicketForm() {
   const { data: platforms = [] } = useTktPlatforms()
   const { data: branches = [] } = useTktBranches()
   const createMutation = useCreateTicket()
+
+  // Optional image attachment — ONLY offered for the Lead platform.
+  const [attachment, setAttachment] = useState<File | null>(null)
+  const [uploadingAttachment, setUploadingAttachment] = useState(false)
+
+  function handleAttachmentChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0]
+    if (!f) { setAttachment(null); return }
+    if (!['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(f.type)) {
+      toast.error('Only JPG, JPEG, PNG or WebP images are allowed')
+      e.target.value = ''
+      return
+    }
+    if (f.size > 10 * 1024 * 1024) {
+      toast.error('Image must be 10MB or smaller')
+      e.target.value = ''
+      return
+    }
+    setAttachment(f)
+  }
+
+  // Upload a single image to a freshly-created ticket via the server-side proxy
+  // route (one request: the server streams it to S3 and registers the row).
+  // This replaces the old presign + browser-direct-PUT flow, which failed with
+  // "Failed to fetch" when the S3 bucket's CORS blocked cross-origin PUTs.
+  async function uploadLeadAttachment(ticketId: string, file: File) {
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('fileType', 'general')
+    const res = await fetch(`/api/crm/tickets/${ticketId}/attachments/upload`, {
+      method: 'POST',
+      body: fd,
+    })
+    if (!res.ok) {
+      const msg = await res.json().catch(() => null)
+      throw new Error(msg?.error || 'Upload failed')
+    }
+  }
 
   const { control, handleSubmit, watch, setValue, getValues, formState: { errors } } = useForm<FormValues>({
     defaultValues: {
@@ -191,17 +230,29 @@ export function TicketForm() {
       collectedFields[key] = val
     }
 
-    await createMutation.mutateAsync(
-      {
-        platformSlug: values.platformSlug,
-        branchId: values.branchId,
-        subType: values.subType,
-        fields: collectedFields,
-      },
-      {
-        onSuccess: () => router.push('/crm/tickets'),
-      },
-    )
+    const created = await createMutation.mutateAsync({
+      platformSlug: values.platformSlug,
+      branchId: values.branchId,
+      subType: values.subType,
+      fields: collectedFields,
+    })
+
+    // Lead-platform optional attachment — upload after the ticket exists.
+    // A failed upload must NOT lose the ticket; warn and continue.
+    if (attachment && values.platformSlug === 'lead') {
+      setUploadingAttachment(true)
+      try {
+        await uploadLeadAttachment(created.ticketId, attachment)
+      } catch (e) {
+        toast.error(
+          `Ticket created, but the image upload failed (${(e as Error).message}). You can add it from the ticket page.`,
+        )
+      } finally {
+        setUploadingAttachment(false)
+      }
+    }
+
+    router.push('/crm/tickets')
   }
 
   return (
@@ -337,14 +388,58 @@ export function TicketForm() {
               errors={errors}
             />
 
+            {/* Optional image attachment — Lead platform only. */}
+            {platformSlug === 'lead' && (
+              <div>
+                <Label htmlFor="lead-attachment">
+                  Attachment <span className="font-normal text-slate-400">(optional — JPG / JPEG / PNG / WebP)</span>
+                </Label>
+                {attachment ? (
+                  <div className="mt-1 flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-900">
+                    <span className="flex min-w-0 items-center gap-2 text-slate-700 dark:text-slate-200">
+                      <Paperclip className="h-4 w-4 shrink-0 text-slate-400" />
+                      <span className="truncate">{attachment.name}</span>
+                      <span className="shrink-0 text-xs text-slate-400">
+                        ({(attachment.size / 1024).toFixed(0)} KB)
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setAttachment(null)}
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-400 hover:bg-slate-200 hover:text-slate-700 dark:hover:bg-slate-700 dark:hover:text-slate-200"
+                      title="Remove attachment"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <label
+                    htmlFor="lead-attachment"
+                    className="mt-1 flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-slate-300 bg-white px-3 py-2 text-sm text-slate-500 transition hover:border-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-400 dark:hover:border-slate-500"
+                  >
+                    <Paperclip className="h-4 w-4" />
+                    Click to attach an image
+                  </label>
+                )}
+                <input
+                  id="lead-attachment"
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+                  onChange={handleAttachmentChange}
+                  className="hidden"
+                />
+              </div>
+            )}
+
             <div className="flex justify-between pt-2">
               <Button type="button" variant="outline" onClick={() => setStep('subtype')}>
                 <ArrowLeft className="mr-2 h-4 w-4" /> Back
               </Button>
-              <Button type="submit" disabled={createMutation.isPending}>
-                {createMutation.isPending ? (
+              <Button type="submit" disabled={createMutation.isPending || uploadingAttachment}>
+                {createMutation.isPending || uploadingAttachment ? (
                   <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Submitting...
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    {uploadingAttachment ? 'Uploading…' : 'Submitting...'}
                   </>
                 ) : (
                   <>

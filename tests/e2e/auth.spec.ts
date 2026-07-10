@@ -6,7 +6,8 @@ test.describe('Authentication smoke', () => {
     await expect(page).toHaveURL(/\/home/);
 
     // 7 modules visible by title
-    const titles = ['Library', 'Internal Dashboard', 'HRMS', 'CRM', 'SMS', 'Inventory', 'Academy'];
+    // 'CNS' (renamed from 'CRM' in the rebrand — Client Nexus System).
+    const titles = ['Library', 'Internal Dashboard', 'HRMS', 'CNS', 'SMS', 'Inventory', 'Academy'];
     for (const t of titles) {
       await expect(page.getByText(t, { exact: true }).first()).toBeVisible();
     }
@@ -23,7 +24,7 @@ test.describe('Authentication smoke', () => {
     const hrmsCard = page.locator('a, div').filter({ hasText: 'HRMS' }).first();
     await expect(hrmsCard).toBeVisible();
 
-    // BMs can access HRMS, Inventory, CRM and SMS (4 of 7 tiles); the
+    // BMs can access HRMS, Inventory, CNS and SMS (4 of 7 tiles); the
     // remaining 3 (Library, Internal Dashboard, Academy) show a Locked pill.
     await expect(page.getByText('Locked', { exact: false })).toHaveCount(3);
   });

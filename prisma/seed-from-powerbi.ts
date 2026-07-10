@@ -79,10 +79,12 @@ const STAGES = [
   { name: 'Follow-Up 2nd Attempt', shortCode: 'FU2',   color: 'slate'   },
   { name: 'Follow-Up 3rd Attempt', shortCode: 'FU3',   color: 'slate'   },
   { name: 'Reschedule',            shortCode: 'RSD',   color: 'slate'   },
+  { name: 'Trial Buffer',          shortCode: 'CTB',   color: 'cyan'    },
   { name: 'Confirmed for Trial',   shortCode: 'CT',    color: 'emerald' },
   { name: 'Confirmed No-Show',     shortCode: 'CNS',   color: 'amber'   },
   { name: 'Show-Up',               shortCode: 'SU',    color: 'emerald' },
   { name: 'Show-Up No-Enroll',     shortCode: 'SNE',   color: 'yellow'  },
+  { name: 'Enroll Buffer',         shortCode: 'ENRB',  color: 'cyan'    },
   { name: 'Enrolled',              shortCode: 'ENR',   color: 'emerald' },
   { name: 'Unresponsive Week 1',   shortCode: 'UR_W1', color: 'slate'   },
   { name: 'Unresponsive Week 2',   shortCode: 'UR_W2', color: 'slate'   },
@@ -319,6 +321,7 @@ async function main() {
       FROM public.master_leads_unified
      WHERE submitted_at IS NOT NULL
        AND (full_name IS NOT NULL OR phone IS NOT NULL OR email IS NOT NULL)
+       AND source_table <> 'cns_leads'
      ORDER BY submitted_at ASC, sibling_index ASC NULLS FIRST
   `)
   console.log(`→ Found ${leadsRes.rows.length.toLocaleString()} importable leads`)

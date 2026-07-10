@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { canSeeKey } from "@/lib/dashboard-access";
 import { useMyPermissions } from "@/lib/use-my-permissions";
+import { isEmployee } from "@/lib/roles";
 
 interface DashboardCard {
   id: string;
@@ -50,6 +51,7 @@ const dashboards: DashboardCard[] = [
       { key: "hrms.manpower-planning",name: "Manpower Planning",   href: "/manpower-schedule",             icon: "🗂️" },
       { key: "hrms.claims",           name: "Claims",              href: "/claim",                         icon: "💰" },
       { key: "hrms.attendance",       name: "Attendance",          href: "/attendance",                    icon: "⏰" },
+      { key: "hrms.recruitment",      name: "Recruitment",         href: "/recruitment",                   icon: "🧑‍💼" },
       { key: "hrms.onboarding",       name: "Onboarding",          href: "/onboarding",                    icon: "🟢" },
       { key: "hrms.offboarding",      name: "Offboarding",         href: "/offboarding",                   icon: "🔴" },
       { key: "hrms.hr-dashboard",     name: "HR Dashboard",        href: "/hr-dashboard",                  icon: "📋" },
@@ -59,8 +61,8 @@ const dashboards: DashboardCard[] = [
   },
   {
     id: "crm",
-    title: "CRM",
-    icon: "📊",
+    title: "CNS",
+    icon: "🤝",
     color: "bg-yellow-500",
     items: [
       // Lead and Ticket are the only CRM entry points — both land on their
@@ -85,8 +87,9 @@ const dashboards: DashboardCard[] = [
     icon: "💬",
     color: "bg-indigo-500",
     items: [
-      { key: "sms.messages",  name: "Messages",  href: "#",    icon: "💌" },
-      { key: "sms.templates", name: "Templates", href: "/sms", icon: "📧" },
+      { key: "sms.messages",  name: "Messages",  href: "#",        icon: "💌" },
+      { key: "sms.templates", name: "Templates", href: "/sms",     icon: "📧" },
+      { key: "sms.burnlist",  name: "Burnlist",  href: "/burnlist", icon: "🔥" },
     ],
   },
   {
@@ -121,6 +124,14 @@ export default function DashboardDetail({ id }: DashboardDetailProps) {
   const dashboard = dashboards.find((d) => d.id === id);
 
   const isItemEnabled = (key: string) => canSeeKey(role, key, overrides);
+
+  // FT/PT share the "Attendance" tile's unlock (hrms.attendance) so it isn't
+  // greyed out for them, but they don't get the /attendance hub itself
+  // (Summary/Appeal/Leave show other staff's data) — send them straight to
+  // their own self-scoped Report page instead. See middleware.ts, which only
+  // allowlists /attendance/report for FT/PT, never bare /attendance.
+  const resolveHref = (item: { key: string; href: string }) =>
+    item.key === "hrms.attendance" && isEmployee(role) ? "/attendance/report" : item.href;
 
   if (!dashboard) {
     return (
@@ -168,7 +179,7 @@ export default function DashboardDetail({ id }: DashboardDetailProps) {
             );
           }
           return (
-            <Link key={item.name} href={item.href}>
+            <Link key={item.name} href={resolveHref(item)}>
               <div className="bg-white rounded-2xl shadow-sm border border-slate-200 hover:border-blue-400 hover:shadow-md transition-all cursor-pointer p-8 h-full flex flex-col items-center justify-center text-center">
                 <span className="text-5xl mb-4">{item.icon}</span>
                 <h2 className="text-lg font-black text-slate-800 uppercase tracking-tight">{item.name}</h2>

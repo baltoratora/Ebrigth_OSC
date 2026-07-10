@@ -17,6 +17,9 @@ import {
   LogOut,
   Home,
   Users,
+  ListOrdered,
+  ClipboardCheck,
+  Gift,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -36,13 +39,19 @@ interface NavItem {
 const MKT_NAV: NavItem[] = [
   { href: "/pcm-system/academy", label: "Events", icon: CalendarDays },
   { href: "/pcm-system/academy/students", label: "Student List", icon: Users },
+  { href: "/pcm-system/shared/invitations", label: "Invitations", icon: ListOrdered },
+  { href: "/pcm-system/shared/reports", label: "Reports", icon: ClipboardCheck },
   { href: "/pcm-system/shared/attendance", label: "Attendance", icon: ClipboardList },
+  { href: "/pcm-system/shared/inventory", label: "Inventory", icon: Gift },
   { href: "/pcm-system/shared/dashboard", label: "Dashboard", icon: ChartBar },
 ];
 
 const BM_NAV: NavItem[] = [
   { href: "/pcm-system/bm", label: "Events", icon: CalendarDays },
+  { href: "/pcm-system/shared/invitations", label: "Invitations", icon: ListOrdered },
+  { href: "/pcm-system/shared/reports", label: "Reports", icon: ClipboardCheck },
   { href: "/pcm-system/shared/attendance", label: "Attendance", icon: ClipboardList },
+  { href: "/pcm-system/shared/inventory", label: "Inventory", icon: Gift },
   { href: "/pcm-system/shared/dashboard", label: "Dashboard", icon: ChartBar },
 ];
 
@@ -51,7 +60,10 @@ const BM_NAV: NavItem[] = [
 const BM_NAV_FOR_ADMIN: NavItem[] = [
   { href: "/pcm-system/bm", label: "Events", icon: CalendarDays },
   { action: "switchToMarketing", label: "Academy View", icon: Building2 },
+  { href: "/pcm-system/shared/invitations", label: "Invitations", icon: ListOrdered },
+  { href: "/pcm-system/shared/reports", label: "Reports", icon: ClipboardCheck },
   { href: "/pcm-system/shared/attendance", label: "Attendance", icon: ClipboardList },
+  { href: "/pcm-system/shared/inventory", label: "Inventory", icon: Gift },
   { href: "/pcm-system/shared/dashboard", label: "Dashboard", icon: ChartBar },
 ];
 
@@ -81,6 +93,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (currentUser && !eventsLoaded) loadEvents();
   }, [currentUser, eventsLoaded, loadEvents]);
 
+  const loadReports = useFAStore(s => s.loadReports);
+  const reportsLoaded = useFAStore(s => s.reportsLoaded);
+  useEffect(() => {
+    if (currentUser && !reportsLoaded) loadReports();
+  }, [currentUser, reportsLoaded, loadReports]);
+
+  // useSession lives up here (above the early-return) so React sees the same
+  // hook order on every render — otherwise the first render returns null
+  // before useSession is reached, and the next render adds it, which trips
+  // React's Rules-of-Hooks check.
+  const { data: session } = useSession();
+  const authRole = (session?.user as { role?: string } | undefined)?.role;
+  const canSwitchView = isBackOfficeRole(authRole);
+
   // Whenever the FA tab regains focus (e.g. the user finished editing in
   // Heidi and switched back), re-fetch studentrecords so the FA UI always
   // mirrors the database. Both `focus` and `visibilitychange` fire so it
@@ -99,19 +125,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [currentUser, refreshStudents]);
 
   if (!currentUser) return null;
-
-  // "Is this NextAuth user a super admin / admin?" — this is what gives them
-  // access to the picker (BM View / Academy View entries). The FA store
-  // user (currentUser) can be either u-mkt OR a specific u-bm-<branch> while
-  // a super admin is swapping views, so we can't infer admin-ness from it.
-  const { data: session } = useSession();
-  const authRole = (session?.user as { role?: string } | undefined)?.role;
-  // Back-office roles (admin / marketing / academy) get the picker — they
-  // can switch between the Academy view and any Branch Manager view via
-  // the door icon in the footer. BRANCH_MANAGER is locked to their own
-  // branch; SessionSync enforces that. The set lives in @pcm/_types so the
-  // two files (this + SessionSync) can't drift.
-  const canSwitchView = isBackOfficeRole(authRole);
 
   // Sidebar nav is driven by the *FA store* user role, not the NextAuth
   // role, so MARKETING-role NextAuth users (who SessionSync maps to u-mkt)

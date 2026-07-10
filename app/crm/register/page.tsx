@@ -83,7 +83,7 @@ export default function CrmRegisterPage() {
             Create your account
           </h1>
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            Join Ebright CRM today
+            Join Ebright Nexus today
           </p>
         </div>
 

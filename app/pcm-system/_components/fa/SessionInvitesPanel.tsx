@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
-import { Clock, X, Phone, UserPlus } from "lucide-react";
+import Link from "next/link";
+import { Clock, X, Phone, UserPlus, ClipboardCheck, FileText } from "lucide-react";
 import { useFAStore } from "@pcm/_lib/store";
 import { EmptyState } from "@pcm/_components/shared/EmptyState";
 import { StatusPill } from "@pcm/_components/fa/StatusPill";
@@ -28,6 +29,14 @@ export function SessionInvitesPanel({
   const students = useFAStore(s => s.students);
   const assignCoach = useFAStore(s => s.assignCoachToInvitation);
   const updateInviteType = useFAStore(s => s.updateInviteType);
+  const reports = useFAStore(s => s.reports);
+  // Build a quick "does an invitation have a saved report?" lookup so the
+  // table can colour rows green when filled and amber when still pending.
+  const reportByInvitationId = useMemo(() => {
+    const m = new Map<string, boolean>();
+    for (const r of reports) m.set(r.invitationId, true);
+    return m;
+  }, [reports]);
   // Branch of the first invitation — every invitation in a per-branch
   // session comes from the same branch, so this is safe even before the
   // student lookup. Used to scope the coach picker to the BM's branch.
@@ -132,7 +141,7 @@ export function SessionInvitesPanel({
           ) : null}
         />
       ) : (
-        <div className="fa-card overflow-hidden">
+        <div className="fa-card overflow-x-auto">
           <table className="fa-table">
             <thead>
               <tr>
@@ -142,17 +151,45 @@ export function SessionInvitesPanel({
                 <th>Coach</th>
                 <th>Parent</th>
                 <th>Status</th>
+                <th>Report</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {invitations.map(inv => {
-                const student = studentsById.get(inv.studentId);
-                if (!student) return null;
+                // Fall back to the denormalised name attached to the
+                // invitation row when /api/pcm/students dropped this
+                // record — better to render a usable row than to silently
+                // hide the BM's invite.
+                const looked = studentsById.get(inv.studentId);
+                const student: Student = looked ?? {
+                  id: inv.studentId,
+                  name: inv.studentName ?? `#${inv.studentId} (not in roster)`,
+                  branch: inv.branch,
+                  grade: inv.studentGrade ?? inv.targetGrade ?? 0,
+                  ageCategory: "Junior",
+                  credit: 1,
+                  faHistory: {},
+                  parentName: inv.studentParentName ?? "",
+                  parentPhone: inv.studentParentPhone ?? "",
+                  enrolmentDate: "",
+                  active: false,
+                  archived: false,
+                };
                 const backlog = hasBacklog(student);
                 const isProgress = inv.inviteType === "progress";
+                const reportFilled = reportByInvitationId.get(inv.id) === true;
                 return (
-                  <tr key={inv.id}>
+                  <tr
+                    key={inv.id}
+                    // Color the whole row by report status so the BM sees at
+                    // a glance who still needs their assessment filled in.
+                    // Soft tints only — avoids fighting the existing row
+                    // hover/zebra styles.
+                    className={reportFilled
+                      ? "bg-emerald-50/40 hover:bg-emerald-50"
+                      : "bg-amber-50/40 hover:bg-amber-50"
+                    }>
                     <td>
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-medium text-ink-900">{student.name}</span>
@@ -215,6 +252,22 @@ export function SessionInvitesPanel({
                         onChange={(s) => onStatusChange(inv.id, s)}
                         disabled={!canInvite && inv.status !== "confirmed" && inv.status !== "invited"}
                       />
+                    </td>
+                    <td>
+                      <Link
+                        href={`/pcm-system/shared/reports/${inv.id}`}
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors ${
+                          reportFilled
+                            ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-200 border border-emerald-300"
+                            : "bg-amber-100 text-amber-700 hover:bg-amber-200 border border-amber-300"
+                        }`}
+                        title={reportFilled ? "Report filled — click to view / edit" : "No report yet — click to fill"}
+                      >
+                        {reportFilled
+                          ? <><ClipboardCheck className="w-3 h-3" /> Filled</>
+                          : <><FileText className="w-3 h-3" /> Fill report</>
+                        }
+                      </Link>
                     </td>
                     <td>
                       <button

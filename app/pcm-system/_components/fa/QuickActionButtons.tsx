@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { createPortal } from "react-dom";
-import { Eye, Pencil, Share2, Check } from "lucide-react";
+import { Eye, Pencil, Share2, Check, Copy } from "lucide-react";
 import { Z } from "@pcm/_lib/zIndex";
 
 interface QuickActionButtonsProps {
@@ -12,9 +12,11 @@ interface QuickActionButtonsProps {
   onView?: () => void;
   /** If provided, Edit opens this callback instead of navigating. */
   onEdit?: () => void;
+  /** If provided, an extra Duplicate button opens this callback. */
+  onDuplicate?: () => void;
 }
 
-export function QuickActionButtons({ eventId, onView, onEdit }: QuickActionButtonsProps) {
+export function QuickActionButtons({ eventId, onView, onEdit, onDuplicate }: QuickActionButtonsProps) {
   const [showToast, setShowToast] = useState(false);
 
   function handleShare(e: React.MouseEvent) {
@@ -95,6 +97,17 @@ export function QuickActionButtons({ eventId, onView, onEdit }: QuickActionButto
           >
             <Pencil className="w-4 h-4" />
           </Link>
+        )}
+        {onDuplicate && (
+          <button
+            type="button"
+            onClick={callbackHandler(onDuplicate)}
+            className={buttonClass}
+            aria-label="Duplicate this event"
+            title="Duplicate event — clones sessions + quotas"
+          >
+            <Copy className="w-4 h-4" />
+          </button>
         )}
         <button
           type="button"

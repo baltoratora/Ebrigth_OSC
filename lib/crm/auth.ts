@@ -144,17 +144,21 @@ async function readNextAuthEmail(headers: Headers): Promise<{ email: string; nam
 // implementation auto-granted SUPER_ADMIN to every newly-provisioned SSO
 // user, which meant any HRMS account (an intern, a part-time coach) became
 // a CRM god on first login. This map closes that hole.
-function mapHrfsRoleToCrmRole(hrfsRole: string | null | undefined): 'SUPER_ADMIN' | 'AGENCY_ADMIN' | 'BRANCH_MANAGER' | 'BRANCH_STAFF' {
+function mapHrfsRoleToCrmRole(hrfsRole: string | null | undefined): 'SUPER_ADMIN' | 'AGENCY_ADMIN' | 'REGIONAL_MANAGER' | 'BRANCH_MANAGER' | 'BRANCH_STAFF' {
   const r = (hrfsRole ?? '').trim().toUpperCase().replace(/[\s-]/g, '_')
   switch (r) {
     case 'SUPER_ADMIN':
       return 'SUPER_ADMIN'
-    case 'AGENCY_ADMIN':
-      return 'AGENCY_ADMIN'
+    // NOTE: AGENCY_ADMIN is intentionally NOT auto-provisioned from HRFS. It is
+    // a CRM-only privilege that may be granted ONLY through the CRM team /
+    // branch-access UI by a super admin. An HRFS "AGENCY_ADMIN" therefore falls
+    // through to BRANCH_STAFF here until a super admin promotes them in-app.
+    case 'REGIONAL_MANAGER':
+      return 'REGIONAL_MANAGER'
     case 'BRANCH_MANAGER':
       return 'BRANCH_MANAGER'
     default:
-      // Coaches (Full_Time / Part_Time), HR, HOD, Executive, Intern, etc.
+      // Coaches (Full_Time / Part_Time), HR, HOD, Executive, Intern, AGENCY_ADMIN, etc.
       return 'BRANCH_STAFF'
   }
 }

@@ -14,11 +14,11 @@ interface StageChangeModalProps {
   onNoteChange: (note: string) => void
   trialDate?: string
   trialTimeSlot?: string
-  enrollmentMonths?: 3 | 6 | 9 | 12
+  enrollmentMonths?: 3 | 6 | 9 | 12 | 18 | 24
   rescheduleDate?: string
   onTrialDateChange?: (v: string) => void
   onTrialTimeSlotChange?: (v: string) => void
-  onEnrollmentMonthsChange?: (v: 3 | 6 | 9 | 12) => void
+  onEnrollmentMonthsChange?: (v: 3 | 6 | 9 | 12 | 18 | 24) => void
   onRescheduleDateChange?: (v: string) => void
   onConfirm: () => void
   onCancel: () => void
@@ -66,16 +66,18 @@ function isoOf(d: Date): string {
 }
 
 const PACKAGE_OPTIONS: Array<{
-  months: 3 | 6 | 9 | 12
+  months: 3 | 6 | 9 | 12 | 18 | 24
   label: string
   subtitle: string
   /** Total price in MYR (Ringgit). Displayed to the BM as confirmation. */
   priceMyr: number
 }> = [
   { months: 3,  label: '3 Months',  subtitle: 'Starter',   priceMyr:  980 },
-  { months: 6,  label: '6 Months',  subtitle: 'Standard',  priceMyr: 1960 },
-  { months: 9,  label: '9 Months',  subtitle: 'Extended',  priceMyr: 2940 },
+  { months: 6,  label: '6 Months',  subtitle: 'Standard',  priceMyr: 2160 },
+  { months: 9,  label: '9 Months',  subtitle: 'Extended',  priceMyr: 3040 },
   { months: 12, label: '12 Months', subtitle: 'Full year', priceMyr: 3920 },
+  { months: 18, label: '18 Months', subtitle: '1.5 years', priceMyr: 5980 },
+  { months: 24, label: '24 Months', subtitle: '2 years',   priceMyr: 7940 },
 ]
 
 function formatRm(n: number): string {
@@ -344,7 +346,7 @@ export function StageChangeModal({
                 <Package className="h-3.5 w-3.5 text-emerald-600" /> Package length
                 <span className="text-red-500">*</span>
               </label>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                 {PACKAGE_OPTIONS.map((opt) => {
                   const selected = enrollmentMonths === opt.months
                   return (

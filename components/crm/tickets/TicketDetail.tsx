@@ -126,28 +126,53 @@ export function TicketDetail({ ticket, canManage, canReopen }: TicketDetailProps
             <div className="rounded-lg border border-slate-200 bg-white p-6 dark:border-slate-700 dark:bg-slate-800">
               <h2 className="mb-4 text-sm font-semibold text-slate-900 dark:text-slate-100">Attachments</h2>
               <ul className="space-y-2">
-                {ticket.attachments.map((att) => (
-                  <li
-                    key={att.id}
-                    className="flex items-center justify-between rounded-md border border-slate-200 p-3 dark:border-slate-700"
-                  >
-                    <div className="flex items-center gap-2">
-                      <Paperclip className="h-4 w-4 text-slate-500" />
-                      <div>
-                        <div className="text-sm font-medium text-slate-900 dark:text-slate-100">{att.original_name}</div>
-                        <div className="text-xs text-slate-500 dark:text-slate-400">
-                          {att.file_type} · {att.size_bytes ? formatBytes(att.size_bytes) : ''}
-                        </div>
-                      </div>
-                    </div>
-                    <a
-                      href={`/api/crm/tickets/${ticket.id}/attachments/${att.id}`}
-                      className="inline-flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700 dark:text-blue-400"
+                {ticket.attachments.map((att) => {
+                  const url = `/api/crm/tickets/${ticket.id}/attachments/${att.id}`
+                  // Detect images by MIME (when present) or filename extension so
+                  // we can render an inline preview instead of a bare download
+                  // link. The <img> hits the GET route, which 302-redirects to a
+                  // presigned S3 URL — no CORS needed for plain image display.
+                  const isImage =
+                    /^image\//i.test(att.mime_type ?? '') ||
+                    /\.(jpe?g|png|gif|webp)$/i.test(att.original_name ?? '')
+                  return (
+                    <li
+                      key={att.id}
+                      className="rounded-md border border-slate-200 p-3 dark:border-slate-700"
                     >
-                      <Download className="h-4 w-4" /> Download
-                    </a>
-                  </li>
-                ))}
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Paperclip className="h-4 w-4 text-slate-500" />
+                          <div>
+                            <div className="text-sm font-medium text-slate-900 dark:text-slate-100">{att.original_name}</div>
+                            <div className="text-xs text-slate-500 dark:text-slate-400">
+                              {att.file_type} · {att.size_bytes ? formatBytes(att.size_bytes) : ''}
+                            </div>
+                          </div>
+                        </div>
+                        <a
+                          href={url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700 dark:text-blue-400"
+                        >
+                          <Download className="h-4 w-4" /> Download
+                        </a>
+                      </div>
+                      {isImage && (
+                        <a href={url} target="_blank" rel="noopener noreferrer" className="mt-3 block">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={url}
+                            alt={att.original_name ?? 'attachment'}
+                            loading="lazy"
+                            className="max-h-80 w-auto max-w-full rounded-md border border-slate-200 object-contain dark:border-slate-700"
+                          />
+                        </a>
+                      )}
+                    </li>
+                  )
+                })}
               </ul>
             </div>
           )}

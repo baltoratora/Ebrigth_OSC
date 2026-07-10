@@ -11,6 +11,7 @@
 export type CrmRole =
   | 'SUPER_ADMIN'
   | 'AGENCY_ADMIN'
+  | 'REGIONAL_MANAGER'
   | 'BRANCH_MANAGER'
   | 'BRANCH_STAFF'
 
@@ -125,22 +126,49 @@ const ALL_PERMISSIONS: CrmPermission[] = [
 
 // ─── Role → permission matrix ─────────────────────────────────────────────────
 
+// Lead-editing permissions. SUPER_ADMIN keeps all of these; AGENCY_ADMIN keeps
+// none (leads are read-only for them); the delete pair is SUPER_ADMIN-only for
+// everyone (branch/regional managers can create + edit but never delete a lead).
+const LEAD_WRITE_PERMS: CrmPermission[] = ['contacts:write', 'opportunities:write']
+const LEAD_DELETE_PERMS: CrmPermission[] = ['contacts:delete', 'opportunities:delete']
+
 const ROLE_PERMISSIONS: Record<CrmRole, ReadonlyArray<CrmPermission>> = {
-  // Full platform access
+  // Full platform access — the only role that can DELETE leads.
   SUPER_ADMIN: ALL_PERMISSIONS,
 
-  // Full access within their tenant
-  AGENCY_ADMIN: ALL_PERMISSIONS,
+  // Full access to every feature across all branches EXCEPT editing leads:
+  // contacts + opportunities are read-only (no create/edit/delete). Everything
+  // else — team, branches, settings, audit, integrations, automations,
+  // pipelines, tickets, impersonation — stays fully available.
+  AGENCY_ADMIN: ALL_PERMISSIONS.filter(
+    (p) => !LEAD_WRITE_PERMS.includes(p) && !LEAD_DELETE_PERMS.includes(p),
+  ),
+
+  // Manages every branch in their region — same capabilities as a branch
+  // manager, just across a wider branch scope (resolved via crm_user_branch
+  // links). The extra "Region" dashboard is gated in the sidebar, not here.
+  REGIONAL_MANAGER: [
+    'contacts:read',
+    'contacts:write',
+    'contacts:export',
+    'opportunities:read',
+    'opportunities:write',
+    // No contacts:delete / opportunities:delete — lead deletion is SUPER_ADMIN only.
+    'automations:read',
+    'messages:read',
+    'messages:write',
+    'dashboard:read',
+    'reports:read',
+  ],
 
   // Manages their branch(es) — can run automations, read settings, see team
   BRANCH_MANAGER: [
     'contacts:read',
     'contacts:write',
-    'contacts:delete',
     'contacts:export',
     'opportunities:read',
     'opportunities:write',
-    'opportunities:delete',
+    // No contacts:delete / opportunities:delete — lead deletion is SUPER_ADMIN only.
     'automations:read',
     'automations:write',
     'automations:delete',
@@ -171,14 +199,20 @@ const ROLE_PERMISSIONS: Record<CrmRole, ReadonlyArray<CrmPermission>> = {
 }
 
 // ─── Ticket module role system ────────────────────────────────────────────────
-// Separate from CRM roles — stored in tkt_user_profile.role
+// Separate from CRM roles — stored in tkt_user_profile.role.
+//
+// 'regional_manager' is NOT a ticket role per se — it's a sidebar-visibility
+// hint set by the CRM layout when a user has a crm_user_branch row with role
+// REGIONAL_MANAGER (and no SUPER/AGENCY admin link). It gates the "Region"
+// nav item without granting ticket-side privileges.
 
-export type TktRole = 'super_admin' | 'platform_admin' | 'user'
+export type TktRole = 'super_admin' | 'platform_admin' | 'user' | 'regional_manager'
 
 export function hasTktPermission(role: TktRole, action: 'read' | 'write' | 'admin' | 'super'): boolean {
   if (role === 'super_admin') return true
   if (role === 'platform_admin') return action !== 'super'
-  // 'user' role: own tickets only (read + write own)
+  // 'user' and 'regional_manager': own tickets only (read + write own).
+  // Regional managers get no extra ticket privileges from this flag.
   return action === 'read' || action === 'write'
 }
 
@@ -187,6 +221,7 @@ export function hasTktPermission(role: TktRole, action: 'read' | 'write' | 'admi
 const PERMISSION_SETS: Record<CrmRole, ReadonlySet<CrmPermission>> = {
   SUPER_ADMIN: new Set(ROLE_PERMISSIONS.SUPER_ADMIN),
   AGENCY_ADMIN: new Set(ROLE_PERMISSIONS.AGENCY_ADMIN),
+  REGIONAL_MANAGER: new Set(ROLE_PERMISSIONS.REGIONAL_MANAGER),
   BRANCH_MANAGER: new Set(ROLE_PERMISSIONS.BRANCH_MANAGER),
   BRANCH_STAFF: new Set(ROLE_PERMISSIONS.BRANCH_STAFF),
 }
@@ -239,5 +274,5 @@ export function getPermissionsForRole(role: CrmRole): ReadonlyArray<CrmPermissio
  * Return all defined CRM roles.
  */
 export function getAllRoles(): CrmRole[] {
-  return ['SUPER_ADMIN', 'AGENCY_ADMIN', 'BRANCH_MANAGER', 'BRANCH_STAFF']
+  return ['SUPER_ADMIN', 'AGENCY_ADMIN', 'REGIONAL_MANAGER', 'BRANCH_MANAGER', 'BRANCH_STAFF']
 }

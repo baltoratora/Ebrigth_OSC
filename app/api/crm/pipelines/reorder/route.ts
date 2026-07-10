@@ -3,6 +3,7 @@ import { headers } from 'next/headers'
 import { auth } from '@/lib/crm/auth'
 import { prisma } from '@/lib/crm/db'
 import { reorderStages } from '@/server/actions/pipelines'
+import { denyReadOnlyViewer } from '@/lib/crm/admin-session'
 
 async function resolveSession() {
   const session = await auth.api.getSession({ headers: await headers() })
@@ -17,6 +18,7 @@ async function resolveSession() {
 
 export async function POST(req: NextRequest) {
   try {
+    const denied = await denyReadOnlyViewer(); if (denied) return denied
     const ctx = await resolveSession()
     if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 

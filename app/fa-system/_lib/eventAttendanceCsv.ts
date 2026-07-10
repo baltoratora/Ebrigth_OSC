@@ -54,7 +54,10 @@ export function buildEventAttendanceCsv(input: EventAttendanceInput): EventAtten
         inv.studentId,
         inv.branch,
         branchNameByCode[inv.branch] ?? "",
-        student?.grade ?? "",
+        // Grade = the grade the student is being appraised for (the one they
+        // chose to join), matching the roster / medals / certificates. Falls
+        // back to the student's current grade for legacy rows without a target.
+        inv.targetGrade && inv.targetGrade > 0 ? inv.targetGrade : (student?.grade ?? ""),
         student?.credit ?? "",
         sess?.dayNumber ?? "",
         sess?.sessionNumber ?? "",

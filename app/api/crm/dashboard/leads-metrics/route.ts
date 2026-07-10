@@ -10,130 +10,19 @@ import { type NextRequest, NextResponse } from 'next/server'
 import { headers } from 'next/headers'
 import { auth } from '@/lib/crm/auth'
 import { prisma } from '@/lib/crm/db'
-import { isPreviewMode } from '@/lib/crm/preview-mode'
 import { clampToDisplayMin } from '@/lib/crm/display-cutoff'
 import { resolveBranchAccess } from '@/lib/crm/branch-access'
-
-async function resolveTenantId(): Promise<string | null> {
-  const session = await auth.api.getSession({ headers: await headers() })
-  if (!session?.user?.id) {
-    if (!isPreviewMode()) return null
-  }
-  // Try crm_user_branch first
-  if (session?.user?.id) {
-    const ub = await prisma.crm_user_branch.findFirst({
-      where: { userId: session.user.id },
-      select: { tenantId: true },
-    })
-    if (ub) return ub.tenantId
-  }
-  // Fallback for preview / users without a branch link — try known slugs first,
-  // then fall through to the first tenant in the DB. This avoids a 401 just
-  // because the production-seed slug doesn't match what was actually seeded.
-  const bySlug = await prisma.crm_tenant.findFirst({
-    where: { slug: { in: ['ebright', 'ebright-demo'] } },
-    select: { id: true },
-  })
-  if (bySlug) return bySlug.id
-
-  const first = await prisma.crm_tenant.findFirst({
-    select: { id: true },
-    orderBy: { createdAt: 'asc' },
-  })
-  return first?.id ?? null
-}
-
-/**
- * Branches whose lead activity is hidden from the elevated (super-admin)
- * dashboard view. Currently only Ebright OD (internal stress-test /
- * training branch) — its leads shouldn't pollute headline numbers,
- * regional totals, or the "Main" pipeline.
- *
- * The OD branch manager still sees their own data normally: when a
- * super-admin uses topbar "view as branch" to inspect OD, the request
- * goes through the non-elevated code path which respects the explicit
- * branchId and bypasses this exclusion.
- */
-const ELEVATED_DASHBOARD_EXCLUDE = new Set<string>([
-  '00 Ebright (OD)',
-])
-
-/** Branch short-code lookup — matches the Data Studio labels.
- *  Keys are stored branch names using the standardized "NN Ebright (location)"
- *  scheme — branches were renamed away from the old "Public Speaking /
- *  Kids / Academy" suffix variants. */
-const BRANCH_CODES: Record<string, string> = {
-  '00 Ebright (OD)':                       'OD',
-  '01 Ebright (Online)':                   'ONL',
-  '02 Ebright (Subang Taipan)':            'ST',
-  '03 Ebright (Setia Alam)':               'SA',
-  '04 Ebright (Sri Petaling)':             'SP',
-  '05 Ebright (Kota Damansara)':           'KD',
-  '06 Ebright (Putrajaya)':                'PJY',
-  '07 Ebright (Ampang)':                   'AMP',
-  '08 Ebright (Cyberjaya)':                'CJY',
-  '09 Ebright (Klang)':                    'KLG',
-  '10 Ebright (Denai Alam)':               'DA',
-  '11 Ebright (Bandar Baru Bangi)':        'BBB',
-  '12 Ebright (Danau Kota)':               'DK',
-  '13 Ebright (Shah Alam)':                'SHA',
-  '14 Ebright (Bandar Tun Hussein Onn)':   'BTHO',
-  '15 Ebright (Eco Grandeur)':             'EGR',
-  '16 Ebright (Bandar Seri Putra)':        'BSP',
-  '17 Ebright (Bandar Rimbayu)':           'RBY',
-  '18 Ebright (Taman Sri Gombak)':         'TSG',
-  '19 Ebright (Kota Warisan)':             'KW',
-  '20 Ebright (Kajang TTDI Grove)':        'KTG',
-  '21 Ebright (Dataran Puchong Utama)':    'DPU',
-  '22 Ebright (Puncak Jalil)':             'PJL',
-  '23 Ebright (Tropicana Sungai Buloh)':   'TSB',
-}
-
-// Regions preserved geographically — same branches per region as before, just
-// using the new GHL names. Branch numbers in each region are no longer
-// contiguous (the GHL list reorders things), but the geographic groupings
-// match the existing Data Studio dashboard.
-const REGIONS: Record<'A' | 'B' | 'C', string[]> = {
-  A: [
-    '17 Ebright (Bandar Rimbayu)',
-    '09 Ebright (Klang)',
-    '13 Ebright (Shah Alam)',
-    '03 Ebright (Setia Alam)',
-    '10 Ebright (Denai Alam)',
-    '15 Ebright (Eco Grandeur)',
-    '02 Ebright (Subang Taipan)',
-    '23 Ebright (Tropicana Sungai Buloh)',
-  ],
-  B: [
-    '12 Ebright (Danau Kota)',
-    '05 Ebright (Kota Damansara)',
-    '07 Ebright (Ampang)',
-    '04 Ebright (Sri Petaling)',
-    '14 Ebright (Bandar Tun Hussein Onn)',
-    '20 Ebright (Kajang TTDI Grove)',
-    '18 Ebright (Taman Sri Gombak)',
-    '21 Ebright (Dataran Puchong Utama)',
-  ],
-  C: [
-    '06 Ebright (Putrajaya)',
-    '19 Ebright (Kota Warisan)',
-    '11 Ebright (Bandar Baru Bangi)',
-    '08 Ebright (Cyberjaya)',
-    '16 Ebright (Bandar Seri Putra)',
-    '01 Ebright (Online)',
-    '22 Ebright (Puncak Jalil)',
-  ],
-}
-
-// Stage-name detection. BUF matches both legacy "Self-Generated" and the new
-// "Buffer (OD use only)" label so the snapshot count survives the rename.
-const STAGE_PATTERN = {
-  NL:  /^new lead$/i,
-  CT:  /^confirmed for trial$/i,
-  SU:  /^show[- ]up$/i,
-  ENR: /^enrolled$/i,
-  BUF: /^(self[- ]generated|buffer)/i,
-}
+import {
+  resolveTenantId,
+  ELEVATED_DASHBOARD_EXCLUDE,
+  BRANCH_CODES,
+  REGIONS,
+  STAGE_PATTERN,
+  regionFor,
+  KL_OFFSET_MS,
+  parseDateRange,
+  ctKeepStageIds,
+} from '@/lib/crm/dashboard-metrics'
 
 interface BranchMetrics {
   branchId: string
@@ -160,74 +49,12 @@ function zero(): Omit<BranchMetrics, 'branchId' | 'branchName' | 'code' | 'regio
   }
 }
 
-/** Resolve a branch name → region code using the REGIONS map at module scope. */
-function regionFor(branchName: string): 'A' | 'B' | 'C' | null {
-  if (REGIONS.A.includes(branchName)) return 'A'
-  if (REGIONS.B.includes(branchName)) return 'B'
-  if (REGIONS.C.includes(branchName)) return 'C'
-  return null
-}
-
 function computeRates(m: Pick<BranchMetrics, 'NL' | 'CT' | 'SU' | 'ENR'>) {
   return {
     conversionRate: m.NL ? m.ENR / m.NL : 0,
     confirmedRate:  m.NL ? m.CT / m.NL  : 0,
     showUpRate:     m.CT ? m.SU / m.CT  : 0,
     enrolmentRate:  m.SU ? m.ENR / m.SU : 0,
-  }
-}
-
-// All dashboard ranges are computed against Asia/Kuala_Lumpur wall-clock
-// terms — that's the timezone the business operates in, and the timezone
-// the cron-fed master_leads_base.submission_date is written in. Without
-// this, a Next.js container running in UTC would treat "today" as 00:00
-// UTC → 07:59 KL the next morning, classifying every lead submitted
-// between midnight and 8 AM KL as "yesterday". KL has no DST so a fixed
-// +8h offset is safe and saves us pulling in date-fns-tz.
-const KL_OFFSET_MS = 8 * 3600 * 1000
-
-/** UTC instant at midnight Asia/Kuala_Lumpur for the KL day that contains `now`. */
-function startOfDayKL(now: Date = new Date()): Date {
-  const wall = new Date(now.getTime() + KL_OFFSET_MS) // shift so UTC fields == KL wall-clock
-  const midnightKL = Date.UTC(wall.getUTCFullYear(), wall.getUTCMonth(), wall.getUTCDate())
-  return new Date(midnightKL - KL_OFFSET_MS)
-}
-
-function parseDateRange(sp: URLSearchParams): { from: Date; to: Date } {
-  const preset = sp.get('preset') ?? 'today'
-  const today = startOfDayKL()
-  const endOfToday = new Date(today.getTime() + 24 * 3600 * 1000 - 1)
-
-  if (preset === 'custom') {
-    const fromStr = sp.get('from') ?? today.toISOString()
-    const toStr = sp.get('to') ?? endOfToday.toISOString()
-    return { from: new Date(fromStr), to: new Date(toStr) }
-  }
-
-  switch (preset) {
-    case 'yesterday': {
-      const from = new Date(today.getTime() - 24 * 3600 * 1000)
-      const to = new Date(today.getTime() - 1)
-      return { from, to }
-    }
-    case '7d': {
-      const from = new Date(today.getTime() - 6 * 24 * 3600 * 1000)
-      return { from, to: endOfToday }
-    }
-    case 'this_week': {
-      // Monday start in KL day-of-week terms (KL has no DST).
-      const wall = new Date(today.getTime() + KL_OFFSET_MS)
-      const dow = wall.getUTCDay() // 0=Sun
-      const daysBack = dow === 0 ? 6 : dow - 1
-      const from = new Date(today.getTime() - daysBack * 24 * 3600 * 1000)
-      return { from, to: endOfToday }
-    }
-    case '30d': {
-      const from = new Date(today.getTime() - 29 * 24 * 3600 * 1000)
-      return { from, to: endOfToday }
-    }
-    default: // today
-      return { from: today, to: endOfToday }
   }
 }
 
@@ -243,19 +70,44 @@ export async function GET(req: NextRequest) {
     const access = session?.user?.id ? await resolveBranchAccess(session.user.id) : null
     const isElevatedUser = access?.elevated ?? true   // API key callers treated as elevated
 
-    // Admin "view as branch": when an elevated user picks a specific branch
-    // in the topbar dropdown, the UI sends `?branchId=<id>` and we treat the
-    // request the same as if a branch manager for that branch were calling.
-    // This lets super admins inspect a branch without logging out.
+    // "View as branch": the topbar dropdown sends `?branchId=<id>` to narrow
+    // the dashboard to a single branch. Honored for BOTH:
+    //  - elevated admins (super/agency) → can inspect ANY branch, and
+    //  - non-elevated users linked to MORE THAN ONE branch (multi-branch BM /
+    //    regional manager) → can narrow to one of their own branches.
+    // A non-elevated user requesting a branch outside their grant is ignored
+    // (viewAsBranch stays null → falls back to all their accessible branches).
+    // Without this, a multi-branch BM's selection was silently dropped and the
+    // block showed the COMBINED total of all their branches mislabeled with
+    // branches[0].name.
+    // Marketing: a non-elevated user linked to the "Ebright Marketing" branch
+    // may view ANY branch's DASHBOARD metrics (read-only) — but not their
+    // opportunities. This lets Marketing inspect other branches' lead funnels
+    // via the dashboard branch dropdown.
+    let isMarketing = false
+    if (access && !isElevatedUser) {
+      const mk = await prisma.crm_branch.findFirst({
+        where: { tenantId, name: 'Ebright Marketing' },
+        select: { id: true },
+      })
+      isMarketing = !!mk && access.branchIds.includes(mk.id)
+    }
+    const canViewAnyBranch = isElevatedUser || isMarketing
+
     const requestedBranchId = req.nextUrl.searchParams.get('branchId')
-    const viewAsBranch = isElevatedUser && requestedBranchId ? requestedBranchId : null
+    const accessibleBranchIds = access?.branchIds ?? []
+    const viewAsBranch = requestedBranchId
+      ? (canViewAnyBranch || accessibleBranchIds.includes(requestedBranchId))
+        ? requestedBranchId
+        : null
+      : null
 
     const elevated = isElevatedUser && !viewAsBranch
     const allowedBranchIds = elevated
       ? null
       : viewAsBranch
         ? [viewAsBranch]
-        : (access?.branchIds ?? [])
+        : accessibleBranchIds
 
     const range = parseDateRange(req.nextUrl.searchParams)
     // Clamp the lower bound to the global display floor so this endpoint
@@ -268,6 +120,10 @@ export async function GET(req: NextRequest) {
       where: { tenantId },
       select: { id: true, name: true, shortCode: true, order: true, pipelineId: true },
     })
+    // Stage IDs whose lead still counts toward the CT headline (CT/SU/SNE/CNS/
+    // ENR/RSD). A lead that backed out before the trial (FU*, CL, DND, NL, …) is
+    // excluded even though its old trial record may linger.
+    const ctKeepIds = ctKeepStageIds(stages)
 
     // Map stage.id → { pipelineId, order, category }
     interface StageInfo {
@@ -290,23 +146,9 @@ export async function GET(req: NextRequest) {
       stageInfo.set(s.id, { pipelineId: s.pipelineId, order: s.order, category: cat })
     }
 
-    // Per-pipeline order of each cumulative-funnel category — used to decide
-    // whether a given opp has "reached" CT, SU, or ENR based on its current
-    // stage.order. Buffer is intentionally excluded (snapshot-only, not part
-    // of the funnel) so a card parked in Buffer doesn't bump CT/SU/ENR.
-    const categoryOrderByPipeline = new Map<
-      string,
-      { CT?: number; SU?: number; ENR?: number }
-    >()
-    for (const s of stages) {
-      if (!s.pipelineId) continue
-      const info = stageInfo.get(s.id)
-      if (!info?.category) continue
-      if (info.category === 'NL' || info.category === 'BUF') continue
-      const bucket = categoryOrderByPipeline.get(s.pipelineId) ?? {}
-      bucket[info.category] = s.order
-      categoryOrderByPipeline.set(s.pipelineId, bucket)
-    }
+    // (The previous build also computed per-pipeline category orderings to
+    // run a "current stage.order ≥ CT.order" cumulative check. That logic
+    // is gone — CT/SU/ENR now come from crm_stage_history directly.)
 
     // Fetch branches. Elevated users get the full canonical list MINUS
     // the dashboard-excluded ones (OD etc.); non-elevated users only get
@@ -325,55 +167,106 @@ export async function GET(req: NextRequest) {
     })
 
     // Count opportunities per (branchId, category) in the date range.
-    // NL + ENR + BUF still count by createdAt — "leads received in range".
-    // CT + SU count instead by trial-appointment.startAt below.
+    //
+    // NL  — leads CREATED in range (snapshot of inflow).
+    // BUF — current-stage snapshot at end of range (parked in Buffer).
+    // CT / SU / ENR — counted by stage_history ENTRY date. A lead dragged
+    //   into the stage at any time inside the range counts +1 there. Once
+    //   recorded the count is permanent: subsequent moves don't undo it.
+    //
+    // This replaces the older trial-appointment-driven CT/SU counts. The
+    // old model bucketed CT/SU by the trial's scheduled date, so a lead
+    // dragged to CT today with a class booked next week wouldn't show up
+    // in this week's CT count; and a Show-Up that later moved to CL would
+    // silently disappear from the historical SU figure once "current
+    // stage < SU.order" became true.
     const opps = await prisma.crm_opportunity.findMany({
       where: {
         tenantId,
         deletedAt: null,
+        // Deleting a lead soft-deletes the CONTACT but not its opportunity, so
+        // exclude contact-deleted leads here too (matches the CT query).
+        contact: { deletedAt: null },
         createdAt: { gte: from, lte: to },
         branchId: { in: branches.map((b) => b.id) },
       },
       select: { id: true, branchId: true, stageId: true, createdAt: true, contactId: true },
     })
 
-    // Trial-class appointments whose start time falls in the range — drives
-    // the CT + SU counts. "Today's CT" = trials scheduled for today, not
-    // leads dragged to CT today. Same for SU (we still gate on the lead's
-    // current stage being at or past Show-Up).
-    const trialAppts = await prisma.crm_appointment.findMany({
+    // ─── Stage-history entries that drive CT / SU / ENR ──────────────────
+    // Pre-collect the stage IDs that map to each target category. A pipeline
+    // can only have one stage per category (CT/SU/ENR), but tenants have
+    // multiple pipelines, so this is a many-to-one map.
+    const stageIdsByCategory: Record<'CT' | 'SU' | 'ENR', string[]> = { CT: [], SU: [], ENR: [] }
+    for (const [id, info] of stageInfo.entries()) {
+      if (info.category === 'CT')  stageIdsByCategory.CT.push(id)
+      if (info.category === 'SU')  stageIdsByCategory.SU.push(id)
+      if (info.category === 'ENR') stageIdsByCategory.ENR.push(id)
+    }
+    // SU / ENR are counted by stage-history entry date (when the lead was
+    // dragged into the stage). CT is NOT — see the trial-appointment block
+    // below; it's counted by the lead's TRIAL CLASS DATE instead.
+    const targetStageIds = [
+      ...stageIdsByCategory.SU,
+      ...stageIdsByCategory.ENR,
+    ]
+
+    const stageEntries =
+      targetStageIds.length === 0
+        ? []
+        : await prisma.crm_stage_history.findMany({
+            where: {
+              tenantId,
+              changedAt: { gte: from, lte: to },
+              toStageId: { in: targetStageIds },
+              // Exclude soft-deleted (e.g. deleted test) leads so the headline
+              // count matches the drill-in list, which also filters deletedAt.
+              // Contact-deletes don't cascade to the opp, so filter both.
+              opportunity: {
+                branchId: { in: branches.map((b) => b.id) },
+                deletedAt: null,
+                contact: { deletedAt: null },
+              },
+            },
+            select: {
+              opportunityId: true,
+              toStageId: true,
+              opportunity: { select: { branchId: true } },
+            },
+          })
+
+    // CT — counted by TRIAL CLASS DATE, exactly mirroring the Trial Class
+    // Schedule widget (same crm_appointment source, same startAt window, same
+    // `contact.deletedAt: null` filter). It counts EVERY trial happening in the
+    // range regardless of the lead's current stage — so a lead that already
+    // showed up (SU), enrolled (ENR) or was rescheduled still counts as a trial
+    // that took place this period. (Previously CT also required the live opp to
+    // still sit at the "Confirmed for Trial" stage, which dropped shown-up /
+    // enrolled leads and made the headline CT under-count vs the schedule.)
+    // Deduped per contact so the rare double-booking isn't double-counted; in
+    // practice move-to-CT / reschedule delete prior Trial Class appointments, so
+    // there's ≤1 per contact and this tallies 1:1 with the schedule's totals.
+    // crm_appointment.startAt is stored naive-KL-as-UTC, but `from`/`to` are
+    // real-UTC (KL-offset) — comparing them directly drops late-/Sunday-KL
+    // trials. Shift the window forward by the KL offset so it aligns with the
+    // naive storage (a Sun-23:00-KL trial now counts in that week, not the next).
+    const apptFrom = new Date(from.getTime() + KL_OFFSET_MS)
+    const apptTo = new Date(to.getTime() + KL_OFFSET_MS)
+    const trialAppointments = await prisma.crm_appointment.findMany({
       where: {
         tenantId,
         title: 'Trial Class',
-        startAt: { gte: from, lte: to },
         branchId: { in: branches.map((b) => b.id) },
+        startAt: { gte: apptFrom, lte: apptTo },
+        // Only count the trial if the lead is still somewhere it counts (CT/SU/
+        // SNE/CNS/ENR/RSD) — excludes stale records for leads who backed out.
+        contact: {
+          deletedAt: null,
+          opportunities: { some: { deletedAt: null, stageId: { in: ctKeepIds } } },
+        },
       },
-      select: { branchId: true, contactId: true, startAt: true },
+      select: { branchId: true, contactId: true },
     })
-
-    // For each appointment we need the contact's CURRENT opp stage to
-    // decide whether they reached CT / SU. Take the contact's most recent
-    // opp on the same branch — handles sibling-exploded contacts cleanly
-    // (each child has its own opp on the same branch).
-    const apptContactIds = Array.from(new Set(trialAppts.map((a) => a.contactId)))
-    const apptOpps =
-      apptContactIds.length === 0
-        ? []
-        : await prisma.crm_opportunity.findMany({
-            where: {
-              tenantId,
-              deletedAt: null,
-              contactId: { in: apptContactIds },
-              branchId: { in: branches.map((b) => b.id) },
-            },
-            select: { contactId: true, branchId: true, stageId: true, createdAt: true },
-            orderBy: { createdAt: 'desc' },
-          })
-    const stageByContactBranch = new Map<string, string>() // contactId|branchId → stageId
-    for (const o of apptOpps) {
-      const key = `${o.contactId}|${o.branchId}`
-      if (!stageByContactBranch.has(key)) stageByContactBranch.set(key, o.stageId)
-    }
 
     // Initialise per-branch metrics
     const branchMetrics = new Map<string, BranchMetrics>()
@@ -387,65 +280,56 @@ export async function GET(req: NextRequest) {
       })
     }
 
-    // Counting model:
-    //
-    // NL  = every opportunity received in the date range, regardless of its
-    //       current stage. Permanent count of received leads.
-    //
-    // CT  = opportunities whose Trial Class appointment.startAt falls in the
-    //       range AND whose current stage is at or past CT. So "today's CT"
-    //       = trials scheduled FOR today, not leads dragged to CT today.
-    //       Handled by the appointment loop below the opp loop.
-    //
-    // SU  = same appointment-driven set as CT, but additionally requires
-    //       the lead's current stage is at or past Show-Up. (You only count
-    //       as a Show-Up if you actually showed up.)
-    //
-    // ENR = cumulative funnel on the createdAt range — opps whose current
-    //       stage.order >= ENR.order. Unchanged by this rewrite.
-    //
-    // BUF = snapshot — leads currently parked in the Buffer (OD use only)
-    //       stage. Buffer is OUT of the funnel.
-    //
-    // Rate denominators use NL (received total).
+    // NL + BUF — driven by the opportunity rows in `opps` (createdAt-in-range).
+    // CT / SU / ENR — driven by stage_history below.
     for (const o of opps) {
       const m = branchMetrics.get(o.branchId)
       if (!m) continue
-
       const info = stageInfo.get(o.stageId)
       if (!info) continue
 
-      // NL: every opp received in the date range (constant under drag)
       m.NL += 1
 
-      // Buffer is its own snapshot bucket — skip the cumulative funnel
-      // bump so a parked lead isn't double-counted as ENR.
+      // Buffer is a snapshot of the current parked-leads count among range-
+      // received opportunities. Doesn't roll into the funnel.
       if (info.category === 'BUF') {
         m.BUF += 1
-        continue
       }
-
-      // ENR still uses cumulative funnel on createdAt-in-range. CT + SU
-      // are bumped in the appointment loop below.
-      const catOrders = categoryOrderByPipeline.get(info.pipelineId)
-      if (!catOrders) continue
-      if (catOrders.ENR !== undefined && info.order >= catOrders.ENR) m.ENR += 1
     }
 
-    // CT + SU — counted per scheduled trial in the date range, gated by
-    // the lead's current stage so leads that were dropped before the
-    // trial don't inflate the trial-day numbers.
-    for (const a of trialAppts) {
-      const m = branchMetrics.get(a.branchId)
-      if (!m) continue
-      const stageId = stageByContactBranch.get(`${a.contactId}|${a.branchId}`)
-      if (!stageId) continue
-      const info = stageInfo.get(stageId)
-      if (!info) continue
-      const catOrders = categoryOrderByPipeline.get(info.pipelineId)
-      if (!catOrders) continue
-      if (catOrders.CT !== undefined && info.order >= catOrders.CT) m.CT += 1
-      if (catOrders.SU !== undefined && info.order >= catOrders.SU) m.SU += 1
+    // SU / ENR — each opportunity is counted once per category per range,
+    // regardless of how many transitions it makes back and forth. We dedupe
+    // via a Set per branch so a SU → RSD → SU round-trip in the same day
+    // doesn't double-count.
+    const seenByBranchCat: Record<'SU' | 'ENR', Map<string, Set<string>>> = {
+      SU:  new Map(),
+      ENR: new Map(),
+    }
+    for (const h of stageEntries) {
+      const branchId = h.opportunity?.branchId
+      if (!branchId) continue
+      const info = stageInfo.get(h.toStageId)
+      const cat = info?.category
+      if (cat !== 'SU' && cat !== 'ENR') continue
+      let perBranch = seenByBranchCat[cat].get(branchId)
+      if (!perBranch) { perBranch = new Set(); seenByBranchCat[cat].set(branchId, perBranch) }
+      perBranch.add(h.opportunityId)
+    }
+    // CT — distinct contacts with a Trial Class booked in the range, per branch.
+    const ctByBranch = new Map<string, Set<string>>()
+    for (const a of trialAppointments) {
+      let set = ctByBranch.get(a.branchId)
+      if (!set) { set = new Set(); ctByBranch.set(a.branchId, set) }
+      set.add(a.contactId)
+    }
+    for (const [branchId, ids] of ctByBranch.entries()) {
+      const m = branchMetrics.get(branchId); if (m) m.CT = ids.size
+    }
+    for (const [branchId, ids] of seenByBranchCat.SU.entries()) {
+      const m = branchMetrics.get(branchId); if (m) m.SU = ids.size
+    }
+    for (const [branchId, ids] of seenByBranchCat.ENR.entries()) {
+      const m = branchMetrics.get(branchId); if (m) m.ENR = ids.size
     }
 
     for (const m of branchMetrics.values()) {
@@ -476,18 +360,45 @@ export async function GET(req: NextRequest) {
     const regionA = aggregate(REGIONS.A)
     const regionB = aggregate(REGIONS.B)
     const regionC = aggregate(REGIONS.C)
-    const main: BranchMetrics = {
-      branchId: '',
-      branchName: '',
-      code: '',
-      region: null,
-      NL:  regionA.NL + regionB.NL + regionC.NL,
-      CT:  regionA.CT + regionB.CT + regionC.CT,
-      SU:  regionA.SU + regionB.SU + regionC.SU,
-      ENR: regionA.ENR + regionB.ENR + regionC.ENR,
-      BUF: regionA.BUF + regionB.BUF + regionC.BUF,
-      conversionRate: 0, confirmedRate: 0, showUpRate: 0, enrolmentRate: 0,
+
+    // Sum every branch currently in scope, irrespective of region membership.
+    function aggregateAll(): BranchMetrics {
+      const list = Array.from(branchMetrics.values())
+      const NL  = list.reduce((s, x) => s + x.NL, 0)
+      const CT  = list.reduce((s, x) => s + x.CT, 0)
+      const SU  = list.reduce((s, x) => s + x.SU, 0)
+      const ENR = list.reduce((s, x) => s + x.ENR, 0)
+      const BUF = list.reduce((s, x) => s + x.BUF, 0)
+      return {
+        branchId: '', branchName: '', code: '', region: null,
+        NL, CT, SU, ENR, BUF, ...computeRates({ NL, CT, SU, ENR }),
+      }
     }
+
+    // Headline "Main" block:
+    //   - Elevated (all-branches view): sum of regions A+B+C. This is exactly
+    //     why a branch outside the canonical regions — e.g. "Ebright Marketing"
+    //     (the catch-all for unresolved leads) — does NOT inflate the
+    //     super-admin dashboard; those leads only count once they're
+    //     transferred to a real, regioned branch.
+    //   - Non-elevated / view-as-branch: sum of the branches actually in scope.
+    //     The old region-sum returned 0 for a scoped branch with no region
+    //     (Marketing showed 0 leads on its own dashboard even though it had
+    //     them) — summing the scoped branches fixes that.
+    const main: BranchMetrics = elevated
+      ? {
+          branchId: '',
+          branchName: '',
+          code: '',
+          region: null,
+          NL:  regionA.NL + regionB.NL + regionC.NL,
+          CT:  regionA.CT + regionB.CT + regionC.CT,
+          SU:  regionA.SU + regionB.SU + regionC.SU,
+          ENR: regionA.ENR + regionB.ENR + regionC.ENR,
+          BUF: regionA.BUF + regionB.BUF + regionC.BUF,
+          conversionRate: 0, confirmedRate: 0, showUpRate: 0, enrolmentRate: 0,
+        }
+      : aggregateAll()
     Object.assign(main, computeRates(main))
 
     // Sort branches numerically by the "NN …" name prefix so the dashboard
@@ -499,11 +410,15 @@ export async function GET(req: NextRequest) {
     )
 
     // ── Monthly trend (only for branch-scoped views) ─────────────────────────
-    // Build a 6-month rolling window ending on `to` so the line chart has
-    // enough span to be useful. Bucket each opp's createdAt by YYYY-MM and
-    // re-apply the same cumulative-stage logic used for the main block.
+    // 6-month rolling window ending on `to`. Same counting model as the
+    // headline block — NL by createdAt, CT/SU/ENR by stage_history entry
+    // date — but bucketed by KL month instead of summed for one range.
     let byMonth: Array<{ month: string; NL: number; CT: number; SU: number; ENR: number; BUF: number }> = []
-    if (!elevated) {
+    // Non-elevated branch views always get their 6-month trend. Elevated views
+    // (super/agency) only compute it when explicitly asked (?trend=1) — the
+    // Analytics page wants an all-branches trend, but the dashboard doesn't, so
+    // gating it keeps the dashboard payload + behaviour unchanged.
+    if (!elevated || req.nextUrl.searchParams.get('trend') === '1') {
       // Bucket by KL month so a lead at 02:00 KL on the 1st doesn't fall
       // back into the previous UTC month. Same +8h shift trick as above.
       const monthKey = (d: Date) => {
@@ -514,58 +429,63 @@ export async function GET(req: NextRequest) {
       const sixMonthsBackWallMs = Date.UTC(wall.getUTCFullYear(), wall.getUTCMonth() - 5, 1)
       const sixMonthsBack = new Date(sixMonthsBackWallMs - KL_OFFSET_MS)
 
-      // Re-fetch for the wider window — `from`/`to` may be just "today".
       const trendOpps = await prisma.crm_opportunity.findMany({
         where: {
           tenantId,
           deletedAt: null,
+          contact: { deletedAt: null },
           createdAt: { gte: sixMonthsBack, lte: to },
           branchId: { in: branches.map((b) => b.id) },
         },
         select: { branchId: true, stageId: true, createdAt: true },
       })
 
-      // Same window of trial appointments — used to bucket CT + SU by
-      // trial-day month instead of by lead-created month, matching the
-      // main block's appointment-driven counting.
-      const trendAppts = await prisma.crm_appointment.findMany({
+      // Stage-history entries (SU / ENR) over the same 6-month window. CT is
+      // sourced from trial appointments below (by class date).
+      const trendEntries =
+        targetStageIds.length === 0
+          ? []
+          : await prisma.crm_stage_history.findMany({
+              where: {
+                tenantId,
+                changedAt: { gte: sixMonthsBack, lte: to },
+                toStageId: { in: targetStageIds },
+                opportunity: {
+                  branchId: { in: branches.map((b) => b.id) },
+                  deletedAt: null,
+                  contact: { deletedAt: null },
+                },
+              },
+              select: {
+                opportunityId: true,
+                toStageId: true,
+                changedAt: true,
+                opportunity: { select: { branchId: true } },
+              },
+            })
+
+      // CT — trial appointments over the 6-month window, bucketed by class date.
+      // startAt is stored naive-KL-as-UTC; shift the window forward by the KL
+      // offset so late-/Sunday-KL trials at the edges aren't dropped (matches
+      // the headline CT query's apptFrom/apptTo handling).
+      const trendApptFrom = new Date(sixMonthsBack.getTime() + KL_OFFSET_MS)
+      const trendApptTo = new Date(to.getTime() + KL_OFFSET_MS)
+      const trendTrialAppointments = await prisma.crm_appointment.findMany({
         where: {
           tenantId,
-          title:    'Trial Class',
-          startAt:  { gte: sixMonthsBack, lte: to },
+          title: 'Trial Class',
           branchId: { in: branches.map((b) => b.id) },
-        },
-        select: { contactId: true, branchId: true, startAt: true },
-      })
-      // Reuse the contact→stage map built earlier when possible, then top
-      // up with anything new the 6-month window dragged in.
-      const trendExtraContactIds = Array.from(
-        new Set(
-          trendAppts
-            .map((a) => a.contactId)
-            .filter((cid) => !apptContactIds.includes(cid)),
-        ),
-      )
-      if (trendExtraContactIds.length > 0) {
-        const extraOpps = await prisma.crm_opportunity.findMany({
-          where: {
-            tenantId,
+          startAt: { gte: trendApptFrom, lte: trendApptTo },
+          contact: {
             deletedAt: null,
-            contactId: { in: trendExtraContactIds },
-            branchId:  { in: branches.map((b) => b.id) },
+            opportunities: { some: { deletedAt: null, stageId: { in: ctKeepIds } } },
           },
-          select: { contactId: true, branchId: true, stageId: true, createdAt: true },
-          orderBy: { createdAt: 'desc' },
-        })
-        for (const o of extraOpps) {
-          const key = `${o.contactId}|${o.branchId}`
-          if (!stageByContactBranch.has(key)) stageByContactBranch.set(key, o.stageId)
-        }
-      }
+        },
+        select: { contactId: true, startAt: true },
+      })
 
       const monthMap = new Map<string, { NL: number; CT: number; SU: number; ENR: number; BUF: number }>()
       // Pre-seed every month so the chart shows zeros instead of gaps.
-      // Iterate in wall-clock space (KL) so we don't drift across DST/UTC.
       const startYear = wall.getUTCFullYear()
       const startMonth = wall.getUTCMonth() - 5
       for (let m = 0; m < 6; m++) {
@@ -574,39 +494,57 @@ export async function GET(req: NextRequest) {
         monthMap.set(`${yyyy}-${String(mm + 1).padStart(2, '0')}`, { NL: 0, CT: 0, SU: 0, ENR: 0, BUF: 0 })
       }
 
-      // NL + ENR + BUF: bucket by createdAt month — these still measure
-      // "leads received that month" / "ENR cumulative funnel" / "Buffer
-      // snapshot".
+      // NL + BUF — bucket by createdAt month.
       for (const o of trendOpps) {
         const key = monthKey(new Date(o.createdAt))
         const bucket = monthMap.get(key)
         if (!bucket) continue
         const info = stageInfo.get(o.stageId)
         if (!info) continue
-
         bucket.NL += 1
-        if (info.category === 'BUF') {
-          bucket.BUF += 1
-          continue
-        }
-        const catOrders = categoryOrderByPipeline.get(info.pipelineId)
-        if (!catOrders) continue
-        if (catOrders.ENR !== undefined && info.order >= catOrders.ENR) bucket.ENR += 1
+        if (info.category === 'BUF') bucket.BUF += 1
       }
 
-      // CT + SU: bucket by trial-appointment month.
-      for (const a of trendAppts) {
-        const key = monthKey(new Date(a.startAt))
-        const bucket = monthMap.get(key)
-        if (!bucket) continue
-        const stageId = stageByContactBranch.get(`${a.contactId}|${a.branchId}`)
-        if (!stageId) continue
-        const info = stageInfo.get(stageId)
-        if (!info) continue
-        const catOrders = categoryOrderByPipeline.get(info.pipelineId)
-        if (!catOrders) continue
-        if (catOrders.CT !== undefined && info.order >= catOrders.CT) bucket.CT += 1
-        if (catOrders.SU !== undefined && info.order >= catOrders.SU) bucket.SU += 1
+      // SU / ENR — bucket by stage_history.changedAt month, dedup per
+      // (month, category, opportunityId) so a lead bouncing SU → RSD → SU
+      // inside one month doesn't count twice.
+      const seenInMonth: Record<'SU' | 'ENR', Map<string, Set<string>>> = {
+        SU: new Map(), ENR: new Map(),
+      }
+      for (const h of trendEntries) {
+        const cat = stageInfo.get(h.toStageId)?.category
+        if (cat !== 'SU' && cat !== 'ENR') continue
+        const key = monthKey(new Date(h.changedAt))
+        if (!monthMap.has(key)) continue
+        let set = seenInMonth[cat].get(key)
+        if (!set) { set = new Set(); seenInMonth[cat].set(key, set) }
+        set.add(h.opportunityId)
+      }
+      for (const cat of ['SU', 'ENR'] as const) {
+        for (const [monthKey_, ids] of seenInMonth[cat].entries()) {
+          const bucket = monthMap.get(monthKey_)
+          if (!bucket) continue
+          bucket[cat] = ids.size
+        }
+      }
+
+      // CT — bucket trial appointments by their class-date KL month, dedup per
+      // (month, contactId). Appointment startAt is stored naive-KL-as-UTC, so
+      // its raw UTC month already IS the KL month — no +8h shift (that would
+      // bump a late-evening trial into the next month).
+      const apptMonthKey = (d: Date) =>
+        `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
+      const ctSeenInMonth = new Map<string, Set<string>>()
+      for (const a of trendTrialAppointments) {
+        const key = apptMonthKey(new Date(a.startAt))
+        if (!monthMap.has(key)) continue
+        let set = ctSeenInMonth.get(key)
+        if (!set) { set = new Set(); ctSeenInMonth.set(key, set) }
+        set.add(a.contactId)
+      }
+      for (const [monthKey_, ids] of ctSeenInMonth.entries()) {
+        const bucket = monthMap.get(monthKey_)
+        if (bucket) bucket.CT = ids.size
       }
 
       byMonth = Array.from(monthMap.entries())
@@ -622,7 +560,83 @@ export async function GET(req: NextRequest) {
       ...zero(),
     }
 
+    // Branch picker for the dashboard — ONLY SUPER_ADMIN and the Ebright
+    // Marketing account (NOT branch/regional managers, NOT agency admins):
+    //   - SUPER_ADMIN  → every branch.
+    //   - Marketing    → special case: every branch EXCEPT internal OD + HR.
+    // Null for everyone else.
+    const isSuper = access?.isSuperAdmin ?? false
+    let selectableBranches: Array<{ branchId: string; branchName: string }> | null = null
+    if (isSuper || isMarketing) {
+      const all = await prisma.crm_branch.findMany({
+        where: isSuper
+          ? { tenantId }
+          : { tenantId, name: { notIn: ['00 Ebright (OD)', 'Ebright HR'] } },
+        select: { id: true, name: true },
+        orderBy: { name: 'asc' },
+      })
+      selectableBranches = all.map((b) => ({ branchId: b.id, branchName: b.name }))
+    }
+
+    // ── Marketing catch-all queue ────────────────────────────────────────────
+    // A date-independent snapshot of leads currently parked on the "Ebright
+    // Marketing" branch — website/other leads whose branch didn't resolve, which
+    // Marketing needs to transfer to the correct branch. Shown ONLY to the
+    // Marketing account (isMarketing): never to super/agency admins or to
+    // ordinary branch managers, so it stays off every other user's dashboard.
+    let marketingCatchAll:
+      | { count: number; leads: Array<{ opportunityId: string; contactId: string; name: string; phone: string | null; source: string | null; createdAt: string }> }
+      | null = null
+    if (isMarketing) {
+      const mkBranch = await prisma.crm_branch.findFirst({
+        where: { tenantId, name: 'Ebright Marketing' },
+        select: { id: true },
+      })
+      if (mkBranch) {
+        const where = {
+          tenantId,
+          deletedAt: null,
+          contact: { deletedAt: null },
+          branchId: mkBranch.id,
+        }
+        const [count, rows] = await Promise.all([
+          prisma.crm_opportunity.count({ where }),
+          prisma.crm_opportunity.findMany({
+            where,
+            select: {
+              id: true,
+              contactId: true,
+              createdAt: true,
+              contact: {
+                select: {
+                  firstName: true, lastName: true, parentFullName: true, phone: true,
+                  leadSource: { select: { name: true } },
+                },
+              },
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 500,
+          }),
+        ])
+        marketingCatchAll = {
+          count,
+          leads: rows.map((o) => ({
+            opportunityId: o.id,
+            contactId: o.contactId,
+            name:
+              o.contact?.parentFullName?.trim() ||
+              `${o.contact?.firstName ?? ''} ${o.contact?.lastName ?? ''}`.trim() ||
+              '—',
+            phone: o.contact?.phone ?? null,
+            source: o.contact?.leadSource?.name ?? null,
+            createdAt: o.createdAt.toISOString(),
+          })),
+        }
+      }
+    }
+
     return NextResponse.json({
+      marketingCatchAll,
       range: { from: from.toISOString(), to: to.toISOString() },
       main,
       regions: elevated
@@ -637,10 +651,46 @@ export async function GET(req: NextRequest) {
           }
         : { A: [], B: [], C: [] },
       elevated,
+      // Surfaced so widgets that branch on "super admin vs agency admin"
+      // (e.g. read-only trial schedule view) don't need an extra round-trip.
+      isSuperAdmin: access?.isSuperAdmin ?? false,
       byMonth,
       // Surface what branch the response is scoped to so the UI can label
-      // the "Your branch" block ("Viewing as Rimbayu" etc.).
-      scopedBranchName: elevated ? null : (branches[0]?.name ?? null),
+      // the "Your branch" block ("Viewing as Rimbayu" etc.). Only label with
+      // a single branch name when EXACTLY one branch is in scope — i.e. a
+      // single-branch user, or a multi-branch user who picked one in the
+      // topbar. When a multi-branch user is viewing all their branches the
+      // `main` block is a COMBINED total, so labelling it with branches[0]
+      // (e.g. "Shah Alam" while the numbers also include Bandar Seri Putra)
+      // is wrong — fall through to a neutral "all branches" label instead.
+      scopedBranchName: elevated
+        ? null
+        : branches.length === 1
+          ? branches[0].name
+          : `All ${branches.length} branches`,
+      // Also surface the ID so non-elevated callers can fetch dependent
+      // widgets (like the trial-schedule grid) without needing the topbar
+      // branch-switcher to have an explicit selection. BMs whose access
+      // covers a single branch don't get a switcher, so without this they
+      // can't drive a per-branch widget at all. Null when more than one
+      // branch is in scope — there's no single branch to drive the widget.
+      scopedBranchId: elevated
+        ? null
+        : branches.length === 1
+          ? branches[0].id
+          : null,
+      // For non-elevated users with MORE THAN ONE branch (regional managers,
+      // multi-branch BMs), surface the full branch list so the dashboard can
+      // render the Trial Class Schedule with its own branch picker — the
+      // single scopedBranchId path can't cover a whole region. Null for
+      // elevated (they use `branches`) and single-branch users.
+      scopedBranches:
+        elevated || branches.length <= 1
+          ? null
+          : orderedBranches.map((b) => ({ branchId: b.branchId, branchName: b.branchName })),
+      // All branches the caller may switch the dashboard to (super/agency +
+      // Marketing). Null = no picker for this user.
+      selectableBranches,
     })
   } catch (e) {
     console.error('[GET leads-metrics]', e)

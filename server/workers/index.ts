@@ -136,6 +136,25 @@ async function main() {
   setShutdownHook(stopLeadIngestWorker, true)
 
   console.log('  - leadIngestWorker    (LISTEN ebrightleads_db.lead_inserted)')
+
+  // Always start the burnlist Wednesday scheduler — runs in-process, no
+  // Redis required. Wakes every minute and creates the new BurnlistWeek
+  // snapshot the moment the calendar crosses into a new Wednesday.
+  const { startBurnlistScheduler, stopBurnlistScheduler } = await import('./burnlistScheduler')
+  await startBurnlistScheduler()
+  setShutdownHook(stopBurnlistScheduler, true)
+
+  console.log('  - burnlistScheduler   (Wednesday 00:00 snapshot rollover)')
+
+  // Always start the ticket-digest scheduler — also Redis-free. Fires at
+  // 12:00 / 15:00 / 18:00 / 21:00 KL each day and emails each ticket
+  // submitter a digest of their tickets created in that window.
+  const { startTicketDigestScheduler, stopTicketDigestScheduler } =
+    await import('./ticketDigestScheduler')
+  await startTicketDigestScheduler()
+  setShutdownHook(stopTicketDigestScheduler, true)
+
+  console.log('  - ticketDigest        (12/15/18/21 KL submitter digest)')
   console.log('[workers] Startup complete.')
 }
 

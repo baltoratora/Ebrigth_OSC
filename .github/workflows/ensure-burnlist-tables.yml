@@ -1,0 +1,36 @@
+name: Ensure burnlist tables on staging
+
+# One-shot manual workflow to create the burnlist_week + burnlist_entry
+# tables on the staging database (in both `crm` and `public` schemas so
+# either Prisma datasource config picks them up).
+#
+# How to run:
+#   GitHub → Actions → "Ensure burnlist tables on staging" → Run workflow.
+#
+# Safe to re-run — every statement is idempotent (IF NOT EXISTS / DO blocks).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run DDL inside the staging worker container
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 103.209.156.225
+          username: deploy
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            set -e
+            REPO=$(find /home/deploy -maxdepth 4 -type d -name ".git" 2>/dev/null | head -1 | xargs -r dirname)
+            if [ -z "$REPO" ]; then
+              echo "ERROR: no git repo found under /home/deploy"
+              exit 1
+            fi
+            echo "Repo: $REPO"
+            cd "$REPO"
+            echo "===== running ensure-burnlist-tables.mjs inside worker container ====="
+            docker exec ebright-osc-worker-1 node scripts/ensure-burnlist-tables.mjs

@@ -28,6 +28,39 @@ export const BRANCHES = [
 
 export type BranchCode = typeof BRANCHES[number]["code"];
 
+// ----------------------------------------------------------------------------
+// Regions (Regional Manager scoping)
+// ----------------------------------------------------------------------------
+export type BranchRegion = "A" | "B" | "C";
+
+/** Region → branch codes, per the ops "branch by region" sheet (10 Jun 2026).
+ *  A few codes (AC, SBY, DSH, SLY, DP, SNT, SBN) aren't in BRANCHES yet — kept
+ *  here so region scoping already works once those branches are added. */
+export const BRANCHES_BY_REGION: Record<BranchRegion, string[]> = {
+  A: ["AC", "DA", "EGR", "KLG", "RBY", "SA", "SHA", "ST", "SBY"],
+  B: ["AMP", "BTHO", "DK", "DSH", "KTG", "KD", "SLY", "SP", "TSG"],
+  C: ["BBB", "BSP", "CJY", "DP", "KW", "PJY", "SNT", "SBN", "ONL"],
+};
+
+/** Regional Manager accounts → the region they manage (matched by email). */
+export const RM_REGION_BY_EMAIL: Record<string, BranchRegion> = {
+  "irfanhairie02@gmail.com": "A",
+  "kirtikha19@gmail.com": "B",
+  "jothi2703@gmail.com": "C",
+};
+
+export function regionForEmail(email: string | null | undefined): BranchRegion | null {
+  if (!email) return null;
+  return RM_REGION_BY_EMAIL[email.trim().toLowerCase()] ?? null;
+}
+
+/** NextAuth role strings that mean "Regional Manager". */
+export function isRegionalManagerRole(role: string | null | undefined): boolean {
+  if (!role) return false;
+  const r = role.toUpperCase().replace(/\s+/g, "_");
+  return r === "REGIONAL_MANAGER" || r === "REGIONALMANAGER" || r === "RM";
+}
+
 /** NextAuth roles that count as "back-office" — they default to the FA
  *  Marketing view but can switch into any Branch Manager view through the
  *  /fa-system/login picker. Add a new role here when an HQ-side
@@ -115,15 +148,28 @@ export function matchBranchByName(raw: string | null | undefined): BranchCode | 
 // ----------------------------------------------------------------------------
 // Users & Auth
 // ----------------------------------------------------------------------------
-export type Role = "MKT" | "BM";
+export type Role = "MKT" | "BM" | "RM";
 
 export interface User {
   id: string;
   name: string;
   email: string;
   role: Role;
-  /** For BM users — the branch they manage. Null for MKT. */
+  /** For BM users — the branch they manage. Null otherwise. */
   branch: BranchCode | null;
+  /** For RM users — the region they manage. Null otherwise. */
+  region?: BranchRegion | null;
+}
+
+/** Branch codes a user may see/act on. `null` = all branches (MKT/back-office).
+ *  BM → just their branch. RM → every branch in their region. */
+export function allowedBranchCodes(
+  user: Pick<User, "role" | "branch" | "region"> | null | undefined,
+): string[] | null {
+  if (!user) return [];
+  if (user.role === "BM") return user.branch ? [user.branch] : [];
+  if (user.role === "RM") return user.region ? BRANCHES_BY_REGION[user.region] : [];
+  return null; // MKT / back-office → all branches
 }
 
 // ----------------------------------------------------------------------------
@@ -198,6 +244,11 @@ export interface Student {
   parentPhone: string;
   enrolmentDate: string;        // ISO date
   active: boolean;
+  /** True when this row comes from the `archived_students` table rather than
+   *  the live `studentrecords` table. Archived students still appear in the
+   *  list and can be invited to FA events — they just carry an "Archived"
+   *  badge and live in their own section of the invite picker. */
+  archived: boolean;
 }
 
 /** Eligibility rule: a student is eligible for FA when they have at least
@@ -231,6 +282,9 @@ export interface StudentLoadReport {
   /** True if the `ade_group` join succeeded. When false, age-category labels
    *  are still derived from grade as a fallback. */
   ageGroupJoinAvailable: boolean;
+  /** How many rows were loaded from the separate `archived_students` table
+   *  (counted toward `loaded` too). Lets the UI show an archived tally. */
+  archivedLoaded?: number;
 }
 
 /** Check if student has a backlog — any completed grade below current where FA was not done. */
@@ -241,25 +295,27 @@ export function hasBacklog(student: Student): boolean {
   return false;
 }
 
-/** Chapter at which a student becomes eligible for their CURRENT-grade FA.
- *  The classroom rule: a student must have progressed to C9 within their
- *  current grade before they can sit for that grade's Foundation Appraisal.
- *  Grades they've already completed (i.e., grades below current) are always
- *  available — they've moved past, so the tickbox is just recording history. */
+/** Kept for any existing references — no longer used as an invite gate. */
 export const FA_CURRENT_GRADE_MIN_CHAPTER = 9;
 
 /** The list of grades a student can be invited to appraise right now.
- *    - All grades below current grade are always returned (past grades).
- *    - The current grade is only returned if student.credit >= 9
- *      (the C9 threshold for current-grade FA eligibility).
- *  Returned in ascending order. */
+ *  All grades from 1 up to and including the student's current grade are
+ *  returned with no conditions — chapter threshold and archived status are
+ *  not checked here. Returned in ascending order. */
 export function invitableGradesFor(student: Student): number[] {
   const grades: number[] = [];
-  for (let g = 1; g < student.grade; g++) grades.push(g);
-  if (student.credit >= FA_CURRENT_GRADE_MIN_CHAPTER) {
-    grades.push(student.grade);
-  }
+  for (let g = 1; g <= student.grade; g++) grades.push(g);
   return grades;
+}
+
+/** Render a numeric grade back to its curriculum label. The ladder runs
+ *  G1..G8 (1..8), then the GA series (9..12 → GA1..GA4), then the GB series
+ *  (13..16 → GB1..GB4). Use this everywhere a grade is shown so advanced
+ *  students read as "GA2" / "GB1" rather than "G10" / "G13". */
+export function gradeLabel(grade: number): string {
+  if (grade >= 13 && grade <= 16) return `GB${grade - 12}`;
+  if (grade >= 9 && grade <= 12) return `GA${grade - 8}`;
+  return `G${grade}`;
 }
 
 // ----------------------------------------------------------------------------
@@ -270,7 +326,36 @@ export type InvitationStatus =
   | "confirmed"     // Parent confirmed attendance
   | "declined"      // Parent declined
   | "attended"      // Student showed up on the day
-  | "no_show";      // Student did not show up
+  | "no_show"       // Student did not show up
+  | "walk_in";      // Student walked in WITHOUT an invitation — already attending.
+                    // Tracked as its own status, but counts as attended everywhere.
+
+/** Statuses that mean the student was PRESENT at the event. A walk-in is present
+ *  by definition (they walked in), so it counts as attended in every metric and
+ *  certificate/inventory check — it's only a distinct status for tracking. */
+export function countsAsAttended(status: InvitationStatus): boolean {
+  return status === "attended" || status === "walk_in";
+}
+
+/** Statuses that count toward the "confirmed" HEADCOUNT metric on dashboards:
+ *  everyone who confirmed they'd join — whether they then attended, walked in,
+ *  didn't show (no_show), or are still pending on the day. */
+export function countsAsConfirmed(status: InvitationStatus): boolean {
+  return status === "confirmed" || status === "no_show" || countsAsAttended(status);
+}
+
+/** Resolve the Student an invitation points at, tolerant of archived-id drift.
+ *  Active students are keyed by their raw id; archived students load as
+ *  `arch-<no>`. A few legacy/backfilled invitations stored the bare number for
+ *  an archived student, so when an exact match fails we retry with the `arch-`
+ *  prefix. Returns undefined only when the id exists in neither form (a
+ *  genuinely orphaned invitation — no student record anywhere). */
+export function resolveStudentById<T extends { id: string }>(students: T[], studentId: string): T | undefined {
+  const exact = students.find(s => s.id === studentId);
+  if (exact) return exact;
+  if (/^\d+$/.test(studentId)) return students.find(s => s.id === `arch-${studentId}`);
+  return undefined;
+}
 
 export interface Invitation {
   id: string;
@@ -288,17 +373,46 @@ export interface Invitation {
   attendanceMarkedAt?: string;
   attendanceMarkedBy?: string;
   notes?: string;
+  /** Student's name captured at invite time. Display fallback so the roster
+   *  still shows who this is if the student id later can't be resolved
+   *  (archived/restored/deleted). Mirrors PCM's student_name_snapshot. */
+  studentNameSnapshot?: string;
+  /** Captured when the BM confirms the invitation: a link to the student's
+   *  practice/testing video, and a Google Drive link to the uploaded proof
+   *  image showing the student completed the testing BEFORE joining the event.
+   *  Both are surfaced to Marketing. */
+  videoLink?: string;
+  proofUrl?: string;
+  /** Practice-session scheduling, set from the "Schedule practice session"
+   *  popup shown right after confirming (or later, from the Practice sidebar).
+   *  Both are OPTIONAL and never gate whether the student appears in the
+   *  Practice sidebar — a confirmed student shows there with or without a
+   *  scheduled date/time. */
+  practiceDate?: string;
+  practiceTime?: string;
 }
 
 // ----------------------------------------------------------------------------
 // Event branch overrides — per-event, per-branch toggle that lets a single
-// branch invite the same student to multiple grades within one event (all
-// on the same day, different sessions). Defaults to OFF for every branch on
-// every event. Only Marketing/Admin can toggle it.
+// branch invite the same student to multiple grades within one event.
+// Defaults to OFF for every branch on every event. Only Marketing/Admin can
+// toggle it. When ON, `dayPolicy` decides which extra invites are allowed.
 // ----------------------------------------------------------------------------
+
+/**
+ * Which extra multi-grade invites an unlocked branch may issue for the same
+ * student within one event. A different target_grade is ALWAYS required on top
+ * of this, regardless of policy.
+ *   • SAME_DAY — extra invites must be on the same day (different session). [default]
+ *   • DIFF_DAY — extra invites must be on a different day from existing ones.
+ *   • BOTH     — no day restriction; any day is allowed.
+ */
+export type DayPolicy = "SAME_DAY" | "DIFF_DAY" | "BOTH";
+
 export interface EventBranchOverride {
   eventId: string;
   branchCode: BranchCode;
+  dayPolicy: DayPolicy;         // which extra invites this branch may issue
   grantedBy: string;            // email of the Marketing/Admin user who toggled it on
   grantedAt: string;            // ISO timestamp
   reason?: string;              // optional free-text audit note
@@ -323,3 +437,47 @@ export interface EventWithStats extends FAEvent {
   totalConfirmed: number;
   totalAttended: number;
 }
+
+// ----------------------------------------------------------------------------
+// FA Assessment Report — Marketing-filled appraisal attached to one invitation.
+// ----------------------------------------------------------------------------
+/** Maximum score per criterion. Total = 4 × this = /100. */
+export const FA_REPORT_MAX_PER_CRITERION = 25;
+
+export interface FAReport {
+  id: string;
+  invitationId: string;
+  studentId: string;
+  /** Snapshot of student state at the time the report was written. */
+  studentName: string;
+  branch: BranchCode;
+  grade: number;
+  /** ISO date — when the assessment took place. */
+  assessmentDate: string;
+  /** Four criteria from the FA template, each 0–25. */
+  communicationScore: number;
+  analysisScore: number;
+  interactionScore: number;
+  performanceScore: number;
+  /** Combined free-text remarks. */
+  remarks: string;
+  /** Person who filled the form. */
+  preparedBy: string;
+  preparedById?: string;
+  /** Optional URL of a recorded performance — Marketing pastes a Drive
+   *  /Vimeo/YouTube link so parents can watch the student's session.
+   *  Shown on the certificate as a clickable link. */
+  videoLink?: string;
+  /** Optional Google Drive link to a photo the BRANCH uploads as proof that
+   *  the printed report was handed to the student. Branch uploads (only once
+   *  the report is filled); Marketing/Academy view it read-only. */
+  evidencePhotoLink?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Helper: derive the total score from the four criteria. */
+export function faReportTotal(r: Pick<FAReport, "communicationScore" | "analysisScore" | "interactionScore" | "performanceScore">): number {
+  return r.communicationScore + r.analysisScore + r.interactionScore + r.performanceScore;
+}
+

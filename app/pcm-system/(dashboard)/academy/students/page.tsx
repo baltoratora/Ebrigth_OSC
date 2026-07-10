@@ -5,7 +5,7 @@ import { Search, Users, Filter, Download, RefreshCw } from "lucide-react";
 import { useFAStore } from "@pcm/_lib/store";
 import { useCurrentUser } from "@pcm/_hooks/useCurrentUser";
 import { AppShell } from "@pcm/_components/shared/AppShell";
-import { BRANCHES, BranchCode, hasBacklog, invitableGradesFor, FA_CURRENT_GRADE_MIN_CHAPTER } from "@pcm/_types";
+import { BRANCHES, BranchCode, hasBacklog, invitableGradesFor, FA_CURRENT_GRADE_MIN_CHAPTER, gradeLabel } from "@pcm/_types";
 import { downloadCSV } from "@pcm/_lib/csv";
 import { RegistrationCrossCheck } from "@pcm/_components/fa/RegistrationCrossCheck";
 
@@ -33,10 +33,16 @@ export default function StudentListPage() {
   // total here to match the dashboard's "Total students" count, including
   // Inactive rows. The checkbox is kept so it can be narrowed if needed.
   const [activeOnly, setActiveOnly] = useState(false);
+  // Archived students live in a separate table and carry archived:true.
+  //   current  → live roster only (default)
+  //   archived → only archived students
+  //   all      → both, archived rows badged inline
+  const [scope, setScope] = useState<"current" | "archived" | "all">("current");
 
   // Build derived counts BEFORE the early-return guards so hook order is stable.
   const filtered = useMemo(() => {
     return allStudents
+      .filter(s => scope === "all" ? true : scope === "archived" ? s.archived : !s.archived)
       .filter(s => !activeOnly || s.active)
       .filter(s => branchFilter === "all" || s.branch === branchFilter)
       .filter(s => gradeFilter === "all" || s.grade === gradeFilter)
@@ -59,7 +65,10 @@ export default function StudentListPage() {
         b.grade - a.grade ||
         a.name.localeCompare(b.name)
       );
-  }, [allStudents, activeOnly, branchFilter, gradeFilter, progressFilter, search]);
+  }, [allStudents, scope, activeOnly, branchFilter, gradeFilter, progressFilter, search]);
+
+  const liveStudents = useMemo(() => allStudents.filter(s => !s.archived), [allStudents]);
+  const archivedCount = useMemo(() => allStudents.filter(s => s.archived).length, [allStudents]);
 
   const branchNameByCode = useMemo(
     () => Object.fromEntries(BRANCHES.map(b => [b.code, b.name])) as Record<string, string>,
@@ -72,8 +81,8 @@ export default function StudentListPage() {
     const header = [
       "Student ID", "Name", "Branch code", "Branch name",
       "Grade", "Chapter", "Active",
-      "FA total expected", "FA done", "FA outstanding",
-      "Per-grade FA (G1..G<grade>)",
+      "PCM total expected", "PCM done", "PCM outstanding",
+      "Per-grade PCM (G1..G<grade>)",
       "Guardian name", "Guardian phone", "Enrolment date",
     ];
     const rows = filtered.map(s => {
@@ -115,13 +124,13 @@ export default function StudentListPage() {
           <div>
             <h1 className="fa-display-italic text-6xl text-ink-900 leading-none">Student List</h1>
             <p className="text-sm text-ink-500 mt-2">
-              Every student across all {BRANCHES.length} branches with their per-grade FA progress —
+              Every student across all {BRANCHES.length} branches with their per-grade PCM progress —
               same data as the eBright dashboard.
             </p>
             <div className="fa-mono text-[11px] text-ink-400 mt-1.5 flex items-center gap-2">
               <span>
                 {studentsFetchedAt
-                  ? <>Synced {formatRelativeTime(studentsFetchedAt)} · {allStudents.length} students from studentrecords</>
+                  ? <>Synced {formatRelativeTime(studentsFetchedAt)} · {liveStudents.length} students from studentrecords{archivedCount > 0 && <> · {archivedCount} archived</>}</>
                   : <>Loading from studentrecords…</>}
               </span>
             </div>
@@ -152,7 +161,7 @@ export default function StudentListPage() {
       </div>
 
       {/* Registration cross-check tool — collapsed by default. */}
-      <RegistrationCrossCheck students={allStudents} />
+      <RegistrationCrossCheck students={liveStudents} />
 
       {/* Filters */}
       <div className="fa-card p-4 mb-4 fa-enter fa-delay-1">
@@ -191,13 +200,13 @@ export default function StudentListPage() {
               className="fa-input"
             >
               <option value="all">All</option>
-              {[1, 2, 3, 4, 5, 6, 7, 8].map(g => (
-                <option key={g} value={g}>G{g}</option>
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].map(g => (
+                <option key={g} value={g}>{gradeLabel(g)}</option>
               ))}
             </select>
           </div>
           <div className="w-40">
-            <label className="fa-label">FA progress</label>
+            <label className="fa-label">PCM progress</label>
             <select
               value={progressFilter}
               onChange={e => setProgressFilter(e.target.value as "all" | "backlog" | "uptodate")}
@@ -206,6 +215,18 @@ export default function StudentListPage() {
               <option value="all">All</option>
               <option value="backlog">Has backlog</option>
               <option value="uptodate">Up to date</option>
+            </select>
+          </div>
+          <div className="w-44">
+            <label className="fa-label">Records</label>
+            <select
+              value={scope}
+              onChange={e => setScope(e.target.value as "current" | "archived" | "all")}
+              className="fa-input"
+            >
+              <option value="current">Current students</option>
+              <option value="archived">Archived only{archivedCount > 0 ? ` (${archivedCount})` : ""}</option>
+              <option value="all">All incl. archived</option>
             </select>
           </div>
           <label className="flex items-center gap-2 text-sm text-ink-700 cursor-pointer pb-2">
@@ -246,7 +267,7 @@ export default function StudentListPage() {
                 <th>Branch</th>
                 <th className="text-center">Grade</th>
                 <th className="text-center">Chapter</th>
-                <th>FA Progress (G1 → current)</th>
+                <th>PCM Progress (G1 → current)</th>
                 <th>Guardian</th>
               </tr>
             </thead>
@@ -266,7 +287,11 @@ export default function StudentListPage() {
                     <td>
                       <div className="font-medium text-ink-900">
                         {s.name}
-                        {!s.active && (
+                        {s.archived ? (
+                          <span className="ml-2 fa-mono text-[10px] uppercase text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">
+                            archived
+                          </span>
+                        ) : !s.active && (
                           <span className="ml-2 fa-mono text-[10px] uppercase text-ink-400 bg-ivory-200 px-1.5 py-0.5 rounded">
                             inactive
                           </span>
@@ -282,14 +307,14 @@ export default function StudentListPage() {
                         <span className="text-xs text-ink-500 truncate">{branchName}</span>
                       </div>
                     </td>
-                    <td className="text-center font-mono text-sm text-ink-900">G{s.grade}</td>
+                    <td className="text-center font-mono text-sm text-ink-900">{gradeLabel(s.grade)}</td>
                     <td className="text-center font-mono text-sm text-ink-700">C{s.credit}</td>
                     <td>
                       <div className="flex items-center gap-1 flex-wrap">
                         {grades.length === 0 ? (
                           <span
                             className="fa-mono text-[10px] text-ink-400 italic"
-                            title={`Not yet at C${FA_CURRENT_GRADE_MIN_CHAPTER} of G${s.grade}`}
+                            title={`Not yet at C${FA_CURRENT_GRADE_MIN_CHAPTER} of ${gradeLabel(s.grade)}`}
                           >
                             Locked — needs C{FA_CURRENT_GRADE_MIN_CHAPTER}
                           </span>
@@ -305,18 +330,18 @@ export default function StudentListPage() {
                                       ? "bg-success-soft text-success border-success/30"
                                       : "bg-danger-soft text-danger border-danger/30"
                                   }`}
-                                  title={`Grade ${g} FA: ${done ? "completed" : "not yet"}`}
+                                  title={`Grade ${gradeLabel(g)} PCM: ${done ? "completed" : "not yet"}`}
                                 >
-                                  G{g} {done ? "✓" : "✗"}
+                                  {gradeLabel(g)} {done ? "✓" : "✗"}
                                 </span>
                               );
                             })}
                             {currentGradeLocked && (
                               <span
                                 className="fa-mono text-[10px] text-ink-400 italic"
-                                title={`Current-grade FA unlocks at C${FA_CURRENT_GRADE_MIN_CHAPTER} (now at C${s.credit})`}
+                                title={`Current-grade PCM unlocks at C${FA_CURRENT_GRADE_MIN_CHAPTER} (now at C${s.credit})`}
                               >
-                                G{s.grade} 🔒
+                                {gradeLabel(s.grade)} 🔒
                               </span>
                             )}
                             <span className="fa-mono text-[10px] text-ink-500 ml-1">

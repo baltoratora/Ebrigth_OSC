@@ -18,6 +18,7 @@ import { prisma } from '@/lib/crm/db'
 import type { TktRole } from '@/lib/crm/permissions'
 import { isPreviewMode } from '@/lib/crm/preview-mode'
 import { crmBranchToTktBranchNumber } from '@/lib/crm/branch-number'
+import { scopedDepartmentForEmail } from '@/lib/crm/departments'
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -31,6 +32,12 @@ export interface TktAuthContext {
   platformIds: string[]
   /** IDs of tkt_branch rows this user belongs to (regular users). */
   branchIds: string[]
+  /**
+   * For a scoped DEPARTMENT account: the ticket sub_type it triages
+   * (e.g. 'finance'). When set, ticket visibility + status changes are
+   * restricted to tickets with this sub_type, NOT by platform. Null otherwise.
+   */
+  departmentSubType: string | null
 }
 
 // ─── Error class ──────────────────────────────────────────────────────────────
@@ -123,16 +130,19 @@ async function loadOrCreateProfile(
   // branch dropdown and either couldn't submit, or — under the previous
   // unscoped behaviour — would auto-default to the wrong branch (Online).
   if (branchIds.length === 0 && (profile.role === 'user' || !profile.role)) {
-    const crmLinks = await prisma.crm_user_branch.findMany({
+    // Only the user's OWN / home branch (their oldest crm_user_branch link)
+    // confers ticket access. A cross-branch LEAD grant from an agency admin
+    // must NOT leak into the ticket system — extra ticket branches are
+    // provisioned explicitly via the superadmin ticket Users page.
+    const homeLink = await prisma.crm_user_branch.findFirst({
       where: { userId, tenantId },
+      orderBy: { createdAt: 'asc' },
       select: { branch: { select: { name: true } } },
     })
-    const branchNumbers = crmLinks
-      .map((l) => crmBranchToTktBranchNumber(l.branch?.name))
-      .filter((n): n is string => !!n)
-    if (branchNumbers.length > 0) {
+    const homeNumber = crmBranchToTktBranchNumber(homeLink?.branch?.name)
+    if (homeNumber) {
       const tktBranches = await prisma.tkt_branch.findMany({
-        where: { tenant_id: tenantId, branch_number: { in: branchNumbers } },
+        where: { tenant_id: tenantId, branch_number: homeNumber },
         select: { id: true },
       })
       branchIds = tktBranches.map((b) => b.id)
@@ -197,6 +207,7 @@ export async function requireTktAuth(
       role:        'super_admin',
       platformIds: platforms.map((p) => p.id),
       branchIds:   [],
+      departmentSubType: null,
     }
   }
 
@@ -211,8 +222,14 @@ export async function requireTktAuth(
   // 3. Load or create tkt_user_profile
   const { role, platformIds, branchIds } = await loadOrCreateProfile(user.id, tenantId)
 
+  // Scoped department account: triages a ticket sub_type. Force platform_admin
+  // so it passes the kanban + status-change role gates; visibility is then
+  // narrowed to its sub_type (see ticket routes), not by platform.
+  const departmentSubType = scopedDepartmentForEmail(user.email)?.subType ?? null
+  const effectiveRole: TktRole = departmentSubType ? 'platform_admin' : role
+
   // 4. Role gate
-  if (opts?.roles && !opts.roles.includes(role)) {
+  if (opts?.roles && !opts.roles.includes(effectiveRole)) {
     throw new TktAuthError('Forbidden', 403)
   }
 
@@ -221,9 +238,10 @@ export async function requireTktAuth(
     email:       user.email,
     name:        user.name ?? null,
     tenantId,
-    role,
+    role:        effectiveRole,
     platformIds,
     branchIds,
+    departmentSubType,
   }
 }
 
@@ -247,14 +265,18 @@ export async function getTktSession(headers: Headers): Promise<TktAuthContext | 
 
     const { role, platformIds, branchIds } = await loadOrCreateProfile(user.id, tenantId)
 
+    const departmentSubType = scopedDepartmentForEmail(user.email)?.subType ?? null
+    const effectiveRole: TktRole = departmentSubType ? 'platform_admin' : role
+
     return {
       userId:      user.id,
       email:       user.email,
       name:        user.name ?? null,
       tenantId,
-      role,
+      role:        effectiveRole,
       platformIds,
       branchIds,
+      departmentSubType,
     }
   } catch {
     // Any unexpected error (DB down, etc.) — treat as unauthenticated

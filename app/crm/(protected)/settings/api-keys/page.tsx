@@ -13,6 +13,7 @@ import { Plus, Loader2, Copy, X, Eye, EyeOff, Trash2, Check } from 'lucide-react
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
+import { useReadOnlyViewer } from '@/lib/crm/use-read-only-viewer'
 import { cn, formatDate } from '@/lib/crm/utils'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -273,6 +274,7 @@ function GenerateKeyModal({
 const col = createColumnHelper<ApiKey>()
 
 export default function ApiKeysPage() {
+  const readOnly = useReadOnlyViewer()
   const qc = useQueryClient()
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['crm', 'api-keys'],
@@ -347,7 +349,7 @@ export default function ApiKeysPage() {
       id: 'actions',
       header: '',
       cell: (info) => (
-        !info.row.original.revokedAt ? (
+        !info.row.original.revokedAt && !readOnly ? (
           <button
             onClick={() => handleRevoke(info.row.original.id)}
             disabled={revoking === info.row.original.id}
@@ -379,13 +381,15 @@ export default function ApiKeysPage() {
             Generate keys for external integrations. Keys are only shown once.
           </p>
         </div>
-        <button
-          onClick={() => setShowGenerate(true)}
-          className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition-colors"
-        >
-          <Plus className="h-4 w-4" />
-          Generate key
-        </button>
+        {!readOnly && (
+          <button
+            onClick={() => setShowGenerate(true)}
+            className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition-colors"
+          >
+            <Plus className="h-4 w-4" />
+            Generate key
+          </button>
+        )}
       </div>
 
       {/* Summary + toggle */}
@@ -428,9 +432,11 @@ export default function ApiKeysPage() {
         ) : apiKeys.length === 0 ? (
           <div className="text-center py-16">
             <p className="text-slate-500 dark:text-slate-400 text-sm">No API keys yet.</p>
-            <button onClick={() => setShowGenerate(true)} className="mt-3 text-sm text-indigo-600 hover:underline">
-              Generate your first key
-            </button>
+            {!readOnly && (
+              <button onClick={() => setShowGenerate(true)} className="mt-3 text-sm text-indigo-600 hover:underline">
+                Generate your first key
+              </button>
+            )}
           </div>
         ) : (
           <table className="w-full text-sm">

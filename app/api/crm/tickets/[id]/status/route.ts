@@ -99,8 +99,13 @@ export async function PATCH(req: NextRequest, { params }: RouteContext) {
     })
     if (!ticket) return err('Ticket not found', 404)
 
-    // Role-scoped access for platform_admin
-    if (ctx.role === 'platform_admin' && !ctx.platformIds.includes(ticket.platform_id)) {
+    // Role-scoped access: a scoped department account may act only on tickets
+    // directed to its department (by sub_type); other platform_admins by platform.
+    if (ctx.departmentSubType) {
+      if (ticket.sub_type !== ctx.departmentSubType) {
+        return err('Access denied to this ticket', 403)
+      }
+    } else if (ctx.role === 'platform_admin' && !ctx.platformIds.includes(ticket.platform_id)) {
       return err('Access denied to this ticket', 403)
     }
 

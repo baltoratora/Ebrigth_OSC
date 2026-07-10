@@ -67,6 +67,25 @@ export const AUTOMATION_TEMPLATES: AutomationTemplate[] = [
     },
   },
   {
+    id: 'whatsapp-lead-followup',
+    name: 'WhatsApp lead — greet, assign & alert branch',
+    summary: 'When a branch converts a WhatsApp inbox lead: auto-greet on WhatsApp, then alert the branch manager to follow up.',
+    triggerType: 'WHATSAPP_LEAD',
+    graph: {
+      nodes: [
+        triggerNode('WHATSAPP_LEAD'),
+        actionNode('whatsapp-1', 'SEND_WHATSAPP', 180, {
+          body: 'Hi {{contact.firstName}}, thanks for messaging Ebright {{branch.name}} on WhatsApp! A coach will reach out shortly to arrange a free trial class for {{contact.childName1}}.',
+        }),
+        actionNode('notify-1', 'SEND_INTERNAL_NOTIFICATION', 320, {
+          title: 'New WhatsApp lead',
+          body: '{{contact.firstName}} came in via WhatsApp at {{branch.name}} — follow up to confirm a trial.',
+        }),
+      ],
+      edges: [edge('trigger-1', 'whatsapp-1'), edge('whatsapp-1', 'notify-1')],
+    },
+  },
+  {
     id: 'no-reply-followup-24h',
     name: 'No reply — follow up after 24h',
     summary: 'If the lead has not replied within a day, send a gentle nudge.',

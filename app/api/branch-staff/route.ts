@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { hrfsPrisma } from "@/lib/hrfs";
 import { requireSession, requireRole, assertSameBranch, canSeeAllBranches } from "@/lib/auth";
 import { MANAGEMENT_ROLES, hasAnyRole, isEmployee } from "@/lib/roles";
 
@@ -30,11 +30,14 @@ export async function GET(request: Request) {
     'ST': 'Subang Taipan',
     'Subang Taipan': 'Subang Taipan',
     'TSG': 'Taman Sri Gombak',
+    'TSB': 'Tropicana Sungai Buloh',
   };
 
   try {
     type StaffRow = {
       id: number;
+      employeeId: string | null;
+      name: string | null;
       nickname: string | null;
       branch: string | null;
       role: string | null;
@@ -43,9 +46,11 @@ export async function GET(request: Request) {
       trainingEndDate: string | null;
       endDate: string | null;
     };
-    const staff = await prisma.branchStaff.findMany({
+    const staff = await hrfsPrisma.branchStaff.findMany({
       select: {
         id: true,
+        employeeId: true,
+        name: true,
         nickname: true,
         branch: true,
         role: true,
@@ -56,14 +61,20 @@ export async function GET(request: Request) {
       },
       where: { status: { equals: 'Active', mode: 'insensitive' } },
     }) as StaffRow[];
-    // Return nickname as name; map branch code → full name; map role "BM" → branch_manager_xxx
+    // Return nickname as name (historical shape callers already depend on);
+    // fullName is the canonical legal/IC name from HR Employee Management —
+    // added so callers that need to display or persist the real name (not
+    // just the nickname used on the Manpower Schedule grid) can do so without
+    // a second lookup. Map branch code → full name; map role "BM" → branch_manager_xxx.
     const mapped = staff
       .filter(s => s.nickname)
       .map(s => {
         const fullBranch = BRANCH_CODE_MAP[s.branch ?? ''] ?? s.branch;
         return {
           id: s.id,
+          employeeId: s.employeeId,
           name: s.nickname as string,
+          fullName: s.name ?? (s.nickname as string),
           branch: fullBranch,
           role: s.role?.toUpperCase() === 'BM'
             ? `branch_manager_${(fullBranch ?? '').substring(0, 3).toLowerCase()}`
@@ -87,7 +98,7 @@ export async function GET(request: Request) {
 
     if (isEmployee(sessionUser?.role)) {
       if (!sessionUser.email) return NextResponse.json([]);
-      const self = await prisma.branchStaff.findFirst({
+      const self = await hrfsPrisma.branchStaff.findFirst({
         where: { email: { equals: sessionUser.email, mode: 'insensitive' } },
         select: { id: true, nickname: true },
       });
@@ -137,6 +148,7 @@ export async function POST(request: Request) {
     'Sri Petaling': 'SP',
     'Subang Taipan': 'ST',
     'Taman Sri Gombak': 'TSG',
+    'Tropicana Sungai Buloh': 'TSB',
   };
 
   try {
@@ -151,7 +163,7 @@ export async function POST(request: Request) {
     const role = position === "Branch Manager" ? "BM" : position?.trim() || null;
     // Store branch as short code if a mapping exists, otherwise store as-is
     const branchCode = BRANCH_NAME_TO_CODE[branch] ?? branch;
-    const employee = await prisma.branchStaff.create({
+    const employee = await hrfsPrisma.branchStaff.create({
       data: { nickname: name.trim(), branch: branchCode, role },
     });
     return NextResponse.json({ success: true, employee });

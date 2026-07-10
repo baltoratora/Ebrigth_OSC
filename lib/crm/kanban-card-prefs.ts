@@ -48,7 +48,9 @@ export interface CardPrefs {
  */
 export const DEFAULT_CARD_PREFS: CardPrefs = {
   layout: 'default',
-  fields: ['name', 'parentName', 'ageCategory', 'leadSource', 'lastStageChange', 'owner', 'stageBadge'],
+  // 'createdAt' (Created On, with timestamp) is on by default — BMs sort/triage
+  // by when a lead came in, so it shouldn't need turning on in Manage Fields.
+  fields: ['name', 'parentName', 'ageCategory', 'leadSource', 'lastStageChange', 'owner', 'stageBadge', 'createdAt'],
   quickActions: ['notes', 'tags', 'appointment'],
 }
 

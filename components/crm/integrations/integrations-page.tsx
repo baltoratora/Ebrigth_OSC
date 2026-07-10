@@ -20,6 +20,7 @@ import {
   ExternalLink,
 } from 'lucide-react'
 import { cn } from '@/lib/crm/utils'
+import { useReadOnlyViewer } from '@/lib/crm/use-read-only-viewer'
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -73,9 +74,10 @@ interface IntegrationCardProps {
   onDisconnect: (type: string) => void
   branchId?: string
   domain: string
+  readOnly?: boolean
 }
 
-function IntegrationCard({ integration, onConnect, onDisconnect, branchId, domain }: IntegrationCardProps) {
+function IntegrationCard({ integration, onConnect, onDisconnect, branchId, domain, readOnly = false }: IntegrationCardProps) {
   const [copied, setCopied] = useState(false)
   const isConnected = integration.status === 'CONNECTED'
 
@@ -138,9 +140,9 @@ function IntegrationCard({ integration, onConnect, onDisconnect, branchId, domai
         </div>
       )}
 
-      {/* Action */}
+      {/* Action — hidden for read-only viewers (status badge above still shows). */}
       <div className="flex gap-2">
-        {integration.type === 'WEBSITE_FORM' ? (
+        {readOnly ? null : integration.type === 'WEBSITE_FORM' ? (
           <a
             href="/crm/settings/forms"
             className="flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 transition-colors"
@@ -173,6 +175,7 @@ function IntegrationCard({ integration, onConnect, onDisconnect, branchId, domai
 // ─── Main component ────────────────────────────────────────────────────────────
 
 export function IntegrationsPageClient() {
+  const readOnly = useReadOnlyViewer()
   const searchParams = useSearchParams()
   const router = useRouter()
   const [integrations, setIntegrations] = useState<Integration[]>([])
@@ -348,6 +351,7 @@ export function IntegrationsPageClient() {
             onDisconnect={handleDisconnect}
             branchId={branchId}
             domain={domain}
+            readOnly={readOnly}
           />
         ))}
       </div>

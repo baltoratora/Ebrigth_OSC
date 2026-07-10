@@ -4,6 +4,7 @@ import { auth } from '@/lib/crm/auth'
 import { prisma } from '@/lib/crm/db'
 import { updateUserRole } from '@/server/actions/team'
 import type { CrmUserRole } from '@/lib/crm/permissions'
+import { denyReadOnlyViewer } from '@/lib/crm/admin-session'
 
 async function resolveSession() {
   const session = await auth.api.getSession({ headers: await headers() })
@@ -18,6 +19,7 @@ async function resolveSession() {
 
 export async function PATCH(req: NextRequest) {
   try {
+    const denied = await denyReadOnlyViewer(); if (denied) return denied
     const ctx = await resolveSession()
     if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!['SUPER_ADMIN', 'AGENCY_ADMIN'].includes(ctx.role)) {

@@ -8,13 +8,15 @@ import { HoverPreview } from "@fa/_components/shared/HoverPreview";
 import { QuickActionButtons } from "@fa/_components/fa/QuickActionButtons";
 import { EventPreview } from "@fa/_components/fa/EventPreview";
 
-export function HeroCard({ event, sessionCount, invitationCount, quotaTotal, onView, onEdit }: {
+export function HeroCard({ event, sessionCount, invitationCount, confirmedCount, quotaTotal, onView, onEdit, onDuplicate }: {
   event: FAEvent;
   sessionCount: number;
   invitationCount: number;
+  confirmedCount: number;
   quotaTotal: number;
   onView: () => void;
   onEdit: () => void;
+  onDuplicate?: () => void;
 }) {
   const startD = new Date(event.startDate);
   const dateStr = formatDateRange(event.startDate, event.endDate);
@@ -95,11 +97,23 @@ export function HeroCard({ event, sessionCount, invitationCount, quotaTotal, onV
               Invited
             </div>
           </div>
+          <div className="w-px h-10 bg-gold-200" />
+          <div className="text-center">
+            <div className="fa-mono font-semibold text-[40px] text-emerald-600 leading-none">
+              {confirmedCount}
+            </div>
+            <div
+              className="fa-mono text-[10px] uppercase text-ink-400 mt-1"
+              style={{ letterSpacing: "0.1em" }}
+            >
+              Confirmed
+            </div>
+          </div>
         </div>
 
       </div>
     </Link>
-    <QuickActionButtons eventId={event.id} onView={onView} onEdit={onEdit} />
+    <QuickActionButtons eventId={event.id} onView={onView} onEdit={onEdit} onDuplicate={onDuplicate} />
     </div>
     </HoverPreview>
   );

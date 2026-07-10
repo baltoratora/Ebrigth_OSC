@@ -8,7 +8,7 @@ import { AppShell } from "@pcm/_components/shared/AppShell";
 import { EventStatusPill } from "@pcm/_components/fa/StatusPill";
 import { EmptyState } from "@pcm/_components/shared/EmptyState";
 import { CalendarDays, MapPin, Search, AlertCircle } from "lucide-react";
-import { BRANCHES, EventStatus } from "@pcm/_types";
+import { BRANCHES, EventStatus, allowedBranchCodes } from "@pcm/_types";
 
 import { MONTHS } from "@pcm/_lib/constants";
 import { formatDateRange } from "@pcm/_lib/date";
@@ -38,16 +38,18 @@ export default function BMEventsPage() {
   // For each event, compute branch-specific (BM) or aggregated (MKT-viewing) stats.
   const eventStats = useMemo(() => {
     if (!user) return [];
-    const isAggregate = user.role === "MKT";
+    // null = all branches (MKT); BM = own branch; RM = every branch in region.
+    const allowed = allowedBranchCodes(user);
+    const inScope = (b: string) => allowed === null || allowed.includes(b);
     return visibleEvents.map(event => {
       const eventSessions = sessions.filter(s => s.eventId === event.id);
       const sessionIds = new Set(eventSessions.map(s => s.id));
       const scopedQuotas = quotas.filter(q =>
-        sessionIds.has(q.sessionId) && (isAggregate || q.branch === user.branch)
+        sessionIds.has(q.sessionId) && inScope(q.branch)
       );
       const totalQuota = scopedQuotas.reduce((sum, q) => sum + q.quota, 0);
       const scopedInvitations = invitations.filter(i =>
-        i.eventId === event.id && (isAggregate || i.branch === user.branch)
+        i.eventId === event.id && inScope(i.branch)
       );
       const confirmedCount = scopedInvitations.filter(
         i => i.status === "confirmed" || i.status === "attended"
@@ -75,10 +77,15 @@ export default function BMEventsPage() {
       .sort((a, b) => b.event.startDate.localeCompare(a.event.startDate));
   }, [eventStats, yearFilter, statusFilter, search]);
 
-  if (!user || (user.role !== "BM" && user.role !== "MKT")) return null;
+  if (!user || (user.role !== "BM" && user.role !== "MKT" && user.role !== "RM")) return null;
   if (user.role === "BM" && !user.branch) return null;
   const branch = user.branch ? BRANCHES.find(b => b.code === user.branch) : null;
   const isMktView = user.role === "MKT";
+  const scopeLabel = user.role === "MKT"
+    ? "All branches (Admin view)"
+    : user.role === "RM"
+      ? `Region ${user.region} (${allowedBranchCodes(user)?.length ?? 0} branches)`
+      : branch?.name;
 
   // Highlight events that need action
   const actionNeeded = filtered.filter(
@@ -91,7 +98,7 @@ export default function BMEventsPage() {
       <div className="flex items-start justify-between mb-8">
         <div>
           <div className="text-xs uppercase tracking-wider font-semibold text-ink-400 mb-1">
-            FA · {isMktView ? "All branches (Admin view)" : branch?.name}
+            PCM · {scopeLabel}
           </div>
           <h1 className="fa-display text-4xl text-ink-900">Events</h1>
           <p className="text-ink-500 mt-1">

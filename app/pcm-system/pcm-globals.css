@@ -506,14 +506,115 @@ h1, h2, h3, h4 {
     visibility: visible;
   }
   /* Each bulk-print certificate gets its own page. The single-preview
-     flow doesn't wrap with .fa-print-cert-page so it still prints on one page. */
+     flow doesn't wrap with .fa-print-cert-page so it still prints on one page.
+     Visibility override is required because `body *` is visibility:hidden
+     above — without revealing this subtree, bulk-print pages come out
+     blank. Unlike .fa-print-cert, this rule does NOT set position:absolute,
+     so multiple .fa-print-cert-page siblings flow normally and each
+     lands on its own A4 sheet via page-break-after.
+
+     print-color-adjust: exact forces the browser to print background
+     colours and gradient fills as designed — without it, the red banner,
+     slate identity strip, and red-bordered Remarks box all wash out
+     because Chrome strips background colours by default. */
+  .fa-print-cert-page,
+  .fa-print-cert-page * {
+    visibility: visible;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    color-adjust: exact;
+  }
+  /* Print mode — STRICTLY one cert per A4 page, always.
+     Wrapper IS the A4 page (210×297mm fixed) with overflow:hidden so
+     content can NEVER spill to page 2. zoom 0.85 on the inner element
+     sizes content to fit within the page; the 400-char form limit on
+     Strengths + Improvement Plan caps content so it stays within that
+     budget. Together: every cert prints on exactly one page that's
+     mostly filled, no clipping for in-bounds content. */
   .fa-print-cert-page {
+    width: 210mm !important;
+    height: 297mm !important;
+    max-width: none !important;
+    padding: 0 !important;
+    margin: 0 auto !important;
+    box-sizing: border-box;
+    overflow: hidden;
     page-break-after: always;
     break-after: page;
+  }
+  .fa-print-cert-page > * {
+    /* 0.85 — verified value that fits the FULL PCM cert including
+       Prepared-by + Received-by signature names. 0.95 was too tight
+       and clipped the names off the bottom because PCM has more
+       content than FA (rubric grid + two narrative boxes + signature
+       row with images). The 400-char limit on Strengths/Improvement
+       Plan keeps the cert bounded; some bottom whitespace remains for
+       short reports as the safe tradeoff. */
+    zoom: 0.85;
   }
   .fa-print-cert-page:last-child {
     page-break-after: auto;
     break-after: auto;
   }
+  /* Banner h1 — readable but tighter top-margin. */
+  .fa-print-cert-page h1 {
+    font-size: 30px !important;
+    margin-top: 6px !important;
+  }
+  /* Section headings (Score, Remarks). */
+  .fa-print-cert-page h2 {
+    font-size: 22px !important;
+    margin-top: 10px !important;
+    margin-bottom: 6px !important;
+  }
+  /* Identity panel — tighter top/bottom padding. */
+  .fa-print-cert-page .px-10.py-7 {
+    padding-top: 10px !important;
+    padding-bottom: 10px !important;
+  }
+  /* Inner body — bottom padding mostly removed. */
+  .fa-print-cert-page .px-10.pb-10 {
+    padding-bottom: 6px !important;
+  }
+  /* Rubric / 4-criterion table — keep cell font readable but trim cell
+     vertical padding to compress the grid. */
+  .fa-print-cert-page table th,
+  .fa-print-cert-page table td {
+    padding-top: 5px !important;
+    padding-bottom: 5px !important;
+  }
+  /* Total-score line — pull it closer to the table. */
+  .fa-print-cert-page .text-right.mt-3 {
+    margin-top: 4px !important;
+  }
+  /* Strengths / Improvement Plan boxes — minimum height. When the BM
+     writes more, the boxes grow naturally. */
+  .fa-print-cert-page div[style*="border: 2px solid"] {
+    min-height: 70px !important;
+    padding: 10px !important;
+  }
+  /* Signature row + narrative grid spacing. */
+  .fa-print-cert-page .mt-12 {
+    margin-top: 12px !important;
+  }
+  .fa-print-cert-page .grid.mt-6 {
+    margin-top: 8px !important;
+  }
 }
 
+
+/* ============================================================================
+   PCM Assessment Report — A4 print rules
+   margin: 0 because the .fa-print-cert-page wrapper is sized to a full
+   A4 page (210×297mm) and controls the cert edge-to-edge itself.
+   ============================================================================ */
+@media print {
+  @page {
+    size: A4;
+    margin: 0;
+  }
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+}

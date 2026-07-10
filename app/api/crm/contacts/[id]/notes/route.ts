@@ -4,6 +4,7 @@ import { auth } from '@/lib/crm/auth'
 import { prisma } from '@/lib/crm/db'
 import { scopedPrisma } from '@/lib/crm/tenancy'
 import { z } from 'zod'
+import { denyReadOnlyViewer } from '@/lib/crm/admin-session'
 
 const NoteSchema = z.object({
   body: z.string().min(1),
@@ -23,6 +24,7 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
+    const denied = await denyReadOnlyViewer(); if (denied) return denied
     const session = await auth.api.getSession({ headers: await headers() })
     if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 

@@ -1,0 +1,79 @@
+name: Diagnose staging
+
+# Manual one-shot — SSHes to staging, dumps everything we need to know
+# about WHY the osc + worker containers won't stay up. Prints docker ps,
+# container logs, disk usage, and the on-server .env (with values masked)
+# so we can see if anything obvious is wrong.
+#
+# How to run:
+#   GitHub → Actions → "Diagnose staging" → Run workflow.
+#   In the branch dropdown, pick the branch the workflow file lives on
+#   (staging once this is merged, or feat/pcm-multi-branch-region in the
+#   meantime).
+#
+# Output appears inside the workflow run under the "Inspect" step.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect staging server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 103.209.156.225
+          username: deploy
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            set +e
+            echo "============================================================"
+            echo "= docker ps -a"
+            echo "============================================================"
+            docker ps -a
+
+            echo
+            echo "============================================================"
+            echo "= disk usage on / and /var/lib/docker"
+            echo "============================================================"
+            df -h / /var/lib/docker 2>/dev/null
+
+            echo
+            echo "============================================================"
+            echo "= free memory"
+            echo "============================================================"
+            free -h
+
+            echo
+            echo "============================================================"
+            echo "= docker logs ebright-osc-osc-1 (last 200 lines)"
+            echo "============================================================"
+            docker logs --tail 200 ebright-osc-osc-1 2>&1 || echo "(container not found or never started)"
+
+            echo
+            echo "============================================================"
+            echo "= docker logs ebright-osc-worker-1 (last 100 lines)"
+            echo "============================================================"
+            docker logs --tail 100 ebright-osc-worker-1 2>&1 || echo "(container not found or never started)"
+
+            echo
+            echo "============================================================"
+            echo "= repo state"
+            echo "============================================================"
+            REPO=$(find /home/deploy -maxdepth 4 -type d -name ".git" 2>/dev/null | head -1 | xargs -r dirname)
+            if [ -n "$REPO" ]; then
+              cd "$REPO"
+              echo "repo: $REPO"
+              git log --oneline -5
+              echo
+              echo "= .env keys present (values hidden) ="
+              if [ -f .env ]; then
+                grep -E '^[A-Z_]+=' .env | sed 's/=.*/=<set>/'
+              else
+                echo "(.env missing)"
+              fi
+            else
+              echo "no repo found under /home/deploy"
+            fi

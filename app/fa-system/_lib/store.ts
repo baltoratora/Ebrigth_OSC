@@ -14,6 +14,7 @@ import { persist } from "zustand/middleware";
 import {
   EventBranchOverride,
   FAEvent,
+  FAReport,
   Invitation,
   InvitationStatus,
   Session,
@@ -22,6 +23,7 @@ import {
   StudentLoadReport,
   User,
   BranchCode,
+  DayPolicy,
 } from "@fa/_types";
 import { MOCK_USERS } from "./mockData";
 
@@ -67,10 +69,29 @@ interface FAStore {
   eventsError: string | null;
   loadEvents: () => Promise<void>;
 
+  // ------- FA Assessment Reports (Marketing/Admin fills, all view) -------
+  reports: FAReport[];
+  reportsLoaded: boolean;
+  reportsLoading: boolean;
+  loadReports: () => Promise<void>;
+  saveReport: (report: Omit<FAReport, "id" | "createdAt" | "updatedAt">) => Promise<FAReport>;
+  /** Branch uploads a report-delivery evidence photo (base64). */
+  saveReportEvidence: (invitationId: string, base64Data: string, fileName: string, mimeType: string) => Promise<FAReport>;
+  /** Branch removes the evidence photo. */
+  removeReportEvidence: (invitationId: string) => Promise<FAReport>;
+
   // ------- Event CRUD -------
   createEvent: (ev: Omit<FAEvent, "id" | "createdAt">) => Promise<FAEvent>;
   updateEvent: (id: string, patch: Partial<FAEvent>) => Promise<void>;
   deleteEvent: (id: string) => Promise<void>;
+  duplicateEvent: (sourceId: string, args: {
+    name: string;
+    startDate: string;
+    endDate: string;
+    invitationOpenDate: string;
+    invitationCloseDate: string;
+    notes?: string;
+  }) => Promise<FAEvent>;
 
   // ------- Session CRUD -------
   createSession: (s: Omit<Session, "id">) => Promise<Session>;
@@ -97,6 +118,20 @@ interface FAStore {
     allowOverQuota?: boolean;
   }) => Promise<Invitation | null>;
   updateInvitationStatus: (id: string, status: InvitationStatus, by?: string) => Promise<void>;
+  /** Attach a testing video link and/or a proof image to an (already-confirmed)
+   *  invitation. Both are optional — a proof image is uploaded to Google Drive
+   *  and its link saved; the video link is saved as-is. Surfaced to Marketing. */
+  attachInvitationProof: (
+    id: string,
+    args: { videoLink: string; base64Data: string | null; studentId: string; branch: string; by?: string }
+  ) => Promise<void>;
+  /** Schedule (or clear, with null) a practice session date/time for a
+   *  confirmed invitation. Both fields are optional and independent — neither
+   *  gates whether the student appears in the Practice sidebar. */
+  scheduleInvitationPractice: (
+    id: string,
+    args: { practiceDate: string | null; practiceTime: string | null }
+  ) => Promise<void>;
   removeInvitation: (id: string) => Promise<void>;
   moveInvitationToSession: (invitationId: string, targetSessionId: string) => Promise<void>;
 
@@ -104,6 +139,7 @@ interface FAStore {
   grantEventBranchOverride: (args: {
     eventId: string;
     branchCode: BranchCode;
+    dayPolicy?: DayPolicy;
     reason?: string;
   }) => Promise<EventBranchOverride>;
   revokeEventBranchOverride: (eventId: string, branchCode: BranchCode) => Promise<void>;
@@ -190,6 +226,9 @@ export const useFAStore = create<FAStore>()(
       quotas: [],
       invitations: [],
       eventBranchOverrides: [],
+      reports: [],
+      reportsLoaded: false,
+      reportsLoading: false,
       sessionOrder: {},
       packedItems: {},
       walkInBuffer: {},
@@ -250,6 +289,75 @@ export const useFAStore = create<FAStore>()(
         }
       },
 
+      // ------- FA Assessment Reports -------
+      // Lazy-loaded on first reference (AppShell triggers it) so the rest of
+      // the dashboard isn't slowed by a list that's only used on a handful
+      // of pages.
+      loadReports: async () => {
+        if (get().reportsLoaded || get().reportsLoading) return;
+        set({ reportsLoading: true });
+        try {
+          const r = await apiJson<{ reports: FAReport[] }>("/api/fa/reports");
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          set({ reports: r.data.reports, reportsLoaded: true, reportsLoading: false });
+        } catch (err) {
+          console.error("[fa] loadReports failed:", err);
+          set({ reportsLoading: false });
+        }
+      },
+      saveReport: async (report) => {
+        const r = await apiJson<{ report: FAReport }>("/api/fa/reports", {
+          method: "POST",
+          body: JSON.stringify(report),
+        });
+        if (!r.ok) {
+          const detail = (r.body as { error?: string })?.error;
+          throw new Error(
+            `Save report failed (HTTP ${r.status})${detail ? ": " + detail : ""}`
+          );
+        }
+        const saved = r.data.report;
+        // Upsert into the local list so the UI updates without a refetch.
+        set((s) => {
+          const idx = s.reports.findIndex(x => x.invitationId === saved.invitationId);
+          const next = idx >= 0
+            ? s.reports.map((x, i) => (i === idx ? saved : x))
+            : [saved, ...s.reports];
+          return { reports: next };
+        });
+        return saved;
+      },
+      saveReportEvidence: async (invitationId, base64Data, fileName, mimeType) => {
+        const r = await apiJson<{ report: FAReport }>("/api/fa/reports/evidence", {
+          method: "POST",
+          body: JSON.stringify({ invitationId, base64Data, fileName, mimeType }),
+        });
+        if (!r.ok) {
+          const detail = (r.body as { error?: string })?.error;
+          throw new Error(detail || `Upload failed (HTTP ${r.status})`);
+        }
+        const saved = r.data.report;
+        set((s) => ({
+          reports: s.reports.map(x => (x.invitationId === saved.invitationId ? saved : x)),
+        }));
+        return saved;
+      },
+      removeReportEvidence: async (invitationId) => {
+        const r = await apiJson<{ report: FAReport }>(
+          `/api/fa/reports/evidence?invitationId=${encodeURIComponent(invitationId)}`,
+          { method: "DELETE" },
+        );
+        if (!r.ok) {
+          const detail = (r.body as { error?: string })?.error;
+          throw new Error(detail || `Remove failed (HTTP ${r.status})`);
+        }
+        const saved = r.data.report;
+        set((s) => ({
+          reports: s.reports.map(x => (x.invitationId === saved.invitationId ? saved : x)),
+        }));
+        return saved;
+      },
+
       // ------- Events -------
       createEvent: async (ev) => {
         const r = await apiJson<FAEvent>("/api/fa/events", {
@@ -265,6 +373,20 @@ export const useFAStore = create<FAStore>()(
         const newEvent = r.data;
         set((s) => ({ events: [...s.events, newEvent] }));
         return newEvent;
+      },
+
+      duplicateEvent: async (sourceId, args) => {
+        const r = await apiJson<{ event: FAEvent }>(
+          `/api/fa/events/${encodeURIComponent(sourceId)}/duplicate`,
+          { method: "POST", body: JSON.stringify(args) },
+        );
+        if (!r.ok) {
+          const detail = (r.body as { error?: string })?.error ?? `HTTP ${r.status}`;
+          throw new Error(`Duplicate failed: ${detail}`);
+        }
+        // Server cloned sessions + quotas — re-fetch the bundle to stay in sync.
+        await get().loadEvents();
+        return r.data.event;
       },
 
       updateEvent: async (id, patch) => {
@@ -401,7 +523,7 @@ export const useFAStore = create<FAStore>()(
           const invitations = s.invitations.map((i) => (i.id === id ? updated : i));
           // When attendance is marked, persist the picked grade onto the
           // student's faHistory so the FA tick stays after the event.
-          if (status === "attended" && updated.targetGrade != null) {
+          if ((status === "attended" || status === "walk_in") && updated.targetGrade != null) {
             const students = s.students.map((st) =>
               st.id === updated.studentId
                 ? {
@@ -414,6 +536,57 @@ export const useFAStore = create<FAStore>()(
           }
           return { invitations };
         });
+      },
+
+      attachInvitationProof: async (id, { videoLink, base64Data, studentId, branch, by }) => {
+        // With an image → upload route (uploads to Drive, saves proof + video).
+        // Video-link only → a plain PATCH. Nothing provided → no-op.
+        let r;
+        if (base64Data) {
+          r = await apiJson<Invitation>(
+            `/api/fa/invitations/${encodeURIComponent(id)}/proof`,
+            {
+              method: "POST",
+              body: JSON.stringify({ videoLink, base64Data, studentId, branch, markedBy: by }),
+            }
+          );
+        } else if (videoLink.trim()) {
+          r = await apiJson<Invitation>(`/api/fa/invitations/${encodeURIComponent(id)}`, {
+            method: "PATCH",
+            body: JSON.stringify({ videoLink: videoLink.trim() }),
+          });
+        } else {
+          return; // nothing to save
+        }
+        if (!r.ok) {
+          const msg =
+            r.body && typeof r.body === "object" && "error" in r.body
+              ? String((r.body as { error?: unknown }).error)
+              : `Save failed (HTTP ${r.status})`;
+          throw new Error(msg);
+        }
+        const updated = r.data;
+        set((s) => ({
+          invitations: s.invitations.map((i) => (i.id === id ? updated : i)),
+        }));
+      },
+
+      scheduleInvitationPractice: async (id, { practiceDate, practiceTime }) => {
+        const r = await apiJson<Invitation>(`/api/fa/invitations/${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ practiceDate, practiceTime }),
+        });
+        if (!r.ok) {
+          const msg =
+            r.body && typeof r.body === "object" && "error" in r.body
+              ? String((r.body as { error?: unknown }).error)
+              : `Save failed (HTTP ${r.status})`;
+          throw new Error(msg);
+        }
+        const updated = r.data;
+        set((s) => ({
+          invitations: s.invitations.map((i) => (i.id === id ? updated : i)),
+        }));
       },
 
       removeInvitation: async (id) => {
@@ -430,12 +603,12 @@ export const useFAStore = create<FAStore>()(
       },
 
       // ------- Multi-grade override toggles -------
-      grantEventBranchOverride: async ({ eventId, branchCode, reason }) => {
+      grantEventBranchOverride: async ({ eventId, branchCode, dayPolicy, reason }) => {
         const r = await apiJson<{ override: EventBranchOverride }>(
           "/api/fa/event-overrides",
           {
             method: "POST",
-            body: JSON.stringify({ eventId, branchCode, reason }),
+            body: JSON.stringify({ eventId, branchCode, dayPolicy, reason }),
           }
         );
         if (!r.ok) {

@@ -6,6 +6,7 @@ import { getPipelineKanban } from '@/server/queries/opportunities'
 import { createOpportunity } from '@/server/actions/opportunities'
 import { CreateOpportunitySchema } from '@/lib/crm/validations/opportunity'
 import { resolveBranchAccess } from '@/lib/crm/branch-access'
+import { hasPermission } from '@/lib/crm/permissions'
 import { createHash } from 'crypto'
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
@@ -18,6 +19,8 @@ type Session = {
   elevated: boolean
   /** All branches this user can read (empty = unrestricted for elevated). */
   branchIds: string[]
+  /** Highest CRM role; API-key callers act with full (SUPER_ADMIN) rights. */
+  role: 'SUPER_ADMIN' | 'AGENCY_ADMIN' | 'REGIONAL_MANAGER' | 'BRANCH_MANAGER' | 'BRANCH_STAFF'
 }
 
 async function resolveSession(req: NextRequest): Promise<Session | null> {
@@ -35,6 +38,7 @@ async function resolveSession(req: NextRequest): Promise<Session | null> {
         branchId: null,
         elevated: true,
         branchIds: [],
+        role: 'SUPER_ADMIN',
       }
     }
   }
@@ -51,6 +55,7 @@ async function resolveSession(req: NextRequest): Promise<Session | null> {
     branchId: access.primaryBranchId,
     elevated: access.elevated,
     branchIds: access.branchIds,
+    role: access.role,
   }
 }
 
@@ -134,6 +139,11 @@ export async function POST(req: NextRequest) {
   try {
     const ctx = await resolveSession(req)
     if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    // Leads are read-only for AGENCY_ADMIN.
+    if (!hasPermission(ctx.role, 'opportunities:write')) {
+      return NextResponse.json({ error: 'Your role cannot create leads.' }, { status: 403 })
+    }
 
     const body = await req.json()
     const parsed = CreateOpportunitySchema.safeParse(body)

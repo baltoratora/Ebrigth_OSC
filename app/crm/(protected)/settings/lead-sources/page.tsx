@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2, Pencil, Check, X, Plus } from 'lucide-react'
+import { useReadOnlyViewer } from '@/lib/crm/use-read-only-viewer'
 import { cn } from '@/lib/crm/utils'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -29,9 +30,11 @@ async function fetchLeadSources(): Promise<{ leadSources: LeadSource[] }> {
 function LeadSourceRow({
   source,
   onUpdate,
+  readOnly = false,
 }: {
   source: LeadSource
   onUpdate: (id: string, name: string) => Promise<void>
+  readOnly?: boolean
 }) {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(source.name)
@@ -92,12 +95,14 @@ function LeadSourceRow({
           <span className="text-xs text-slate-400 dark:text-slate-500 tabular-nums">
             {source._count?.contacts ?? 0} contacts
           </span>
-          <button
-            onClick={() => setEditing(true)}
-            className="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-300 transition-colors"
-          >
-            <Pencil className="h-3.5 w-3.5" />
-          </button>
+          {!readOnly && (
+            <button
+              onClick={() => setEditing(true)}
+              className="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-300 transition-colors"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+          )}
         </>
       )}
     </div>
@@ -180,6 +185,7 @@ function AddLeadSourceForm({ onSuccess }: { onSuccess: () => void }) {
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function LeadSourcesPage() {
+  const readOnly = useReadOnlyViewer()
   const qc = useQueryClient()
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['crm', 'lead-sources'],
@@ -237,13 +243,15 @@ export default function LeadSourcesPage() {
               <div className="text-center py-12 text-sm text-slate-400">No lead sources yet.</div>
             ) : (
               leadSources.map((source) => (
-                <LeadSourceRow key={source.id} source={source} onUpdate={handleUpdate} />
+                <LeadSourceRow key={source.id} source={source} onUpdate={handleUpdate} readOnly={readOnly} />
               ))
             )}
 
-            <AddLeadSourceForm
-              onSuccess={() => void qc.invalidateQueries({ queryKey: ['crm', 'lead-sources'] })}
-            />
+            {!readOnly && (
+              <AddLeadSourceForm
+                onSuccess={() => void qc.invalidateQueries({ queryKey: ['crm', 'lead-sources'] })}
+              />
+            )}
           </>
         )}
       </div>

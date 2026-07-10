@@ -3,6 +3,7 @@ import { headers } from 'next/headers'
 import { auth } from '@/lib/crm/auth'
 import { prisma } from '@/lib/crm/db'
 import { createHash } from 'crypto'
+import { denyReadOnlyViewer } from '@/lib/crm/admin-session'
 
 async function resolveTenantId(req: NextRequest): Promise<string | null> {
   const apiKey = req.headers.get('x-api-key')
@@ -29,6 +30,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
+    const denied = await denyReadOnlyViewer(); if (denied) return denied
     const tenantId = await resolveTenantId(req)
     if (!tenantId) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })

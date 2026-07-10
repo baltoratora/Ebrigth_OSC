@@ -1,8 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { hrfsPrisma } from '@/lib/hrfs';
 import { requireSession, canSeeAllBranches } from '@/lib/auth';
 import { isEmployee } from '@/lib/roles';
 import { BRANCH_LIST, normalizeLocation } from '@/lib/constants';
+
+// Staff intentionally hidden from the attendance dashboard (Missing box, active
+// counts, reports). They work flexible / remote with no fixed on-site hours, so
+// the scanner-based attendance tracking doesn't apply to them. Matched by the
+// stable BranchStaff.employeeId.
+const ATTENDANCE_HIDDEN_EMPLOYEE_IDS = [
+  '33030010', // CHOW CHIN HUI
+  '33010041', // ROHAN KUMAR A/L MANOHAR LAL
+];
 
 // Scoping:
 //   Admin / HOD            → any location.
@@ -25,27 +34,32 @@ export async function GET(req: NextRequest) {
     if (!canSeeAllBranches(session)) {
       if (isEmployee(sessionUser?.role)) {
         if (!sessionUser.email) return NextResponse.json({ staff: [] });
-        const self = await prisma.branchStaff.findFirst({
+        const self = await hrfsPrisma.branchStaff.findFirst({
           where: {
             email:  { equals: sessionUser.email, mode: 'insensitive' },
             status: 'Active',
           },
           select: {
-            id:         true,
-            name:       true,
-            nickname:   true,
-            employeeId: true,
-            department: true,
-            role:       true,
-            email:      true,
-            status:     true,
-            location:   true,
+            id:           true,
+            name:         true,
+            nickname:     true,
+            employeeId:   true,
+            branch:       true,
+            department:   true,
+            role:         true,
+            email:        true,
+            status:       true,
+            location:     true,
+            workingHours: true,
           },
         });
-        if (!self || normalizeLocation(self.location) !== location) {
+        // "self" bypasses the location match entirely — used by self-service
+        // pages (e.g. Attendance Report for FT/PT) that just want "my own
+        // record", regardless of which branch that happens to be.
+        if (location !== "self" && (!self || normalizeLocation(self.location) !== location)) {
           return NextResponse.json({ staff: [] });
         }
-        return NextResponse.json({ staff: [self] });
+        return NextResponse.json({ staff: self ? [self] : [] });
       }
       // BM and other non-admins: must match own branch.
       // We treat `branchName` and the `location` query as both running through
@@ -57,32 +71,38 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const all = await prisma.branchStaff.findMany({
+    const all = await hrfsPrisma.branchStaff.findMany({
       select: {
-        id:         true,
-        name:       true,
-        nickname:   true,
-        employeeId: true,
-        branch:     true,
-        department: true,
-        role:       true,
-        email:      true,
-        status:     true,
-        location:   true,
+        id:           true,
+        name:         true,
+        nickname:     true,
+        employeeId:   true,
+        branch:       true,
+        department:   true,
+        role:         true,
+        email:        true,
+        status:       true,
+        location:     true,
+        start_date:   true,
+        endDate:      true,
+        workingHours: true,
       },
-      where:   { status: 'Active' },
+      where:   {
+        status: 'Active',
+        NOT: { employeeId: { in: ATTENDANCE_HIDDEN_EMPLOYEE_IDS } },
+      },
       orderBy: { name: 'asc' },
     });
 
-    // `location=all` is the lookup-by-employeeId path used by the attendance
-    // summary so it can resolve names + roles for staff who scanned at one
-    // branch but are registered to another. Anything else filters by the
-    // staff member's normalized location as before.
-    if (location === 'all') {
+    // ALL / all → return every active staff member (used for name/dept lookups
+    // in the attendance dashboard — resolves names for staff registered to any branch)
+    if (location === 'ALL' || location === 'all') {
       return NextResponse.json({ staff: all });
     }
 
-    const filtered = all.filter(s => normalizeLocation(s.location) === location);
+    // Filter by `branch` (the BRANCH/DEPT field set in the staff form, e.g. "ST", "HQ").
+    // Fall back to `location` when `branch` is empty — some older records only have location set.
+    const filtered = all.filter(s => normalizeLocation(s.branch || s.location) === location);
     return NextResponse.json({ staff: filtered });
   } catch (err) {
     console.error('/api/branch-locations error:', err);

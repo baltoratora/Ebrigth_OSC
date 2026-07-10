@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import ReactFlow, {
   Background, Controls, MiniMap,
   useNodesState, useEdgesState, addEdge,
+  MarkerType,
   type Node, type Edge, type Connection,
   type NodeTypes, Handle, Position,
 } from 'reactflow'
@@ -203,10 +204,11 @@ function ConditionNode({ data, selected }: { data: { label: string; field?: stri
           {data.field} {data.operator ?? '='} {data.value ?? '?'}
         </p>
       )}
-      <Handle type="source" position={Position.Bottom} id="yes" style={{ left: '30%' }} />
-      <Handle type="source" position={Position.Bottom} id="no" style={{ left: '70%' }} />
-      <div className="flex justify-between mt-1.5 text-[10px] text-slate-400 px-1">
-        <span>Yes</span><span>No</span>
+      <Handle type="source" position={Position.Bottom} id="yes" style={{ left: '30%', background: '#10b981' }} />
+      <Handle type="source" position={Position.Bottom} id="no" style={{ left: '70%', background: '#ef4444' }} />
+      <div className="flex justify-between mt-1.5 text-[10px] font-semibold px-1">
+        <span className="text-emerald-600 dark:text-emerald-400">Yes</span>
+        <span className="text-red-500 dark:text-red-400">No</span>
       </div>
     </div>
   )
@@ -424,6 +426,46 @@ export function AutomationEditor({ automationId, userId: _userId }: AutomationEd
       .filter((r) => !r.ready)
   }, [nodes])
 
+  // Decorate edges for clarity: an If/Else node's branches become a green
+  // labelled "Yes" edge and a red "No" edge, and every edge gets an arrowhead
+  // so flow direction is obvious. Derived at render — sourceHandle (which the
+  // worker uses to pick the branch) is preserved untouched, the saved graph
+  // stays clean, and pre-existing automations get the styling automatically.
+  const displayEdges = useMemo(
+    () =>
+      edges.map((e) => {
+        if (e.sourceHandle === 'yes') {
+          return {
+            ...e,
+            label: 'Yes',
+            labelBgPadding: [6, 2] as [number, number],
+            labelBgBorderRadius: 4,
+            labelBgStyle: { fill: '#ecfdf5' },
+            labelStyle: { fill: '#047857', fontWeight: 600, fontSize: 11 },
+            style: { stroke: '#10b981', strokeWidth: 2 },
+            markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#10b981' },
+          }
+        }
+        if (e.sourceHandle === 'no') {
+          return {
+            ...e,
+            label: 'No',
+            labelBgPadding: [6, 2] as [number, number],
+            labelBgBorderRadius: 4,
+            labelBgStyle: { fill: '#fef2f2' },
+            labelStyle: { fill: '#b91c1c', fontWeight: 600, fontSize: 11 },
+            style: { stroke: '#ef4444', strokeWidth: 2 },
+            markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#ef4444' },
+          }
+        }
+        return {
+          ...e,
+          markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#94a3b8' },
+        }
+      }),
+    [edges],
+  )
+
   if (isLoading && automationId) {
     return (
       <div className="flex items-center justify-center h-screen">
@@ -553,7 +595,7 @@ export function AutomationEditor({ automationId, userId: _userId }: AutomationEd
         <div className="flex-1 relative">
           <ReactFlow
             nodes={nodes.map((n) => ({ ...n, selected: n.id === selectedNodeId }))}
-            edges={edges}
+            edges={displayEdges}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
@@ -567,6 +609,7 @@ export function AutomationEditor({ automationId, userId: _userId }: AutomationEd
             className="bg-slate-50 dark:bg-slate-950"
             defaultEdgeOptions={{
               animated: true,
+              type: 'smoothstep',
               style: { stroke: '#94a3b8', strokeWidth: 1.5 },
             }}
           >

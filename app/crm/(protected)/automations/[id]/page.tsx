@@ -3,7 +3,7 @@ import { auth } from '@/lib/crm/auth'
 import { redirect } from 'next/navigation'
 import { AutomationEditor } from '@/components/crm/automations/automation-editor'
 
-export const metadata = { title: 'Automation Editor — Ebright CRM' }
+export const metadata = { title: 'Automation Editor — Ebright Nexus' }
 
 interface Props {
   params: Promise<{ id: string }>

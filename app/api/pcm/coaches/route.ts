@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/nextauth";
-import { prisma } from "@/lib/prisma";
+import { hrfsPrisma } from "@/lib/hrfs";
 
 export const dynamic = "force-dynamic";
 
@@ -65,7 +65,7 @@ export async function GET(req: NextRequest) {
     };
     // Match either form: branchstaff.branch may hold the short code OR the
     // full name depending on when the row was created.
-    const staff = await prisma.branchStaff.findMany({
+    const staff = await hrfsPrisma.branchStaff.findMany({
       select: { id: true, nickname: true, branch: true, role: true },
       where: {
         status: { equals: "Active", mode: "insensitive" },

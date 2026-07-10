@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { headers } from 'next/headers'
 import { auth } from '@/lib/crm/auth'
 import { prisma } from '@/lib/crm/db'
+import { denyReadOnlyViewer } from '@/lib/crm/admin-session'
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await denyReadOnlyViewer(); if (denied) return denied
   const session = await auth.api.getSession({ headers: await headers() })
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 

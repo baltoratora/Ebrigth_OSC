@@ -14,6 +14,7 @@ import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { cn } from '@/lib/crm/utils'
+import { useReadOnlyViewer } from '@/lib/crm/use-read-only-viewer'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -291,6 +292,7 @@ function BranchModal({
 const col = createColumnHelper<Branch>()
 
 export default function BranchesPage() {
+  const readOnly = useReadOnlyViewer()
   const qc = useQueryClient()
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['crm', 'branches'],
@@ -328,12 +330,14 @@ export default function BranchesPage() {
       id: 'actions',
       header: '',
       cell: (info) => (
+        readOnly ? null : (
         <button
           onClick={() => setEditingBranch(info.row.original)}
           className="flex items-center justify-center h-7 w-7 rounded text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-300 transition-colors"
         >
           <Pencil className="h-3.5 w-3.5" />
         </button>
+        )
       ),
     }),
   ]
@@ -353,13 +357,15 @@ export default function BranchesPage() {
             Manage your branch locations.
           </p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition-colors"
-        >
-          <Plus className="h-4 w-4" />
-          New branch
-        </button>
+        {!readOnly && (
+          <button
+            onClick={() => setShowCreate(true)}
+            className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition-colors"
+          >
+            <Plus className="h-4 w-4" />
+            New branch
+          </button>
+        )}
       </div>
 
       <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden">
@@ -375,9 +381,11 @@ export default function BranchesPage() {
         ) : branches.length === 0 ? (
           <div className="text-center py-16">
             <p className="text-slate-500 dark:text-slate-400 text-sm">No branches yet.</p>
-            <button onClick={() => setShowCreate(true)} className="mt-3 text-sm text-indigo-600 hover:underline">
-              Create your first branch
-            </button>
+            {!readOnly && (
+              <button onClick={() => setShowCreate(true)} className="mt-3 text-sm text-indigo-600 hover:underline">
+                Create your first branch
+              </button>
+            )}
           </div>
         ) : (
           <table className="w-full text-sm">

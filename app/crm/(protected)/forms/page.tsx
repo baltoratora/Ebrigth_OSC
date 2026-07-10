@@ -2,6 +2,8 @@
 
 import { useEffect, useState, type CSSProperties } from 'react'
 import { toast } from 'sonner'
+import { useBranchContext } from '@/components/crm/branch-context'
+import { useReadOnlyViewer } from '@/lib/crm/use-read-only-viewer'
 
 // Public trial form: 00 Ebright (OD) + 23 numbered branches.
 // HR is excluded (no pipeline).
@@ -27,9 +29,9 @@ const BRANCHES = [
   '18 Ebright (Taman Sri Gombak)',
   '19 Ebright (Kota Warisan)',
   '20 Ebright (Kajang TTDI Grove)',
-  '21 Ebright (Dataran Puchong Utama)',
+  '21 Ebright (Tropicana Sungai Buloh)',
   '22 Ebright (Puncak Jalil)',
-  '23 Ebright (Tropicana Sungai Buloh)',
+  '23 Ebright (Puchong Utama)',
 ]
 
 interface Child {
@@ -38,6 +40,7 @@ interface Child {
 }
 
 export default function FormsPage() {
+  const readOnly = useReadOnlyViewer()
   const [step, setStep] = useState<1 | 2 | 3 | 4 | 5>(1)
   const [parentName, setParentName] = useState('')
   const [parentPhone, setParentPhone] = useState('')
@@ -47,12 +50,14 @@ export default function FormsPage() {
   const [branch, setBranch] = useState('')
   const [remarks, setRemarks] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  // viewerRole drives whether the preferred-branch dropdown is locked or not.
-  // Branch managers can only submit form leads for their own branch — they
-  // see a single read-only option pre-filled with their assigned branch.
-  // Super admin / agency admin pick freely from the full BRANCHES list.
-  const [viewerRole, setViewerRole] = useState<string | null>(null)
-  const [allowedBranches, setAllowedBranches] = useState<string[]>([])
+  // The preferred-branch field follows the branch the user is CURRENTLY viewing
+  // in the topbar (shared via BranchContext). Branch managers can only submit
+  // for branches they're linked to, so:
+  //  - a specific branch selected in the topbar  → field LOCKED to that branch
+  //  - "all my branches" selected (multi-branch)  → field is a selectable list
+  //    of their own branches (they choose which one the lead belongs to)
+  // Super admin / agency admin always pick freely from the full BRANCHES list.
+  const { branches: ctxBranches, selectedBranch, viewerRole } = useBranchContext()
 
   useEffect(() => {
     // Sync children array length with numChildren selection
@@ -64,28 +69,23 @@ export default function FormsPage() {
     })
   }, [numChildren])
 
-  useEffect(() => {
-    // Fetch the caller's role + branch scope so we know whether to lock the
-    // preferred-branch dropdown. /api/crm/branches already scopes the returned
-    // branch list to whatever the user can see.
-    void fetch('/api/crm/branches')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data: { branches?: Array<{ name: string }>; viewerRole?: string } | null) => {
-        if (!data) return
-        setViewerRole(data.viewerRole ?? null)
-        const names = (data.branches ?? []).map((b) => b.name)
-        setAllowedBranches(names)
-        // For non-admins with exactly one branch, pre-fill it.
-        const isAdmin = data.viewerRole === 'SUPER_ADMIN' || data.viewerRole === 'AGENCY_ADMIN'
-        if (!isAdmin && names.length === 1) setBranch(names[0])
-      })
-      .catch(() => {/* fall back to the unlocked dropdown */})
-  }, [])
-
   const isAdmin = viewerRole === 'SUPER_ADMIN' || viewerRole === 'AGENCY_ADMIN'
+  const accessibleNames = ctxBranches.map((b) => b.name)
+  // Locked to the currently-viewed branch for non-admins who have a specific
+  // branch selected. Null = no lock (admin, or a multi-branch BM viewing "all").
+  const lockedBranchName = !isAdmin && selectedBranch ? selectedBranch.name : null
   // Admins see the canonical BRANCHES list; everyone else sees only the
-  // branches they're explicitly linked to (usually one).
-  const branchOptions = isAdmin ? BRANCHES : allowedBranches
+  // branches they're explicitly linked to.
+  const branchOptions = isAdmin ? BRANCHES : accessibleNames
+
+  useEffect(() => {
+    // Pre-fill / sync the preferred branch:
+    //  - locked → always mirror the viewed branch
+    //  - non-admin single-branch → that branch
+    // The multi-branch "all" case is left to the user's own selection.
+    if (lockedBranchName) setBranch(lockedBranchName)
+    else if (!isAdmin && accessibleNames.length === 1) setBranch(accessibleNames[0])
+  }, [lockedBranchName, isAdmin, accessibleNames.join('|')])
 
   const progress = step === 5 ? 100 : (step / 4) * 100
 
@@ -126,6 +126,10 @@ export default function FormsPage() {
   }
 
   async function submit() {
+    if (readOnly) {
+      toast.error('Read-only access — this account cannot submit leads.')
+      return
+    }
     if (!branch) {
       toast.error('Please select a branch')
       return
@@ -318,31 +322,44 @@ export default function FormsPage() {
               <Group label="Preferred branch near you">
                 <SelectField
                   value={branch}
-                  onChange={isAdmin ? setBranch : () => {/* locked for branch managers */}}
+                  onChange={lockedBranchName ? () => {/* locked to viewed branch */} : setBranch}
                   placeholder="Please select"
                   options={branchOptions}
-                  disabled={!isAdmin && allowedBranches.length <= 1}
+                  disabled={!!lockedBranchName || (!isAdmin && accessibleNames.length <= 1)}
                 />
-                {!isAdmin && allowedBranches.length <= 1 && (
+                {lockedBranchName ? (
+                  <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
+                    Locked to the branch you&rsquo;re currently viewing. Switch branches in the top bar to submit for another, or ask a super admin.
+                  </p>
+                ) : !isAdmin && accessibleNames.length <= 1 ? (
                   <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
                     Locked to your branch. Only super admins can submit on behalf of other branches.
                   </p>
-                )}
+                ) : !isAdmin ? (
+                  <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
+                    Choose which of your branches this lead belongs to.
+                  </p>
+                ) : null}
               </Group>
               <Group label="Remarks [If any]">
                 <TextareaField value={remarks} onChange={setRemarks} placeholder="Special needs (e.g. ADHD, autism)" />
               </Group>
+              {readOnly && (
+                <p style={{ marginTop: 16, fontSize: 13, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '8px 12px' }}>
+                  View-only access — this account cannot submit the form.
+                </p>
+              )}
               <button
                 type="button"
                 onClick={submit}
-                disabled={submitting}
+                disabled={submitting || readOnly}
                 style={{
                   ...btnBase,
                   marginTop: 16,
                   background: 'linear-gradient(135deg,#ed1c24 0%,#ff3d3d 100%)',
                   color: '#fff',
                   boxShadow: '0 14px 26px rgba(237,28,36,.18)',
-                  opacity: submitting ? 0.7 : 1,
+                  opacity: submitting || readOnly ? 0.7 : 1,
                 }}
               >
                 {submitting ? 'SUBMITTING…' : 'SUBMIT'}

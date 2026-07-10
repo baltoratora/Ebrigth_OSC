@@ -13,10 +13,15 @@ const STATUS_CONFIG: Record<string, { label: string; dotClass: string; pillClass
     dotClass: 'bg-slate-400',
     pillClass: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
   },
-  in_progress: {
-    label: 'In Progress',
+  approved: {
+    label: 'Approved',
     dotClass: 'bg-blue-500',
     pillClass: 'bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300',
+  },
+  in_progress: {
+    label: 'In Progress',
+    dotClass: 'bg-amber-500',
+    pillClass: 'bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
   },
   complete: {
     label: 'Complete',

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import {
   ChevronDown,
   Search,
@@ -13,8 +13,13 @@ import {
   Network,
   LayoutGrid,
   History,
+  Table as TableIcon,
+  Users,
+  MapPin,
 } from "lucide-react";
-import { saveWorkingHours } from "./actions";
+import { saveWorkingHours, saveWorkingHoursBatch } from "./actions";
+import { ADMIN_ROLES, ROLES, normalizeRole } from "@/lib/roles";
+import { branchesMatch } from "@/lib/constants";
 
 export interface DirectoryPerson {
   id: number;
@@ -51,10 +56,19 @@ export interface DirectoryDepartment {
   code: string | null;
 }
 
+export interface CurrentUser {
+  email: string;
+  role: string;
+  branchName: string | null;
+}
+
 interface DaySchedule {
   start: string;
   end: string;
+  location?: string; // "HQ" when working at HQ; absent means own branch
 }
+
+const WEEKDAYS = new Set<DayKey>(["Mon", "Tue", "Wed", "Thu", "Fri"]);
 type DayKey = "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun";
 type WeekSchedule = Record<DayKey, DaySchedule | null>;
 
@@ -79,6 +93,13 @@ const DAY_LABEL: Record<DayKey, string> = {
   Sun: "Sunday",
 };
 
+// Single-letter day labels for the per-node working-day chips. Convention
+// matches typical M T W T F S S weekday pickers — duplicate letters are
+// disambiguated by the tooltip (title attribute) on each chip.
+const DAY_INITIAL: Record<DayKey, string> = {
+  Mon: "M", Tue: "T", Wed: "W", Thu: "T", Fri: "F", Sat: "S", Sun: "S",
+};
+
 const DAY_ALIASES: Record<string, DayKey> = {
   mon: "Mon", monday: "Mon",
   tue: "Tue", tues: "Tue", tuesday: "Tue",
@@ -90,7 +111,16 @@ const DAY_ALIASES: Record<string, DayKey> = {
 };
 
 function parseWorkingHours(json: unknown): WeekSchedule {
-  if (!json || typeof json !== "object" || Array.isArray(json)) return STANDARD_OFFICE;
+  const strict = parseWorkingHoursStrict(json);
+  return strict ?? STANDARD_OFFICE;
+}
+
+// Strict variant of parseWorkingHours: returns null when the raw value is
+// missing, malformed, or contains no recognised day keys. Used by the chart
+// node day-strip so staff with no DB-stored hours render as "no days set"
+// instead of being silently shown as the default Mon–Fri 9–6 schedule.
+function parseWorkingHoursStrict(json: unknown): WeekSchedule | null {
+  if (!json || typeof json !== "object" || Array.isArray(json)) return null;
   const obj = json as Record<string, unknown>;
   const result: WeekSchedule = { Mon: null, Tue: null, Wed: null, Thu: null, Fri: null, Sat: null, Sun: null };
   let parsedAny = false;
@@ -112,11 +142,15 @@ function parseWorkingHours(json: unknown): WeekSchedule {
       const v = val as Record<string, unknown>;
       const start = typeof v.start === "string" ? v.start : (typeof v.from === "string" ? v.from : null);
       const end = typeof v.end === "string" ? v.end : (typeof v.to === "string" ? v.to : null);
-      if (start && end) { result[key] = { start, end }; parsedAny = true; }
+      if (start && end) {
+        const location = typeof v.location === "string" && v.location.trim() ? v.location.trim() : undefined;
+        result[key] = { start, end, ...(location ? { location } : {}) };
+        parsedAny = true;
+      }
     }
   }
 
-  return parsedAny ? result : STANDARD_OFFICE;
+  return parsedAny ? result : null;
 }
 
 function formatDayMonth(iso: string): string {
@@ -210,7 +244,7 @@ const TIER_AVATAR: Record<Tier, string> = {
 };
 
 const NODE_W = 188;
-const NODE_H = 124;
+const NODE_H = 172;
 const GAP_X = 56;
 const GAP_Y = 10;
 const PAD = 24;
@@ -395,16 +429,37 @@ function computeLayout(tree: Map<number, TreeNode>): {
 const ALL = "all";
 const CEO_DEPT_ID = -1;
 
-type ViewMode = "chart" | "card" | "timeline";
+type ViewMode = "chart" | "card" | "timeline" | "table";
+
+// Deterministic per-person avatar palette for the table view — gives each row
+// its own colour the way the design mockup does. Indexed by BranchStaff.id so
+// the same person keeps the same colour across re-renders.
+const TABLE_AVATAR_PALETTE = [
+  "bg-gradient-to-br from-purple-400 to-purple-500",
+  "bg-gradient-to-br from-teal-400 to-emerald-500",
+  "bg-gradient-to-br from-amber-400 to-orange-500",
+  "bg-gradient-to-br from-green-400 to-emerald-500",
+  "bg-gradient-to-br from-pink-400 to-rose-500",
+  "bg-gradient-to-br from-blue-400 to-indigo-500",
+  "bg-gradient-to-br from-fuchsia-400 to-pink-500",
+  "bg-gradient-to-br from-cyan-400 to-blue-500",
+];
+
+function tableAvatarColor(id: number): string {
+  const idx = ((id % TABLE_AVATAR_PALETTE.length) + TABLE_AVATAR_PALETTE.length) % TABLE_AVATAR_PALETTE.length;
+  return TABLE_AVATAR_PALETTE[idx];
+}
 
 export default function StaffDirectory({
   people,
   branches,
   departments,
+  currentUser,
 }: {
   people: DirectoryPerson[];
   branches: DirectoryBranch[];
   departments: DirectoryDepartment[];
+  currentUser: CurrentUser;
 }) {
   const hqBranch = useMemo(() => branches.find(isHQBranch) ?? null, [branches]);
 
@@ -422,49 +477,68 @@ export default function StaffDirectory({
   // Two-step picker: filterType (Branch / Dept) drives which list is shown
   // in the second dropdown. Only one of branchFilter / deptFilter is ever
   // active at a time — switching filterType resets the other.
-  const [filterType, setFilterType] = useState<"branch" | "dept">("branch");
+  const [filterType, setFilterType] = useState<"branch" | "dept" | "all">("branch");
   const [branchFilter, setBranchFilter] = useState<number | null>(null);
   const [deptFilter, setDeptFilter] = useState<number | null>(null);
-  // Working-hours filter: pick a day to restrict to staff who work that day;
-  // optionally add a time (HH:MM) to further restrict to staff whose shift
-  // covers that moment. Empty workingDay disables the filter entirely.
+  // Working-day filter: restrict to staff who work the chosen day. Empty
+  // workingDay disables the filter entirely.
   const [workingDay, setWorkingDay] = useState<DayKey | "">("");
-  const [workingTime, setWorkingTime] = useState<string>("");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [hoveredId, setHoveredId] = useState<number | null>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>("chart");
+  const [viewMode, setViewMode] = useState<ViewMode>("table");
+  const [batchOpen, setBatchOpen] = useState(false);
+
+  // Role-based edit permissions:
+  // - superadmin/admin/hr → can edit any person
+  // - branch manager → can edit own-branch staff + themselves only
+  // - all others (coaches, interns, etc.) → view-only
+  const canEdit = useCallback((person: DirectoryPerson): boolean => {
+    const role = normalizeRole(currentUser.role);
+    if (!role) return false;
+    if (ADMIN_ROLES.includes(role)) return true;
+    if (role === ROLES.BRANCH_MANAGER) {
+      if (branchesMatch(person.branchName, currentUser.branchName)) return true;
+      if (person.email.toLowerCase() === currentUser.email.toLowerCase()) return true;
+      return false;
+    }
+    return false;
+  }, [currentUser]);
+
+  const canBatchEdit = useMemo(() => {
+    return normalizeRole(currentUser.role) === ROLES.SUPER_ADMIN;
+  }, [currentUser]);
 
   // Show every canonical department in the dropdown, even if it has no staff
   // yet — the list is fixed by company structure, not by data presence.
   const populatedDepartments = departments;
 
   // Branch/dept scope — applies to every view (chart, card, timeline).
+  // Symmetric "All X" rule: when the type toggle is set to Branch and no
+  // specific branch is chosen, scope to staff who actually belong to a
+  // branch (branchId !== null); same for Dept mode. Otherwise the "All
+  // branches" view leaks dept-only people (HQ / IOP rows) and the "All
+  // departments" view leaks branch-only staff like PT Coaches.
   const branchDeptScope = useMemo(() => {
     return people.filter(p => {
       if (branchFilter !== null && p.branchId !== branchFilter) return false;
       if (deptFilter !== null && p.departmentId !== deptFilter) return false;
+      if (filterType === "branch" && branchFilter === null && p.branchId === null) return false;
+      if (filterType === "dept" && deptFilter === null && p.departmentId === null) return false;
       return true;
     });
-  }, [people, branchFilter, deptFilter]);
+  }, [people, branchFilter, deptFilter, filterType]);
 
-  // Adds the working-hours filter on top. Timeline view bypasses this
+  // Adds the working-day filter on top. Timeline view bypasses this
   // entirely — historical / departed staff don't have meaningful schedules,
-  // so the day/time filter only narrows chart and card views.
+  // so the day filter only narrows chart and card views.
   const scope = useMemo(() => {
     if (!workingDay) return branchDeptScope;
     return branchDeptScope.filter(p => {
       const sched = parseWorkingHours(p.workingHoursRaw);
-      const slot = sched[workingDay];
-      if (!slot) return false;
-      // Time filter is inclusive of start, exclusive of end — same
-      // convention used by attendance / shift code elsewhere.
-      if (workingTime && (workingTime < slot.start || workingTime >= slot.end)) {
-        return false;
-      }
-      return true;
+      return Boolean(sched[workingDay]);
     });
-  }, [branchDeptScope, workingDay, workingTime]);
+  }, [branchDeptScope, workingDay]);
 
   // Chart and card views only render currently-employed people; timeline includes
   // departures so it can show "Left {year}" events.
@@ -567,8 +641,25 @@ export default function StaffDirectory({
   return (
     <div className="min-h-full bg-slate-50">
       <div className="max-w-[1600px] mx-auto px-6 pt-4 pb-10">
-        <div className="flex flex-wrap items-center justify-end gap-3 mb-5">
-          <div className="flex flex-wrap items-center gap-2">
+        {/* Title at top, view-mode tabs above the filter row. */}
+        <div className="flex flex-wrap items-start justify-between gap-4 mb-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-emerald-600">
+              Meet the team
+            </p>
+            <h1 className="mt-1 text-3xl md:text-4xl font-semibold text-slate-900 tracking-tight">
+              Staff Directory
+            </h1>
+          </div>
+          <ViewModeToggle value={viewMode} onChange={setViewMode} />
+        </div>
+
+        <div className="flex gap-5">
+          <div
+            className="flex-1 min-w-0 bg-white border border-slate-200 rounded-2xl overflow-hidden flex flex-col"
+            style={{ minHeight: 600 }}
+          >
+            <div className="flex flex-wrap items-center justify-end gap-2 px-4 py-3">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" aria-hidden="true" />
               <input
@@ -593,15 +684,18 @@ export default function StaffDirectory({
               label="Filter by"
               value={filterType}
               onChange={(v) => {
-                const next = v as "branch" | "dept";
+                const next = v as "branch" | "dept" | "all";
                 setFilterType(next);
                 // Clear the other side's filter so switching modes always
                 // starts from "All" — avoids a stale dept filter hiding
-                // rows after the user switched to Branch mode.
+                // rows after the user switched to Branch mode. "All Location"
+                // spans every branch and department, so it clears both.
                 if (next === "branch") setDeptFilter(null);
-                else setBranchFilter(null);
+                else if (next === "dept") setBranchFilter(null);
+                else { setBranchFilter(null); setDeptFilter(null); }
               }}
               options={[
+                { value: "all",    label: "All"    },
                 { value: "branch", label: "Branch" },
                 { value: "dept",   label: "Dept"   },
               ]}
@@ -617,7 +711,7 @@ export default function StaffDirectory({
                   ...branches.map(b => ({ value: String(b.id), label: b.name })),
                 ]}
               />
-            ) : (
+            ) : filterType === "dept" ? (
               <FilterSelect
                 label="Department"
                 value={deptFilter === null ? ALL : String(deptFilter)}
@@ -627,50 +721,24 @@ export default function StaffDirectory({
                   ...populatedDepartments.map(d => ({ value: String(d.id), label: d.name })),
                 ]}
               />
-            )}
+            ) : null}
 
             {viewMode !== "timeline" && (
               <>
                 <FilterSelect
                   label="Working day"
                   value={workingDay}
-                  onChange={(v) => {
-                    setWorkingDay(v as DayKey | "");
-                    if (v === "") setWorkingTime("");
-                  }}
+                  onChange={(v) => setWorkingDay(v as DayKey | "")}
                   options={[
                     { value: "",    label: "Any day" },
                     ...DAYS_ORDER.map(d => ({ value: d, label: DAY_LABEL[d] })),
                   ]}
                 />
-
-                {workingDay && (
-                  <label className="relative inline-flex items-center bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm focus-within:ring-2 focus-within:ring-emerald-500 focus-within:border-transparent">
-                    <span className="text-slate-500 mr-1.5 whitespace-nowrap">At:</span>
-                    <input
-                      type="time"
-                      value={workingTime}
-                      onChange={(e) => setWorkingTime(e.target.value)}
-                      aria-label="Working time"
-                      className="bg-transparent text-slate-900 font-medium tabular-nums focus:outline-none cursor-pointer w-[90px]"
-                    />
-                    {workingTime && (
-                      <button
-                        type="button"
-                        onClick={() => setWorkingTime("")}
-                        aria-label="Clear time"
-                        className="ml-1 p-0.5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors duration-200 cursor-pointer"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    )}
-                  </label>
-                )}
               </>
             )}
 
             {/* "Clear filters" — appears only when at least one filter is
-                non-default. Resets search, branch/dept, and working-hours
+                non-default. Resets search, branch/dept, and working-day
                 state. The Branch/Dept type toggle is a UI mode, not a
                 filter, so it's preserved. */}
             {(query || branchFilter !== null || deptFilter !== null || workingDay) && (
@@ -681,7 +749,6 @@ export default function StaffDirectory({
                   setBranchFilter(null);
                   setDeptFilter(null);
                   setWorkingDay("");
-                  setWorkingTime("");
                 }}
                 className="inline-flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-600 hover:text-slate-900 hover:border-slate-300 hover:bg-slate-50 transition-colors duration-200 cursor-pointer"
                 aria-label="Clear all filters"
@@ -690,24 +757,19 @@ export default function StaffDirectory({
                 Clear
               </button>
             )}
-          </div>
-        </div>
 
-        <div className="flex gap-5">
-          <div
-            className="flex-1 min-w-0 bg-white border border-slate-200 rounded-2xl overflow-hidden flex flex-col"
-            style={{ minHeight: 600 }}
-          >
-            <div className="flex items-start justify-between gap-4 px-6 pt-6 pb-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wider text-emerald-600">
-                  Meet the team
-                </p>
-                <h1 className="mt-1 text-3xl md:text-4xl font-semibold text-slate-900 tracking-tight">
-                  Staff Directory
-                </h1>
-              </div>
-              <ViewModeToggle value={viewMode} onChange={setViewMode} />
+            {/* Batch edit — only visible to admins and branch managers */}
+            {canBatchEdit && (
+              <button
+                type="button"
+                onClick={() => setBatchOpen(true)}
+                aria-label="Batch edit working hours"
+                title="Batch edit working hours"
+                className="inline-flex items-center justify-center bg-emerald-600 text-white rounded-xl p-2 hover:bg-emerald-700 transition-colors duration-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
+              >
+                <Pencil className="w-4 h-4" aria-hidden="true" />
+              </button>
+            )}
             </div>
 
             <div
@@ -800,7 +862,22 @@ export default function StaffDirectory({
                   const hovered = hoveredId === p.id;
                   const matched = matchedIds !== null && matchedIds.has(p.id);
                   const dimmed = matchedIds !== null && !matchedIds.has(p.id);
-                  const tier = tierFromRank(positionRank(p.position));
+                  // Tier-based accent matches the employee details card: HOD/BM
+                  // (Lead) → emerald; everyone else → rose. Same isLead pivot the
+                  // employee card uses, so a chart node visually agrees with the
+                  // side panel that opens for the same person.
+                  const isLead = positionRank(p.position) <= 1;
+                  const sideBar = isLead ? "bg-emerald-500" : "bg-rose-500";
+                  const avatarBg = isLead ? "bg-emerald-100" : "bg-rose-100";
+                  const avatarText = isLead ? "text-emerald-700" : "text-rose-700";
+                  const defaultBorder = isLead ? "border-emerald-200" : "border-rose-200";
+                  const hoverBorder = isLead ? "border-emerald-300" : "border-rose-300";
+                  const activeBorder = isLead ? "border-emerald-500" : "border-rose-500";
+                  const dayActiveText = isLead ? "text-emerald-700" : "text-rose-700";
+                  const dayActiveDot = isLead ? "bg-emerald-500" : "bg-rose-500";
+                  const pillClass = isLead
+                    ? "bg-emerald-50 text-emerald-600"
+                    : "bg-rose-50 text-rose-600";
                   return (
                     <button
                       key={p.id}
@@ -815,29 +892,76 @@ export default function StaffDirectory({
                       aria-current={active ? "true" : undefined}
                       title={`${p.name} — ${p.position}`}
                       className={[
-                        "absolute group flex flex-col items-center gap-2 p-3 rounded-2xl bg-white transition-all duration-300 cursor-pointer",
-                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2",
+                        "absolute group flex flex-col items-center gap-2 p-3 rounded-[20px] bg-white overflow-hidden transition-all duration-300 cursor-pointer",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2",
+                        isLead ? "focus-visible:ring-emerald-500" : "focus-visible:ring-rose-500",
                         active
-                          ? "border-2 border-emerald-500 shadow-xl scale-[1.04] z-20"
+                          ? `border-[3px] ${activeBorder} shadow-lg scale-[1.04] z-20`
                           : matched
                             ? "border-2 border-amber-400 shadow-md scale-[1.02] z-10"
                             : hovered
-                              ? "border border-slate-200 shadow-lg scale-[1.03] z-10"
-                              : "border border-slate-200 hover:shadow-md z-0",
+                              ? `border-2 ${hoverBorder} shadow-md scale-[1.03] z-10`
+                              : `border-2 ${defaultBorder} shadow-sm hover:shadow-md z-0`,
                         dimmed ? "opacity-30" : "opacity-100",
                       ].join(" ")}
                       style={{ left, top, width: NODE_W, height: NODE_H }}
                     >
-                      <div className={`relative ${TIER_AVATAR[tier]} w-14 h-14 rounded-full flex items-center justify-center text-white font-semibold shadow-md ring-4 ring-white`}>
-                        <span className="text-base">{initials(p.name)}</span>
-                        <span className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full ${TIER_BG[tier]} ring-2 ring-white`} aria-hidden="true" />
+                      {/* Right-edge tier-coloured bar — mirrors the employee card
+                          sidebar pattern in compact form. overflow-hidden on the
+                          button clips the bar against the card's rounded corners. */}
+                      <span
+                        className={`absolute top-0 right-0 bottom-0 w-1.5 ${sideBar}`}
+                        aria-hidden="true"
+                      />
+
+                      <div className={`w-14 h-14 rounded-full ${avatarBg} flex items-center justify-center shadow-sm`}>
+                        <span className={`text-base font-bold ${avatarText}`}>{initials(p.name)}</span>
                       </div>
                       <p className="text-[13px] font-semibold text-slate-900 leading-tight text-center line-clamp-1 w-full px-1">
                         {p.name}
                       </p>
-                      <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${TIER_BADGE[tier]} truncate max-w-full`}>
+                      <span className={`text-[10px] font-semibold px-3 py-0.5 rounded-full ${pillClass} uppercase tracking-wider truncate max-w-full`}>
                         {p.position}
                       </span>
+                      {(() => {
+                        // Per-node working-day strip: all seven days are shown so the
+                        // off-days read as muted slots rather than absent letters.
+                        // Each day is a letter + small dot — the dot is tier-coloured
+                        // and filled when the person works that day, otherwise a
+                        // dim slate dot. Uses the strict parser so a staff member
+                        // with no DB-stored working hours renders as all-off rather
+                        // than the synthetic Mon–Fri 9–6 fallback. Duplicate initials
+                        // (T/T, S/S) are disambiguated by the full day name tooltip.
+                        const sched = parseWorkingHoursStrict(p.workingHoursRaw);
+                        return (
+                          <div className="flex items-center gap-1.5">
+                            {DAYS_ORDER.map(d => {
+                              const working = Boolean(sched?.[d]);
+                              return (
+                                <div
+                                  key={d}
+                                  title={DAY_LABEL[d]}
+                                  className="flex flex-col items-center gap-0.5"
+                                >
+                                  <span
+                                    className={`text-[10px] font-semibold leading-none ${
+                                      working ? dayActiveText : "text-slate-300"
+                                    }`}
+                                  >
+                                    {DAY_INITIAL[d]}
+                                  </span>
+                                  <span
+                                    className={`w-1 h-1 rounded-full ${
+                                      working ? dayActiveDot : "bg-slate-200"
+                                    }`}
+                                    aria-hidden="true"
+                                  />
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()}
                     </button>
                   );
                 })}
@@ -847,6 +971,14 @@ export default function StaffDirectory({
                 people={cardPeople}
                 selectedId={selectedId}
                 onSelect={(id) => setSelectedId(id === selectedId ? null : id)}
+              />
+            ) : viewMode === "table" ? (
+              <TableView
+                people={cardPeople}
+                selectedId={selectedId}
+                onSelect={(id) => setSelectedId(id === selectedId ? null : id)}
+                groupBy={filterType}
+                canEdit={canEdit}
               />
             ) : (
               <TimelineView
@@ -895,6 +1027,7 @@ export default function StaffDirectory({
                 <WorkingHoursCard
                   employmentId={selected.id}
                   schedule={selectedSchedule}
+                  canEdit={canEdit(selected)}
                 />
               </div>
             )}
@@ -907,6 +1040,16 @@ export default function StaffDirectory({
           </p>
         )}
       </div>
+
+      {batchOpen && (
+        <BatchEditModal
+          people={people}
+          branches={branches}
+          departments={populatedDepartments}
+          currentUser={currentUser}
+          onClose={() => setBatchOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1056,18 +1199,34 @@ function InfoRow({ label, value, mono }: { label: string; value: string; mono?: 
   );
 }
 
+/** Monday of the current week as YYYY-MM-DD (local time). Default "effective
+ *  from" since schedules change weekly/bi-weekly. */
+function mondayOfThisWeek(): string {
+  const now = new Date();
+  const day = now.getDay(); // 0 Sun … 6 Sat
+  const diff = day === 0 ? -6 : 1 - day; // step back to Monday
+  const mon = new Date(now.getFullYear(), now.getMonth(), now.getDate() + diff);
+  const y = mon.getFullYear();
+  const m = String(mon.getMonth() + 1).padStart(2, "0");
+  const d = String(mon.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 function WorkingHoursCard({
   employmentId,
   schedule,
+  canEdit,
 }: {
   employmentId: number;
   schedule: WeekSchedule;
+  canEdit: boolean;
 }) {
   const today = new Date().toLocaleDateString("en-US", { weekday: "short" }) as DayKey;
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<WeekSchedule>(schedule);
   const [error, setError] = useState<string | null>(null);
+  const [effectiveFrom, setEffectiveFrom] = useState<string>(mondayOfThisWeek());
   const [saving, startSaving] = useTransition();
 
   // Reset draft when a different person is selected (or schedule changes after save)
@@ -1075,6 +1234,7 @@ function WorkingHoursCard({
     setDraft(schedule);
     setEditing(false);
     setError(null);
+    setEffectiveFrom(mondayOfThisWeek());
   }, [schedule, employmentId]);
 
   const totalHours = totalWeeklyHours(draft);
@@ -1086,7 +1246,7 @@ function WorkingHoursCard({
   const handleSave = () => {
     setError(null);
     startSaving(async () => {
-      const res = await saveWorkingHours(employmentId, draft);
+      const res = await saveWorkingHours(employmentId, draft, effectiveFrom);
       if (res.ok) {
         setEditing(false);
       } else {
@@ -1126,7 +1286,7 @@ function WorkingHoursCard({
               {totalHours.toFixed(0)} hrs / week
             </p>
           </div>
-          {!editing ? (
+          {!editing && canEdit ? (
             <button
               type="button"
               onClick={() => setEditing(true)}
@@ -1135,7 +1295,7 @@ function WorkingHoursCard({
             >
               <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
             </button>
-          ) : (
+          ) : editing ? (
             <div className="flex items-center gap-1">
               <button
                 type="button"
@@ -1156,13 +1316,31 @@ function WorkingHoursCard({
                 <Check className="w-3.5 h-3.5" aria-hidden="true" />
               </button>
             </div>
-          )}
+          ) : null}
         </div>
       </div>
 
       {error && (
         <div className="px-4 py-2 bg-rose-50 border-b border-rose-100 text-[11px] text-rose-700">
           {error}
+        </div>
+      )}
+
+      {editing && (
+        <div className="px-4 py-3 border-b border-slate-100 bg-emerald-50/40">
+          <label className="block text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 mb-1">
+            Effective from
+          </label>
+          <input
+            type="date"
+            value={effectiveFrom}
+            onChange={e => setEffectiveFrom(e.target.value)}
+            className="w-full text-xs px-2 py-1.5 rounded-md border border-slate-200 bg-white text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+          />
+          <p className="text-[10px] text-slate-500 leading-snug mt-1">
+            These hours apply from this date onward. Earlier weeks keep the hours
+            that were set for them — past attendance won&apos;t be re-judged.
+          </p>
         </div>
       )}
 
@@ -1201,17 +1379,30 @@ function WorkingHoursCard({
                     )}
                   </p>
                   {editing && (
-                    <label className="inline-flex items-center gap-1 text-[10px] text-slate-500 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={isOff}
-                        onChange={(e) => {
-                          updateDay(d, e.target.checked ? null : { start: "09:00", end: "18:00" });
-                        }}
-                        className="w-3 h-3 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
-                      />
-                      Off
-                    </label>
+                    <div className="flex items-center gap-2">
+                      {!isOff && WEEKDAYS.has(d) && (
+                        <label className="inline-flex items-center gap-1 text-[10px] text-slate-500 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={slot.location === "HQ"}
+                            onChange={(e) => updateDay(d, { ...slot, location: e.target.checked ? "HQ" : undefined })}
+                            className="w-3 h-3 rounded text-teal-600 focus:ring-teal-500 cursor-pointer"
+                          />
+                          HQ
+                        </label>
+                      )}
+                      <label className="inline-flex items-center gap-1 text-[10px] text-slate-500 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={isOff}
+                          onChange={(e) => {
+                            updateDay(d, e.target.checked ? null : { start: "09:00", end: "18:00" });
+                          }}
+                          className="w-3 h-3 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                        />
+                        Off
+                      </label>
+                    </div>
                   )}
                 </div>
                 {editing ? (
@@ -1235,12 +1426,20 @@ function WorkingHoursCard({
                     </div>
                   )
                 ) : (
-                  <p className={[
-                    "text-[11px] mt-0.5",
-                    isOff ? "text-slate-400 italic" : "text-slate-600 tabular-nums",
-                  ].join(" ")}>
-                    {isOff ? "Day off" : `${format12h(slot.start)} – ${format12h(slot.end)}`}
-                  </p>
+                  <div>
+                    <p className={[
+                      "text-[11px] mt-0.5",
+                      isOff ? "text-slate-400 italic" : "text-slate-600 tabular-nums",
+                    ].join(" ")}>
+                      {isOff ? "Day off" : `${format12h(slot.start)} – ${format12h(slot.end)}`}
+                    </p>
+                    {!isOff && slot.location === "HQ" && (
+                      <p className="flex items-center gap-0.5 text-[10px] text-teal-600 font-medium mt-0.5">
+                        <MapPin className="w-2.5 h-2.5 shrink-0" aria-hidden="true" />
+                        HQ
+                      </p>
+                    )}
+                  </div>
                 )}
               </div>
             </li>
@@ -1248,6 +1447,322 @@ function WorkingHoursCard({
         })}
       </ul>
     </div>
+  );
+}
+
+// Batch working-hours editor. Targets a group of *active* staff by any
+// combination of branch / department / role, previews who will be affected,
+// then applies one shared working-week to all of them in a single action.
+function BatchEditModal({
+  people,
+  branches,
+  departments,
+  currentUser,
+  onClose,
+}: {
+  people: DirectoryPerson[];
+  branches: DirectoryBranch[];
+  departments: DirectoryDepartment[];
+  currentUser: CurrentUser;
+  onClose: () => void;
+}) {
+  const isBM = normalizeRole(currentUser.role) === ROLES.BRANCH_MANAGER;
+  // For BM: lock the branch filter to their own branch so they can't touch other branches.
+  const bmBranch = isBM
+    ? branches.find(b => branchesMatch(b.name, currentUser.branchName)) ?? null
+    : null;
+
+  const [branchId, setBranchId] = useState<number | null>(bmBranch ? bmBranch.id : null);
+  const [deptId, setDeptId] = useState<number | null>(null);
+  const [position, setPosition] = useState<string>(""); // "" = any role
+  const [draft, setDraft] = useState<WeekSchedule>(STANDARD_OFFICE);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const [saving, startSaving] = useTransition();
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // Distinct active roles for the role dropdown.
+  const positions = useMemo(() => {
+    const set = new Set<string>();
+    people.forEach(p => { if (p.isActive && p.position) set.add(p.position); });
+    return [...set].sort();
+  }, [people]);
+
+  // Active staff matching every chosen criterion. BM's scope is always
+  // restricted to their own branch regardless of the branch filter value.
+  const matched = useMemo(() => {
+    return people.filter(p => {
+      if (!p.isActive) return false;
+      if (branchId !== null && p.branchId !== branchId) return false;
+      if (deptId !== null && p.departmentId !== deptId) return false;
+      if (position && p.position !== position) return false;
+      // BM: only their own branch staff (belt-and-suspenders on top of branchId lock)
+      if (isBM && !branchesMatch(p.branchName, currentUser.branchName)) return false;
+      return true;
+    });
+  }, [people, branchId, deptId, position, isBM, currentUser.branchName]);
+
+  const totalHours = totalWeeklyHours(draft);
+
+  const updateDay = (day: DayKey, slot: DaySchedule | null) => {
+    setDraft(prev => ({ ...prev, [day]: slot }));
+    setDone(null);
+  };
+
+  const handleApply = () => {
+    setError(null);
+    setDone(null);
+    if (matched.length === 0) {
+      setError("No staff match the selected filters.");
+      return;
+    }
+    startSaving(async () => {
+      const res = await saveWorkingHoursBatch(matched.map(p => p.id), draft);
+      if (res.ok) {
+        setDone(`Updated working hours for ${res.count ?? matched.length} staff.`);
+      } else {
+        setError(res.error ?? "Failed to save.");
+      }
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div
+        className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Batch edit working hours"
+        className="relative bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col"
+      >
+        {/* Header */}
+        <div className="flex items-center gap-3 px-6 py-4 border-b border-slate-100">
+          <div className="w-9 h-9 rounded-lg bg-emerald-600 flex items-center justify-center text-white shrink-0">
+            <Users className="w-4 h-4" aria-hidden="true" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h2 className="text-base font-semibold text-slate-900 leading-tight">
+              Batch edit working hours
+            </h2>
+            <p className="text-xs text-slate-500">
+              Pick who to update, then set one schedule for all of them.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="p-1.5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors duration-200 cursor-pointer"
+          >
+            <X className="w-4 h-4" aria-hidden="true" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto grid md:grid-cols-2 gap-0 divide-y md:divide-y-0 md:divide-x divide-slate-100">
+          {/* Left: target criteria + preview */}
+          <div className="p-6 space-y-4">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+              1. Select staff
+            </p>
+
+            {isBM && bmBranch ? (
+              <div className="space-y-1">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-slate-500">Branch</p>
+                <div className="w-full px-3 py-2 text-sm font-medium text-slate-700 bg-slate-100 border border-slate-200 rounded-lg">
+                  {bmBranch.name}
+                </div>
+              </div>
+            ) : (
+              <ModalSelect
+                label="Branch"
+                value={branchId === null ? ALL : String(branchId)}
+                onChange={(v) => { setBranchId(v === ALL ? null : Number(v)); setDone(null); }}
+                options={[
+                  { value: ALL, label: "All branches" },
+                  ...branches.map(b => ({ value: String(b.id), label: b.name })),
+                ]}
+              />
+            )}
+            <ModalSelect
+              label="Department"
+              value={deptId === null ? ALL : String(deptId)}
+              onChange={(v) => { setDeptId(v === ALL ? null : Number(v)); setDone(null); }}
+              options={[
+                { value: ALL, label: "All departments" },
+                ...departments.map(d => ({ value: String(d.id), label: d.name })),
+              ]}
+            />
+            <ModalSelect
+              label="Role"
+              value={position || ALL}
+              onChange={(v) => { setPosition(v === ALL ? "" : v); setDone(null); }}
+              options={[
+                { value: ALL, label: "Any role" },
+                ...positions.map(p => ({ value: p, label: p })),
+              ]}
+            />
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+              <p className="text-xs font-semibold text-slate-700">
+                {matched.length} staff selected
+              </p>
+              {matched.length > 0 && (
+                <div className="mt-2 max-h-40 overflow-y-auto flex flex-wrap gap-1.5">
+                  {matched.map(p => (
+                    <span
+                      key={p.id}
+                      title={`${p.name} — ${p.position}`}
+                      className="inline-flex items-center max-w-full px-2 py-0.5 rounded-md bg-white border border-slate-200 text-[11px] text-slate-700 truncate"
+                    >
+                      {p.name}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Right: schedule editor */}
+          <div className="p-6 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                2. Set schedule
+              </p>
+              <span className="text-xs text-slate-500 font-medium tabular-nums">
+                {totalHours.toFixed(0)} hrs / week
+              </span>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => { setDraft(STANDARD_OFFICE); setDone(null); }}
+                className="text-[11px] font-medium px-2.5 py-1 rounded-md bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition-colors duration-200 cursor-pointer"
+              >
+                Mon–Fri 9–6
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setDraft({ Mon: null, Tue: null, Wed: null, Thu: null, Fri: null, Sat: null, Sun: null });
+                  setDone(null);
+                }}
+                className="text-[11px] font-medium px-2.5 py-1 rounded-md bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors duration-200 cursor-pointer"
+              >
+                Clear all
+              </button>
+            </div>
+
+            <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200 overflow-hidden">
+              {DAYS_ORDER.map(d => {
+                const slot = draft[d];
+                const isOff = slot === null;
+                return (
+                  <li key={d} className="flex items-center gap-3 px-3 py-2">
+                    <span className="w-9 text-xs font-semibold text-slate-700 shrink-0">
+                      {d}
+                    </span>
+                    {isOff ? (
+                      <span className="flex-1 text-[11px] text-slate-400 italic">Day off</span>
+                    ) : (
+                      <div className="flex-1 flex items-center gap-1.5">
+                        <input
+                          type="time"
+                          value={slot.start}
+                          onChange={(e) => updateDay(d, { ...slot, start: e.target.value })}
+                          className="bg-white border border-slate-200 rounded-md px-1.5 py-0.5 text-[11px] text-slate-900 tabular-nums focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-transparent w-[88px]"
+                        />
+                        <span className="text-slate-400 text-[11px]">–</span>
+                        <input
+                          type="time"
+                          value={slot.end}
+                          onChange={(e) => updateDay(d, { ...slot, end: e.target.value })}
+                          className="bg-white border border-slate-200 rounded-md px-1.5 py-0.5 text-[11px] text-slate-900 tabular-nums focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-transparent w-[88px]"
+                        />
+                      </div>
+                    )}
+                    <label className="inline-flex items-center gap-1 text-[10px] text-slate-500 cursor-pointer select-none shrink-0">
+                      <input
+                        type="checkbox"
+                        checked={isOff}
+                        onChange={(e) => updateDay(d, e.target.checked ? null : { start: "09:00", end: "18:00" })}
+                        className="w-3 h-3 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                      />
+                      Off
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-slate-100 flex items-center gap-3">
+          <div className="flex-1 min-w-0 text-xs">
+            {error && <span className="text-rose-600">{error}</span>}
+            {done && <span className="text-emerald-700 font-medium">{done}</span>}
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="px-4 py-2 rounded-xl text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors duration-200 cursor-pointer disabled:opacity-50"
+          >
+            {done ? "Close" : "Cancel"}
+          </button>
+          <button
+            type="button"
+            onClick={handleApply}
+            disabled={saving || matched.length === 0}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-700 transition-colors duration-200 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Check className="w-4 h-4" aria-hidden="true" />
+            {saving ? "Applying…" : `Apply to ${matched.length}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ModalSelect({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: Array<{ value: string; label: string }>;
+}) {
+  return (
+    <label className="block">
+      <span className="block text-[11px] font-medium text-slate-500 mb-1">{label}</span>
+      <div className="relative">
+        <select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="appearance-none w-full bg-white border border-slate-200 rounded-xl pl-3 pr-8 py-2 text-sm text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent cursor-pointer"
+        >
+          {options.map(o => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+        <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" aria-hidden="true" />
+      </div>
+    </label>
   );
 }
 
@@ -1259,6 +1774,7 @@ function ViewModeToggle({
   onChange: (v: ViewMode) => void;
 }) {
   const options = [
+    { value: "table" as const, label: "Table", Icon: TableIcon },
     { value: "chart" as const, label: "Chart", Icon: Network },
     { value: "card" as const, label: "Card", Icon: LayoutGrid },
     { value: "timeline" as const, label: "Timeline", Icon: History },
@@ -1348,6 +1864,191 @@ function CardGridView({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function defaultShiftHours(branchName: string | null, day: string): { start: string; end: string } {
+  if (!branchName) {
+    // HQ defaults
+    if (day === "Sat") return { start: "09:00", end: "19:00" };
+    return { start: "09:00", end: "18:00" };
+  }
+  // Branch defaults
+  if (day === "Thu" || day === "Fri") return { start: "13:00", end: "22:00" };
+  if (day === "Sat" || day === "Sun") return { start: "08:45", end: "19:15" };
+  return { start: "09:00", end: "18:00" }; // Wed + Mon/Tue fallback
+}
+
+function TableView({
+  people,
+  selectedId,
+  onSelect,
+  groupBy,
+  canEdit,
+}: {
+  people: DirectoryPerson[];
+  selectedId: number | null;
+  onSelect: (id: number) => void;
+  groupBy: "branch" | "dept" | "all";
+  canEdit: (p: DirectoryPerson) => boolean;
+}) {
+  const [localHours, setLocalHours] = useState<Record<number, unknown>>({});
+  const [toggling, setToggling] = useState<Set<string>>(new Set());
+
+  async function handleDayToggle(person: DirectoryPerson, day: string) {
+    const cellKey = `${person.id}-${day}`;
+    if (toggling.has(cellKey)) return;
+    const baseRaw = (localHours[person.id] ?? person.workingHoursRaw) as Record<string, unknown> | null | undefined;
+    const newSchedule: Record<string, unknown> = {};
+    for (const d of DAYS_ORDER) {
+      newSchedule[d] = (baseRaw as Record<string, unknown>)?.[d] ?? null;
+    }
+    const currentSlot = newSchedule[day];
+    const isOn = Boolean(currentSlot) && typeof currentSlot === "object" && "start" in (currentSlot as object);
+    newSchedule[day] = isOn ? null : defaultShiftHours(person.branchName, day);
+    setLocalHours(prev => ({ ...prev, [person.id]: newSchedule }));
+    setToggling(prev => new Set([...prev, cellKey]));
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const result = await saveWorkingHours(person.id, newSchedule, today);
+      if (!result.ok) {
+        setLocalHours(prev => { const n = { ...prev }; delete n[person.id]; return n; });
+      }
+    } catch {
+      setLocalHours(prev => { const n = { ...prev }; delete n[person.id]; return n; });
+    } finally {
+      setToggling(prev => { const n = new Set(prev); n.delete(cellKey); return n; });
+    }
+  }
+  // Header label per filter mode. "all" shows a combined column (real branch
+  // for branch staff, department for HQ staff who have no branch), so it reads
+  // "Branch / Department". "dept" → Department, "branch" → Branch.
+  const groupLabel =
+    groupBy === "dept"  ? "Department"
+    : groupBy === "all" ? "Branch / Department"
+    : "Branch";
+  if (people.length === 0) {
+    return (
+      <div className="p-12 text-center text-sm text-slate-500">
+        No team members match this search.
+      </div>
+    );
+  }
+
+  // Sort by hierarchy then start date — same ordering as Card view, so toggling
+  // between table and cards doesn't shuffle people around.
+  const sorted = [...people].sort((a, b) => {
+    const ra = positionRank(a.position);
+    const rb = positionRank(b.position);
+    if (ra !== rb) return ra - rb;
+    if (a.startDate && b.startDate) return a.startDate.localeCompare(b.startDate);
+    if (a.startDate) return -1;
+    if (b.startDate) return 1;
+    return a.id - b.id;
+  });
+
+  return (
+    <div className="px-6 py-6">
+      <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
+        <table className="w-full border-collapse text-sm">
+          <thead>
+            <tr className="bg-slate-50/70 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+              <th className="px-5 py-3 text-left">Name</th>
+              <th className="px-3 py-3 text-left">{groupLabel}</th>
+              {DAYS_ORDER.map(d => (
+                <th key={d} className="px-1.5 py-3 text-center w-10" title={DAY_LABEL[d]}>
+                  {DAY_INITIAL[d]}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map(p => {
+              const active = selectedId === p.id;
+              const schedule = parseWorkingHoursStrict(localHours[p.id] ?? p.workingHoursRaw);
+              const editable = canEdit(p);
+              const avatarBg = tableAvatarColor(p.id);
+              return (
+                <tr
+                  key={p.id}
+                  onClick={() => onSelect(p.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onSelect(p.id);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={active}
+                  className={[
+                    "border-t border-slate-100 cursor-pointer transition-colors outline-none",
+                    "focus-visible:bg-emerald-50/40",
+                    active ? "bg-emerald-50/60" : "hover:bg-slate-50",
+                  ].join(" ")}
+                >
+                  <td className="px-5 py-2.5">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className={`w-9 h-9 rounded-full ${avatarBg} flex items-center justify-center text-white text-[11px] font-semibold shrink-0 shadow-sm`}>
+                        {initials(p.name)}
+                      </div>
+                      <span className="text-sm text-slate-900 truncate max-w-[240px]" title={p.name}>
+                        {p.name}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2.5 text-sm text-slate-700">
+                    {groupBy === "dept"
+                      ? (p.departmentName ?? "—")
+                      // Branch column: HQ isn't a real branch (it houses
+                      // departments), so HQ staff have no branchName — show
+                      // their department instead. Real branches show as-is.
+                      : (p.branchName ?? p.departmentName ?? "—")}
+                  </td>
+                  {DAYS_ORDER.map(d => {
+                    const works = Boolean(schedule?.[d]);
+                    const cellKey = `${p.id}-${d}`;
+                    const isToggling = toggling.has(cellKey);
+                    return (
+                      <td key={d} className="px-1.5 py-2.5 text-center">
+                        {editable ? (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); void handleDayToggle(p, d); }}
+                            disabled={isToggling}
+                            title={works ? `Click to remove ${DAY_LABEL[d]}` : `Click to add ${DAY_LABEL[d]}`}
+                            className={[
+                              "inline-flex items-center justify-center w-7 h-7 rounded-md transition-colors",
+                              works ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-200" : "text-slate-300 hover:bg-slate-100 hover:text-slate-500",
+                              isToggling ? "opacity-50 cursor-wait" : "cursor-pointer",
+                            ].join(" ")}
+                          >
+                            {isToggling
+                              ? <span className="block w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                              : works
+                                ? <Check className="w-3.5 h-3.5" aria-hidden="true" />
+                                : <span aria-label={`Off ${DAY_LABEL[d]}`}>—</span>
+                            }
+                          </button>
+                        ) : works ? (
+                          <span
+                            className="inline-flex items-center justify-center w-7 h-7 rounded-md bg-emerald-100 text-emerald-700"
+                            title={`Works ${DAY_LABEL[d]}`}
+                          >
+                            <Check className="w-3.5 h-3.5" aria-hidden="true" />
+                          </span>
+                        ) : (
+                          <span className="text-slate-300" aria-label={`Off ${DAY_LABEL[d]}`}>—</span>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

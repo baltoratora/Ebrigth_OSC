@@ -18,6 +18,7 @@ import {
   Tag,
   SlidersHorizontal,
   MapPin,
+  Map,
   Key,
   FileText,
   CreditCard,
@@ -28,6 +29,8 @@ import {
   BarChart3,
 } from 'lucide-react'
 import { cn } from '@/lib/crm/utils'
+import { isOperationAccount, isAgencyViewAccount } from '@/lib/crm/operation-accounts'
+import { scopedDepartmentForEmail } from '@/lib/crm/departments'
 import { NavItem } from './nav-item'
 import { authClient } from '@/lib/crm/auth-client'
 import { signOut as nextAuthSignOut } from 'next-auth/react'
@@ -63,7 +66,7 @@ interface NavItemDef {
   href: string
   label: string
   icon: React.ComponentType<{ className?: string }>
-  roles?: Array<'super_admin' | 'platform_admin' | 'user'>
+  roles?: Array<'super_admin' | 'platform_admin' | 'user' | 'regional_manager'>
   /**
    * If true, hide this item when the topbar is set to a specific branch view
    * (regardless of the user's role). Used for tenant-wide admin pages that
@@ -84,10 +87,14 @@ const LEAD_NAV_ITEMS: NavItemDef[] = [
   // Branches — tenant-wide admin page. Adding a branch here auto-creates
   // its kanban pipeline + tkt_branch row so the new entry shows up
   // everywhere (topbar switcher, kanban, ticket form, dashboard chart).
-  { href: '/crm/branches',      label: 'Branches',         icon: Building2, roles: ['super_admin'],                    hideInBranchView: true },
-  { href: '/crm/automations',   label: 'Automations',      icon: Zap,       roles: ['super_admin'],                    hideInBranchView: true },
-  { href: '/crm/analytics',     label: 'Analytics',        icon: BarChart3, roles: ['super_admin', 'platform_admin'],  hideInBranchView: true },
-  { href: '/crm/integrations',  label: 'Integrations',     icon: Plug,      roles: ['super_admin'],                    hideInBranchView: true },
+  { href: '/crm/branches',      label: 'Branches',         icon: Building2, roles: ['super_admin'],                       hideInBranchView: true },
+  // Region — regional performance breakdown. Super admins see all regions
+  // (A/B/C); REGIONAL_MANAGER users see only their own region (derived from
+  // the region of their crm_user_branch links).
+  { href: '/crm/region',        label: 'Region',           icon: Map,       roles: ['super_admin', 'regional_manager'],   hideInBranchView: true },
+  { href: '/crm/automations',   label: 'Automations',      icon: Zap,       roles: ['super_admin'],                       hideInBranchView: true },
+  { href: '/crm/analytics',     label: 'Analytics',        icon: BarChart3, roles: ['super_admin', 'platform_admin'],     hideInBranchView: true },
+  { href: '/crm/integrations',  label: 'Integrations',     icon: Plug,      roles: ['super_admin'],                       hideInBranchView: true },
   { href: '/crm/notifications', label: 'Notifications',    icon: Bell },
 ]
 
@@ -105,7 +112,7 @@ const TICKET_NAV_ITEMS: NavItemDef[] = [
   // Earlier the href pointed at a non-existent route, causing the [id] dynamic
   // route to catch "dashboard" as a UUID and return "Ticket not found".
   { href: '/crm/tickets/dashboard', label: 'Dashboard',     icon: LayoutDashboard },
-  { href: '/crm/tickets/kanban',    label: 'Opportunities', icon: Kanban,    roles: ['super_admin'], hideInBranchView: true },
+  { href: '/crm/tickets/kanban',    label: 'Opportunities', icon: Kanban,    roles: ['super_admin', 'platform_admin'], hideInBranchView: true },
   { href: '/crm/tickets',           label: 'My Tickets',    icon: Ticket },
   { href: '/crm/tickets/new',       label: 'New Ticket',    icon: Plus },
   { href: '/crm/tkt-platforms',     label: 'Platforms',     icon: Layout,    roles: ['super_admin'], hideInBranchView: true },
@@ -130,14 +137,39 @@ function pickNavForPath(pathname: string, stickyModule: 'tickets' | 'leads' | nu
   return LEAD_NAV_ITEMS
 }
 
+// ─── Operation accounts ───────────────────────────────────────────────────────
+// Operation/marketing oversight accounts (see lib/crm/operation-accounts.ts) are
+// elevated (they view all branches) but get a deliberately trimmed sidebar: lead
+// oversight only, no tenant admin.
+
+// The ONLY sidebar items an operation account may see (by label). Notably
+// includes Region + Analytics (normally admin-gated) but excludes Branches,
+// Automations, Integrations, and Settings.
+const OPERATION_ALLOWED_LABELS = new Set<string>([
+  'Dashboard', 'Contacts', 'Opportunities', 'Forms', 'Region', 'Analytics', 'Notifications',
+])
+
 function filterNav(
   items: NavItemDef[],
   role: string | null | undefined,
   inBranchView: boolean,
+  userEmail: string | null | undefined,
 ): NavItemDef[] {
+  // Operation accounts get a fixed lead-oversight allowlist — EXCEPT department
+  // accounts (operation@ is both a department and an operation account), which
+  // need their ticket module too and so fall through to normal role filtering.
+  if (!scopedDepartmentForEmail(userEmail) && isOperationAccount(userEmail)) {
+    return items.filter((item) => OPERATION_ALLOWED_LABELS.has(item.label))
+  }
   // Treat unknown / null role as 'user'
-  const r = (role ?? 'user') as 'super_admin' | 'platform_admin' | 'user'
+  const r = (role ?? 'user') as 'super_admin' | 'platform_admin' | 'user' | 'regional_manager'
+  // Scoped department accounts (incl. the agency-view CEO, who runs at
+  // super-level nav) are department ticket triagers — never tenant ticket
+  // admins — so hide the ticket super-management pages from them.
+  const scopedDept = scopedDepartmentForEmail(userEmail)
+  const TICKET_SUPER_ONLY = new Set(['/crm/tkt-platforms', '/crm/tkt-branches', '/crm/tkt-users'])
   return items.filter((item) => {
+    if (scopedDept && TICKET_SUPER_ONLY.has(item.href)) return false
     if (item.roles && !item.roles.includes(r)) return false
     if (inBranchView && item.hideInBranchView) return false
     return true
@@ -255,8 +287,23 @@ export function CrmSidebar({ collapsed, session }: SidebarProps) {
     }
   }, [pathname])
 
-  const navItems = filterNav(pickNavForPath(pathname, stickyModule), user.tktRole, inBranchView)
-  const canSeeSettings = !inBranchView && (user.tktRole ?? 'user') !== 'user'
+  // Tickets-only departments (HR / Finance / Academy / CEO) never see the Lead
+  // module — force the ticket nav. Marketing / Operation keep the lead module.
+  const dept = scopedDepartmentForEmail(user.email)
+  // Agency-view accounts (e.g. the CEO) keep the full Lead module even though
+  // they're also a scoped ticket department.
+  const isTicketsOnlyDept = !!dept && !dept.hasLeadSystem && !isAgencyViewAccount(user.email)
+  const baseNav = isTicketsOnlyDept ? TICKET_NAV_ITEMS : pickNavForPath(pathname, stickyModule)
+  const navItems = filterNav(baseNav, user.tktRole, inBranchView, user.email)
+  // Settings is admin-only. Regional managers (and basic users) work like a
+  // branch manager — branch/region data + the Region view — without the
+  // tenant settings tree, so they don't see the Settings accordion.
+  // Operation accounts never see Settings (lead oversight only).
+  const canSeeSettings =
+    !inBranchView &&
+    !isOperationAccount(user.email) &&
+    (!dept || isAgencyViewAccount(user.email)) &&
+    (user.tktRole === 'super_admin' || user.tktRole === 'platform_admin')
 
   return (
     <aside className="flex h-full flex-col bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800">
@@ -296,7 +343,7 @@ export function CrmSidebar({ collapsed, session }: SidebarProps) {
         </span>
         {!collapsed && (
           <span className="font-semibold text-slate-900 dark:text-white tracking-tight">
-            Ebright CRM
+            Ebright Nexus
           </span>
         )}
       </div>
@@ -316,7 +363,7 @@ export function CrmSidebar({ collapsed, session }: SidebarProps) {
         {/* Settings accordion — hidden for basic users */}
         {canSeeSettings && <div>
           <button
-            onClick={() => setSettingsOpen((o) => !o)}
+            onClick={() => { setSettingsOpen(true); router.push('/crm/settings/profile') }}
             title={collapsed ? 'Settings' : undefined}
             className={cn(
               'group flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',

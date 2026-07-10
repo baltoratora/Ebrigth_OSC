@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { useCurrentUser } from "@pcm/_hooks/useCurrentUser";
 
 /** Route-group guard: any visitor under /pcm-system/bm/* must be BM with a branch.
@@ -9,18 +10,24 @@ import { useCurrentUser } from "@pcm/_hooks/useCurrentUser";
 export default function BMLayout({ children }: { children: React.ReactNode }) {
   const user = useCurrentUser();
   const router = useRouter();
+  const { status } = useSession();
 
   useEffect(() => {
-    if (!user) {
+    // Don't bounce to /login while the session is still hydrating on refresh
+    // (SessionSync populates the PCM store right after). Only redirect when the
+    // session is definitively unauthenticated.
+    if (status === "loading") return;
+    if (status === "unauthenticated") {
       router.replace("/login");
-    } else if (user.role !== "BM" && user.role !== "MKT") {
+    } else if (user && user.role !== "BM" && user.role !== "MKT" && user.role !== "RM") {
       router.replace("/pcm-system/academy");
     }
-  }, [user, router]);
+  }, [user, status, router]);
 
   if (!user) return null;
-  if (user.role !== "BM" && user.role !== "MKT") return null;
-  // BMs must have a branch; MKT can browse without one.
+  // BM (own branch), RM (their region), and MKT (all) can use the BM-side views.
+  if (user.role !== "BM" && user.role !== "MKT" && user.role !== "RM") return null;
   if (user.role === "BM" && !user.branch) return null;
+  if (user.role === "RM" && !user.region) return null;
   return <>{children}</>;
 }

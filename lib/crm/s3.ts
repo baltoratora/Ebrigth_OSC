@@ -21,6 +21,9 @@ const ALLOWED_MIME = new Set([
   'application/vnd.ms-excel',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'image/jpeg',
+  // Some browsers/OSes report .jpg as the non-standard image/jpg — accept it
+  // so those uploads don't get rejected at validation.
+  'image/jpg',
   'image/png',
   'image/gif',
   'image/webp',
@@ -71,6 +74,39 @@ export async function getPresignedUploadUrl(opts: {
   )
 
   return { url, s3Key }
+}
+
+/**
+ * Server-side upload. The browser sends the file to our own API route, which
+ * then streams it to S3 with the SDK — so the upload never makes a cross-origin
+ * browser→S3 request and is immune to bucket-CORS misconfiguration (the cause
+ * of the "Failed to fetch" errors on the old presigned direct-PUT path).
+ */
+export async function uploadToS3(opts: {
+  tenantId: string
+  ticketId: string
+  fileName: string
+  mimeType: string
+  body: Buffer
+}): Promise<{ s3Key: string }> {
+  if (!ALLOWED_MIME.has(opts.mimeType)) {
+    throw new Error(`File type not allowed: ${opts.mimeType}`)
+  }
+  if (opts.body.byteLength > MAX_SIZE_BYTES) {
+    throw new Error('File exceeds 25 MB limit')
+  }
+  const ext = opts.fileName.split('.').pop() ?? 'bin'
+  const s3Key = `tickets/${opts.tenantId}/${opts.ticketId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+  const client = getClient()
+  await client.send(
+    new PutObjectCommand({
+      Bucket: BUCKET,
+      Key: s3Key,
+      Body: opts.body,
+      ContentType: opts.mimeType,
+    }),
+  )
+  return { s3Key }
 }
 
 /**

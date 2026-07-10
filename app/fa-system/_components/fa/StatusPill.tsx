@@ -1,7 +1,7 @@
 ﻿import { EventStatus, InvitationStatus } from "@fa/_types";
 
 type PillTone = "draft" | "open" | "closed" | "ongoing" | "completed"
-              | "invited" | "confirmed" | "declined" | "attended" | "no_show"
+              | "invited" | "confirmed" | "declined" | "attended" | "no_show" | "walk_in"
               | "neutral" | "success" | "warning" | "danger" | "info";
 
 const TONES: Record<PillTone, { bg: string; text: string; dot: string; label: string }> = {
@@ -17,6 +17,7 @@ const TONES: Record<PillTone, { bg: string; text: string; dot: string; label: st
   declined:  { bg: "bg-danger-soft",text: "text-danger",     dot: "bg-danger",     label: "Declined" },
   attended:  { bg: "bg-success-soft",text: "text-success",   dot: "bg-success",    label: "Attended" },
   no_show:   { bg: "bg-danger-soft",text: "text-danger",     dot: "bg-danger",     label: "No show" },
+  walk_in:   { bg: "bg-success-soft",text: "text-success",   dot: "bg-success",    label: "Walk-in" },
   // Generic
   neutral:   { bg: "bg-ivory-200",  text: "text-ink-600",  dot: "bg-ink-300",  label: "" },
   success:   { bg: "bg-success-soft",text: "text-success",   dot: "bg-success",    label: "" },

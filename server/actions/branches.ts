@@ -1,5 +1,6 @@
 'use server'
 
+import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/crm/db'
 import { logAudit } from '@/lib/crm/audit'
 import { scopedPrisma } from '@/lib/crm/tenancy'
@@ -41,10 +42,12 @@ const LEAD_PIPELINE_STAGES = [
   { name: 'Follow-Up 2nd Attempt', shortCode: 'FU2',   color: 'slate'   },
   { name: 'Follow-Up 3rd Attempt', shortCode: 'FU3',   color: 'slate'   },
   { name: 'Reschedule',            shortCode: 'RSD',   color: 'slate'   },
+  { name: 'Trial Buffer',          shortCode: 'CTB',   color: 'cyan'    },
   { name: 'Confirmed for Trial',   shortCode: 'CT',    color: 'emerald' },
   { name: 'Confirmed No-Show',     shortCode: 'CNS',   color: 'amber'   },
   { name: 'Show-Up',               shortCode: 'SU',    color: 'emerald' },
   { name: 'Show-Up No-Enroll',     shortCode: 'SNE',   color: 'yellow'  },
+  { name: 'Enroll Buffer',         shortCode: 'ENRB',  color: 'cyan'    },
   { name: 'Enrolled',              shortCode: 'ENR',   color: 'emerald' },
   { name: 'Unresponsive Week 1',   shortCode: 'UR_W1', color: 'slate'   },
   { name: 'Unresponsive Week 2',   shortCode: 'UR_W2', color: 'slate'   },
@@ -58,10 +61,54 @@ const LEAD_PIPELINE_STAGES = [
 /** Extract the leading "NN" digit prefix from a "NN Ebright (Place)" name.
  *  Used to derive tkt_branch.branch_number when a super-admin adds a
  *  branch via the UI. Returns null when the format doesn't match — the
- *  caller falls back to skipping the tkt_branch row creation. */
+ *  caller falls back to auto-generating a number via nextTktBranchNumber. */
 function extractBranchNumberPrefix(name: string): string | null {
   const m = name.match(/^(\d{2})\b/)
   return m ? m[1] : null
+}
+
+/** Pick the next free 2-digit branch_number for this tenant. Used when the
+ *  CRM branch name doesn't carry a `NN ` prefix — every branch deserves a
+ *  ticket entry, so we generate one rather than silently skipping. */
+async function nextTktBranchNumber(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+): Promise<string> {
+  const rows = await tx.tkt_branch.findMany({
+    where:  { tenant_id: tenantId },
+    select: { branch_number: true },
+  })
+  const max = rows.reduce((acc, r) => {
+    const digits = (r.branch_number ?? '').replace(/\D/g, '')
+    const n = digits ? parseInt(digits, 10) : 0
+    return Number.isFinite(n) && n > acc ? n : acc
+  }, 0)
+  return String(max + 1).padStart(2, '0')
+}
+
+/** Derive a unique `tkt_branch.code` for this tenant. Falls back to the first
+ *  three alphabetic characters of the name, uppercased, and suffixes with the
+ *  branch number if a code collision would occur — `tkt_branch.code` is unique
+ *  per tenant so we can't risk a constraint violation here. */
+async function deriveTktBranchCode(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  name: string,
+  providedCode: string | null,
+  branchNumber: string,
+): Promise<string> {
+  if (providedCode && providedCode.trim()) return providedCode.trim()
+  const base = name.replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase() || 'BR'
+  const candidates = [base, `${base}${branchNumber}`, `${base}-${branchNumber}`]
+  for (const c of candidates) {
+    const taken = await tx.tkt_branch.findFirst({
+      where:  { tenant_id: tenantId, code: c },
+      select: { id: true },
+    })
+    if (!taken) return c
+  }
+  // Last-resort uniqueness — pad with random hex. Realistically unreachable.
+  return `${base}-${branchNumber}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`
 }
 
 export async function createBranch(
@@ -110,27 +157,36 @@ export async function createBranch(
       })
     }
 
-    // tkt_branch — only when the name has a "NN" prefix AND a code is
-    // supplied. Without both, the ticket module's UNIQUE constraint on
-    // branch_number / code can't be satisfied cleanly, so we skip and
-    // let an admin create the tkt_branch row via the existing
-    // /crm/tkt-branches page if they want ticketing for the new branch.
-    const branchNumber = extractBranchNumberPrefix(parsed.name)
-    if (branchNumber && parsed.code) {
-      const existing = await tx.tkt_branch.findFirst({
-        where: { tenant_id: tenantId, branch_number: branchNumber },
-        select: { id: true },
+    // tkt_branch — ALWAYS create a row so the new branch is pickable in the
+    // ticket-submit form. Previously this was gated behind "name has NN
+    // prefix AND code is supplied", which silently dropped non-standard
+    // branches (e.g. "Ebright HR") and made tickets uncreatable for users
+    // assigned there. nextTktBranchNumber / deriveTktBranchCode generate
+    // unique placeholders when the inputs don't carry them; admins can
+    // rename via the /crm/tkt-branches admin UI afterwards.
+    const branchNumber =
+      extractBranchNumberPrefix(parsed.name)
+        ?? await nextTktBranchNumber(tx, tenantId)
+    const existing = await tx.tkt_branch.findFirst({
+      where:  { tenant_id: tenantId, branch_number: branchNumber },
+      select: { id: true },
+    })
+    if (!existing) {
+      const tktCode = await deriveTktBranchCode(
+        tx,
+        tenantId,
+        branch.name,
+        parsed.code ?? null,
+        branchNumber,
+      )
+      await tx.tkt_branch.create({
+        data: {
+          tenant_id:     tenantId,
+          name:          branch.name,
+          code:          tktCode,
+          branch_number: branchNumber,
+        },
       })
-      if (!existing) {
-        await tx.tkt_branch.create({
-          data: {
-            tenant_id:     tenantId,
-            name:          branch.name,
-            code:          parsed.code,
-            branch_number: branchNumber,
-          },
-        })
-      }
     }
 
     return branch
@@ -180,16 +236,27 @@ export async function updateBranch(
 
   // If the name changed, keep the matching crm_pipeline + tkt_branch labels
   // in sync so users don't see a stale name in the kanban column header /
-  // ticket form dropdown.
+  // ticket form dropdown. Try matching the tkt_branch by NN prefix first
+  // (the canonical case) and fall back to the previous name so non-prefix
+  // branches like "Ebright HR" don't get left with a stale label.
   if (data.name !== undefined && data.name !== existing.name) {
     await prisma.crm_pipeline.updateMany({
       where: { tenantId, branchId, name: existing.name },
       data:  { name: data.name },
     })
-    const branchNumber = extractBranchNumberPrefix(data.name) ?? extractBranchNumberPrefix(existing.name)
+    const branchNumber =
+      extractBranchNumberPrefix(data.name) ?? extractBranchNumberPrefix(existing.name)
+    let updated = 0
     if (branchNumber) {
-      await prisma.tkt_branch.updateMany({
+      const r = await prisma.tkt_branch.updateMany({
         where: { tenant_id: tenantId, branch_number: branchNumber },
+        data:  { name: data.name },
+      })
+      updated = r.count
+    }
+    if (updated === 0) {
+      await prisma.tkt_branch.updateMany({
+        where: { tenant_id: tenantId, name: existing.name },
         data:  { name: data.name },
       })
     }

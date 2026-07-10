@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { useState, useMemo } from "react";
-import { CalendarDays, Clock, Users, ChevronRight, MapPin, Filter, GripVertical, UserPlus, Check, Download } from "lucide-react";
+import { CalendarDays, Clock, Users, ChevronRight, MapPin, Filter, GripVertical, UserPlus, Check, Download, Search, X } from "lucide-react";
 import { addDays, parseISO } from "date-fns";
 import {
   DndContext,
@@ -24,7 +24,7 @@ import { AttendanceRoster } from "@fa/_components/fa/AttendanceRoster";
 import { ConfirmDialog } from "@fa/_components/shared/ConfirmDialog";
 import { WalkInModal } from "@fa/_components/fa/WalkInModal";
 import { getDisplayOrder, mergeFilteredReorder } from "@fa/_lib/sessionOrder";
-import { BRANCHES, BranchCode, Session } from "@fa/_types";
+import { BRANCHES, BranchCode, Session, resolveStudentById, countsAsAttended } from "@fa/_types";
 import { downloadCSV } from "@fa/_lib/csv";
 import { buildEventAttendanceCsv } from "@fa/_lib/eventAttendanceCsv";
 
@@ -56,16 +56,20 @@ export default function AttendancePage() {
   const [pendingTransfer, setPendingTransfer] = useState<PendingTransfer | null>(null);
   const [walkInOpen, setWalkInOpen] = useState(false);
   const [walkInBanner, setWalkInBanner] = useState<string | null>(null);
+  const [nameQuery, setNameQuery] = useState("");
 
   // Pointer sensor with a small activation distance prevents click-as-drag.
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
   );
 
-  // Relevant events — ongoing, closed, or recently completed
+  // Relevant events — every status except draft. Marketing/BMs need
+  // to tick attendance for open events too (walk-ins, pre-arrivals,
+  // students who arrive before invitations close), not just after the
+  // event is marked completed. Matches the PCM attendance flow.
   const relevantEvents = useMemo(() => {
     return events
-      .filter(e => e.status === "ongoing" || e.status === "closed" || e.status === "completed")
+      .filter(e => e.status !== "draft")
       .sort((a, b) => b.startDate.localeCompare(a.startDate));
   }, [events]);
 
@@ -114,11 +118,19 @@ export default function AttendancePage() {
       .filter(i => !seen.has(i.id))
       .sort((a, b) => {
         if (a.branch !== b.branch) return a.branch.localeCompare(b.branch);
-        const sa = students.find(s => s.id === a.studentId);
-        const sb = students.find(s => s.id === b.studentId);
+        const sa = resolveStudentById(students, a.studentId);
+        const sb = resolveStudentById(students, b.studentId);
         return (sa?.name || "").localeCompare(sb?.name || "");
       });
-    return [...out, ...newcomers];
+    const combined = [...out, ...newcomers];
+
+    // ── Grade 5 priority ──────────────────────────────────────────────────
+    // Grade 5 students are always lifted to the top of every session roster.
+    // Relative order within Grade 5 and within the remaining grades is kept
+    // exactly as-is (manual drag order + newcomer fallback both respected).
+    const grade5    = combined.filter(i => (i.targetGrade ?? 0) === 5);
+    const nonGrade5 = combined.filter(i => (i.targetGrade ?? 0) !== 5);
+    return [...grade5, ...nonGrade5];
   }, [selectedSession, invitations, fullSessionOrder, visibleBranchFilter, students]);
 
   const pendingConfirmationsCount = useMemo(() => {
@@ -130,11 +142,39 @@ export default function AttendancePage() {
     ).length;
   }, [invitations, selectedSession, visibleBranchFilter]);
 
+  // Event-wide name search. Matches every invitation in the selected event by
+  // student name (or id) so an attendance-taker can locate a student without
+  // knowing which day/session they're in, then jump straight to that session.
+  // Independent of the roster/dnd order, so searching never disturbs ordering.
+  const searchResults = useMemo(() => {
+    const q = nameQuery.trim().toLowerCase();
+    if (!q || !selectedEvent) return [];
+    const sessById = new Map(eventSessions.map(s => [s.id, s]));
+    return invitations
+      .filter(i =>
+        sessById.has(i.sessionId) &&
+        i.status !== "declined" && i.status !== "invited" &&
+        (visibleBranchFilter === "all" || i.branch === visibleBranchFilter)
+      )
+      .map(i => {
+        const student = resolveStudentById(students, i.studentId);
+        return { inv: i, student, name: student?.name || i.studentNameSnapshot || `#${i.studentId}`, session: sessById.get(i.sessionId)! };
+      })
+      .filter(r => r.name.toLowerCase().includes(q) || String(r.inv.studentId).toLowerCase().includes(q))
+      .sort((a, b) =>
+        a.session.dayNumber - b.session.dayNumber ||
+        a.session.sessionNumber - b.session.sessionNumber ||
+        a.name.localeCompare(b.name)
+      );
+  }, [nameQuery, selectedEvent, eventSessions, invitations, students, visibleBranchFilter]);
+
+  const isSearching = nameQuery.trim().length > 0;
+
   const activeInvitation = activeDragId
     ? invitations.find(i => i.id === activeDragId) ?? null
     : null;
   const activeStudent = activeInvitation
-    ? students.find(s => s.id === activeInvitation.studentId) ?? null
+    ? resolveStudentById(students, activeInvitation.studentId) ?? null
     : null;
 
   function handleDragStart(event: DragStartEvent) {
@@ -158,7 +198,7 @@ export default function AttendancePage() {
       const inv = invitations.find(i => i.id === activeId);
       if (!inv || inv.sessionId === targetSessionId) return;
       const target = sessions.find(s => s.id === targetSessionId);
-      const student = students.find(s => s.id === inv.studentId);
+      const student = resolveStudentById(students, inv.studentId);
       if (!target || !student) return;
       setPendingTransfer({
         invitationId: activeId,
@@ -312,24 +352,116 @@ export default function AttendancePage() {
             })}
           </div>
 
-          {/* Branch filter (MKT only) */}
-          {user.role === "MKT" && (
-            <div className="flex items-center gap-2 mb-4">
-              <Filter className="w-4 h-4 text-ink-400" />
-              <span className="text-xs text-ink-400">Branch:</span>
-              <select
-                className="fa-input w-48 py-1.5 text-sm"
-                value={branchFilter}
-                onChange={e => setBranchFilter(e.target.value as BranchCode | "all")}
-              >
-                <option value="all">All branches</option>
-                {BRANCHES.map(b => (
-                  <option key={b.code} value={b.code}>{b.code} — {b.name}</option>
-                ))}
-              </select>
+          {/* Filters: name search (all roles) + branch (MKT only) */}
+          <div className="flex flex-wrap items-center gap-3 mb-4">
+            <div className="relative">
+              <Search className="w-4 h-4 text-ink-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                value={nameQuery}
+                onChange={e => setNameQuery(e.target.value)}
+                placeholder="Search student name…"
+                className="fa-input w-72 py-1.5 pl-9 pr-8 text-sm"
+                aria-label="Search student by name"
+              />
+              {isSearching && (
+                <button
+                  onClick={() => setNameQuery("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-400 hover:text-ink-700"
+                  aria-label="Clear search"
+                  title="Clear search"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
-          )}
+            {user.role === "MKT" && (
+              <div className="flex items-center gap-2">
+                <Filter className="w-4 h-4 text-ink-400" />
+                <span className="text-xs text-ink-400">Branch:</span>
+                <select
+                  className="fa-input w-48 py-1.5 text-sm"
+                  value={branchFilter}
+                  onChange={e => setBranchFilter(e.target.value as BranchCode | "all")}
+                >
+                  <option value="all">All branches</option>
+                  {BRANCHES.map(b => (
+                    <option key={b.code} value={b.code}>{b.code} — {b.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
 
+          {isSearching ? (
+            /* ── Event-wide name search results ── */
+            <div className="fa-card overflow-hidden">
+              <div className="px-4 py-3 border-b border-ivory-300 text-sm text-ink-500">
+                <strong className="text-ink-900">{searchResults.length}</strong> result{searchResults.length !== 1 ? "s" : ""} for “{nameQuery.trim()}” across this event
+              </div>
+              {searchResults.length === 0 ? (
+                <div className="p-8 text-center text-sm text-ink-400">
+                  No student matches that name in this event.
+                </div>
+              ) : (
+                <table className="fa-table">
+                  <thead>
+                    <tr>
+                      <th>Student</th>
+                      <th>Branch</th>
+                      <th>Grade</th>
+                      <th>When</th>
+                      <th>Attendance</th>
+                      <th className="text-right">Go</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {searchResults.map(r => {
+                      const dayDate = selectedEvent ? addDays(parseISO(selectedEvent.startDate), r.session.dayNumber - 1) : null;
+                      const statusLabel =
+                        r.inv.status === "attended" ? "Present"
+                        : r.inv.status === "walk_in" ? "Walk-in"
+                        : r.inv.status === "no_show" ? "Absent"
+                        : r.inv.status === "confirmed" ? "Awaiting"
+                        : r.inv.status;
+                      const tone =
+                        countsAsAttended(r.inv.status) ? "success"
+                        : r.inv.status === "no_show" ? "danger" : "ink-500";
+                      return (
+                        <tr
+                          key={r.inv.id}
+                          className="cursor-pointer hover:bg-ivory-100"
+                          onClick={() => { setSelectedDay(r.session.dayNumber); setSelectedSessionId(r.session.id); setNameQuery(""); }}
+                        >
+                          <td>
+                            <div className="font-medium text-ink-900">{r.name}</div>
+                            <div className="text-xs text-ink-400">#{r.inv.studentId}</div>
+                          </td>
+                          <td>
+                            <span className="font-mono text-xs font-semibold text-ink-700 bg-ivory-200 px-2 py-0.5 rounded">{r.inv.branch}</span>
+                          </td>
+                          <td className="font-mono text-sm">G{r.inv.targetGrade ?? r.student?.grade ?? "—"}</td>
+                          <td className="text-sm text-ink-600">
+                            Day {r.session.dayNumber}
+                            {dayDate && <span className="text-ink-400"> · {dayDate.toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span>}
+                            <span className="text-ink-400"> · Session {r.session.sessionNumber}</span>
+                          </td>
+                          <td>
+                            <span className={`text-xs font-medium ${tone === "success" ? "text-success" : tone === "danger" ? "text-danger" : "text-ink-500"}`}>
+                              {statusLabel}
+                            </span>
+                          </td>
+                          <td className="text-right">
+                            <ChevronRight className="w-4 h-4 text-ink-400 inline" />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          ) : (
           <div className="grid lg:grid-cols-[320px_1fr] gap-6">
             {/* Session list */}
             <div>
@@ -350,12 +482,12 @@ export default function AttendancePage() {
                       onSelect={() => setSelectedSessionId(session.id)}
                       attended={invitations.filter(i =>
                         i.sessionId === session.id &&
-                        i.status === "attended" &&
+                        countsAsAttended(i.status) &&
                         (visibleBranchFilter === "all" || i.branch === visibleBranchFilter)
                       ).length}
                       confirmed={invitations.filter(i =>
                         i.sessionId === session.id &&
-                        (i.status === "confirmed" || i.status === "attended") &&
+                        (i.status === "confirmed" || countsAsAttended(i.status)) &&
                         (visibleBranchFilter === "all" || i.branch === visibleBranchFilter)
                       ).length}
                       inviteCount={invitations.filter(i =>
@@ -391,6 +523,7 @@ export default function AttendancePage() {
               )}
             </div>
           </div>
+          )}
 
           {/* Drag overlay — visual feedback while dragging */}
           <DragOverlay dropAnimation={null}>

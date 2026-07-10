@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/nextauth";
 import { prisma } from "@/lib/prisma";
+import { hrfsPrisma } from "@/lib/hrfs";
 import StaffDirectory, {
   type DirectoryPerson,
   type DirectoryBranch,
@@ -58,13 +59,16 @@ function parseLooseDate(raw: string | null | undefined): string | null {
 // normalize each row's raw value into one of these so the filter works
 // regardless of how the data is spelled.
 const CANONICAL_DEPARTMENTS = [
-  { name: "CEO",            code: "ceo" },
-  { name: "Marketing",      code: "mkt" },
-  { name: "Operation",      code: "ops" },
-  { name: "Optimisation",   code: "od"  },
-  { name: "Finance",        code: "fnc" },
-  { name: "Human Resource", code: "hr"  },
-  { name: "Academy",        code: "acd" },
+  { name: "CEO",          code: "ceo" },
+  { name: "Marketing",    code: "mkt" },
+  { name: "Operation",    code: "ops" },
+  { name: "Optimisation", code: "od"  },
+  { name: "Finance",      code: "fnc" },
+  // HR and IOP are the same team — surfaced as one combined department so the
+  // dropdown shows a single "HR/IOP" entry and staff form values of "HR/IOP"
+  // (see lib/constants DEPARTMENT_OPTIONS) resolve correctly.
+  { name: "HR/IOP",       code: "hr"  },
+  { name: "Academy",      code: "acd" },
 ] as const;
 
 type CanonicalDeptName = (typeof CANONICAL_DEPARTMENTS)[number]["name"];
@@ -72,13 +76,40 @@ type CanonicalDeptName = (typeof CANONICAL_DEPARTMENTS)[number]["name"];
 // Reverse lookup: short code → canonical name. Used when the dept code leaks
 // into BranchStaff.branch (e.g. row with branch="od"), or when
 // BranchStaff.department itself holds the code instead of the name.
-const DEPT_CODE_TO_NAME: Record<string, CanonicalDeptName> = Object.fromEntries(
-  CANONICAL_DEPARTMENTS.map((d) => [d.code.toLowerCase(), d.name]),
-) as Record<string, CanonicalDeptName>;
+const DEPT_CODE_TO_NAME: Record<string, CanonicalDeptName> = {
+  ...Object.fromEntries(
+    CANONICAL_DEPARTMENTS.map((d) => [d.code.toLowerCase(), d.name]),
+  ),
+  // "iop" no longer has its own canonical entry — fold it into HR/IOP.
+  iop: "HR/IOP",
+  // Real-world code aliases seen in BranchStaff that differ from the canonical
+  // codes above: the data uses "op"/"ops" for Operation and "fin" for Finance,
+  // while the canonical codes are "ops" and "fnc". Without these, HQ staff
+  // whose department is "OP" or "FIN" resolve to no department and vanish from
+  // the Department filter.
+  op: "Operation",
+  fin: "Finance",
+} as Record<string, CanonicalDeptName>;
 
 function isDeptCode(raw: string | null | undefined): boolean {
   if (!raw) return false;
   return raw.trim().toLowerCase() in DEPT_CODE_TO_NAME;
+}
+
+// Free-text values that appear in BranchStaff.branch but are NOT real branches.
+// "HQ" is headquarters — it holds multiple departments rather than being a
+// branch in its own right. Treated as no-branch so it's filtered from the
+// Branch dropdown and from the "All branches" scope; HQ staff still flow into
+// the Department dropdown via BranchStaff.department.
+//
+// "IOP" is handled via the dept-code path (the "iop" alias in DEPT_CODE_TO_NAME
+// folds into the combined "HR/IOP" department), so it doesn't need to be listed
+// here — isDeptCode catches it.
+const NON_BRANCH_VALUES = new Set(["hq"]);
+
+function isNonBranch(raw: string | null | undefined): boolean {
+  if (!raw) return false;
+  return NON_BRANCH_VALUES.has(raw.trim().toLowerCase());
 }
 
 function normalizeDepartment(raw: string | null | undefined): CanonicalDeptName | null {
@@ -99,7 +130,9 @@ function normalizeDepartment(raw: string | null | undefined): CanonicalDeptName 
   if (s.includes("OPTIMISATION") || s.includes("OPTIMIZATION")) return "Optimisation";
   if (s.includes("OPERATION"))                                  return "Operation";
   if (s.includes("ACADEMY") || s.includes("ACADEMIC"))          return "Academy";
-  if (s === "HR" || s.includes("HUMAN"))                        return "Human Resource";
+  // HR and IOP are one combined team — collapse every spelling into "HR/IOP".
+  if (s === "HR" || s === "IOP" || s.replace(/\s+/g, "") === "HR/IOP" || s.includes("HUMAN"))
+                                                                return "HR/IOP";
   if (s.includes("FINANCE") || s.includes("ACCOUNT"))           return "Finance";
   if (s.includes("CEO") || s.includes("CHIEF EXECUTIVE"))       return "CEO";
   return null;
@@ -162,15 +195,15 @@ export default async function StaffDirectoryPage() {
   // Filter on role (the actual job-title column in v1), not position. Rows
   // with a blank role still load but render at the default tier in the chart.
   //
-  // Source is `crm."BranchStaff"` — a view that resolves to:
-  //   * an alias of public."BranchStaff" in ebright_hrfs (dev), or
-  //   * an FDW foreign table proxying public."BranchStaff" in ebright_crm
-  //     (staging / prod). Same name, same shape, same data.
-  const rows = await prisma.$queryRaw<BranchStaffRow[]>`
+  // Read BranchStaff via hrfsPrisma. The table name is left UNqualified so it
+  // resolves against the connection's search_path: public."BranchStaff" when
+  // HRFS_DATABASE_URL is set, or crm."BranchStaff" (the view/FDW) when this
+  // client has fallen back to DATABASE_URL. Either way it's the same data.
+  const rows = await hrfsPrisma.$queryRaw<BranchStaffRow[]>`
     SELECT id, name, nickname, branch, role, email, phone, "employeeId",
            department, position, location, status, start_date, "endDate",
            "workingHours"
-    FROM crm."BranchStaff"
+    FROM "BranchStaff"
     WHERE role IS NOT NULL AND TRIM(role) <> ''
   `;
 
@@ -200,7 +233,7 @@ export default async function StaffDirectoryPage() {
     new Set(
       rows
         .map((r) => r.branch?.trim())
-        .filter((b): b is string => Boolean(b) && !isDeptCode(b)),
+        .filter((b): b is string => Boolean(b) && !isDeptCode(b) && !isNonBranch(b)),
     ),
   ).sort((a, b) => a.localeCompare(b));
   const branchIdByName = new Map(branchNames.map((name, i) => [name, i + 1]));
@@ -226,6 +259,34 @@ export default async function StaffDirectoryPage() {
   // lexically the same as chronologically.
   const todayISO = new Date().toISOString().slice(0, 10);
 
+  // True when the stored workingHours value actually contains at least one
+  // day with a saved slot. Null, empty objects, and objects whose day values
+  // are all null all count as "no schedule" so inheritance can kick in.
+  const hasAnyWorkingDay = (value: unknown): boolean => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    for (const v of Object.values(value as Record<string, unknown>)) {
+      if (v && typeof v === "object") return true;
+      if (typeof v === "string" && v.trim()) return true;
+    }
+    return false;
+  };
+
+  // Branch managers are the working-hours source of truth for their branch:
+  // every other staff under the same branch inherits the BM's schedule unless
+  // they have their own workingHours already saved. Match branches
+  // case-insensitively so casing/whitespace drift in the free-text branch
+  // column doesn't break the link. First BM encountered per branch wins.
+  const bmHoursByBranchKey = new Map<string, unknown>();
+  for (const r of rows) {
+    if (normalizePosition(r.role) !== "BM") continue;
+    const branch = r.branch?.trim();
+    if (!branch || isDeptCode(branch) || isNonBranch(branch)) continue;
+    if (!hasAnyWorkingDay(r.workingHours)) continue;
+    const key = branch.toLowerCase();
+    if (bmHoursByBranchKey.has(key)) continue;
+    bmHoursByBranchKey.set(key, r.workingHours);
+  }
+
   const people: DirectoryPerson[] = rows.flatMap((r) => {
     const startISO = parseLooseDate(r.start_date);
     // Hide staff whose start_date is still in the future. Once today catches
@@ -237,10 +298,31 @@ export default async function StaffDirectoryPage() {
     const rawBranch = r.branch?.trim() || null;
     const branchAsDept = rawBranch ? normalizeDepartment(rawBranch) : null;
     const branchIsActuallyDeptCode = rawBranch !== null && isDeptCode(rawBranch);
-    const branchName = branchIsActuallyDeptCode ? null : rawBranch;
-    const deptName = normalizeDepartment(r.department) ?? branchAsDept;
+    const branchIsNonBranch = rawBranch !== null && isNonBranch(rawBranch);
+    const branchName = (branchIsActuallyDeptCode || branchIsNonBranch) ? null : rawBranch;
+    // Canonical department drives filtering / chart grouping (must be one of
+    // CANONICAL_DEPARTMENTS). The DISPLAY name falls back to the raw
+    // BranchStaff.department value when it isn't a recognised canonical dept —
+    // otherwise HQ / non-branch staff whose department is free-text (e.g. "IT")
+    // would render as "—" even though a department is on file.
+    const canonicalDept = normalizeDepartment(r.department) ?? branchAsDept;
+    const rawDept = r.department?.trim() || null;
+    const deptDisplay = canonicalDept ?? rawDept;
     const emailKey = r.email?.trim().toLowerCase() ?? "";
     const linkedUserId = emailKey ? userIdByEmail.get(emailKey) ?? null : null;
+
+    // Inherit working hours from the branch manager when this row doesn't
+    // have a meaningful schedule of its own (null, empty object, or all-null
+    // days all count as "no schedule"). The BM is skipped — it's the source.
+    // Rows whose branch column holds a dept code have branchName=null and
+    // won't inherit. Branch matching is case-insensitive to survive minor
+    // casing / whitespace drift in the free-text branch column.
+    const isBM = normalizePosition(r.role) === "BM";
+    const ownHasSchedule = hasAnyWorkingDay(r.workingHours);
+    const inheritedHours = !isBM && !ownHasSchedule && branchName
+      ? bmHoursByBranchKey.get(branchName.toLowerCase()) ?? null
+      : null;
+    const effectiveHours = ownHasSchedule ? r.workingHours : inheritedHours;
     return {
       // BranchStaff.id is the canonical key everywhere — chart, save action.
       id: r.id,
@@ -257,8 +339,8 @@ export default async function StaffDirectoryPage() {
       branchName,
       branchCode: null,
       branchLocation: r.location?.trim() || null,
-      departmentId: deptName ? departmentIdByName.get(deptName) ?? null : null,
-      departmentName: deptName,
+      departmentId: canonicalDept ? departmentIdByName.get(canonicalDept) ?? null : null,
+      departmentName: deptDisplay,
       departmentCode: null,
       joinedYear: startISO ? Number(startISO.slice(0, 4)) : null,
       startDate: startISO,
@@ -266,7 +348,7 @@ export default async function StaffDirectoryPage() {
       isActive: (r.status ?? "").trim().toLowerCase() !== "inactive"
         && (r.status ?? "").trim().toLowerCase() !== "terminated"
         && (r.status ?? "").trim().toLowerCase() !== "resigned",
-      workingHoursRaw: r.workingHours ?? null,
+      workingHoursRaw: effectiveHours,
     };
   });
 
@@ -283,9 +365,20 @@ export default async function StaffDirectoryPage() {
     code: d.code,
   }));
 
+  const sessionUser = session.user as { email?: string; role?: string; branchName?: string | null };
+
   return (
     <ClientShell>
-      <StaffDirectory people={people} branches={branches} departments={departments} />
+      <StaffDirectory
+        people={people}
+        branches={branches}
+        departments={departments}
+        currentUser={{
+          email: sessionUser.email ?? "",
+          role: sessionUser.role ?? "",
+          branchName: sessionUser.branchName ?? null,
+        }}
+      />
     </ClientShell>
   );
 }

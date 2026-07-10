@@ -8,13 +8,15 @@ import { HoverPreview } from "@fa/_components/shared/HoverPreview";
 import { QuickActionButtons } from "@fa/_components/fa/QuickActionButtons";
 import { EventPreview } from "@fa/_components/fa/EventPreview";
 
-export function EventRow({ event, sessionCount, invitationCount, quotaTotal, onView, onEdit }: {
+export function EventRow({ event, sessionCount, invitationCount, confirmedCount, quotaTotal, onView, onEdit, onDuplicate }: {
   event: FAEvent;
   sessionCount: number;
   invitationCount: number;
+  confirmedCount: number;
   quotaTotal: number;
   onView: () => void;
   onEdit: () => void;
+  onDuplicate?: () => void;
 }) {
   const startD = new Date(event.startDate);
   const dateStr = formatDateRange(event.startDate, event.endDate);
@@ -87,9 +89,18 @@ export function EventRow({ event, sessionCount, invitationCount, quotaTotal, onV
             Invited
           </div>
         </div>
+        <div className="text-right">
+          <div className="fa-mono text-xl text-emerald-600">{confirmedCount}</div>
+          <div
+            className="fa-mono text-[9px] uppercase text-ink-400"
+            style={{ letterSpacing: "0.08em" }}
+          >
+            Confirmed
+          </div>
+        </div>
       </div>
     </Link>
-    <QuickActionButtons eventId={event.id} onView={onView} onEdit={onEdit} />
+    <QuickActionButtons eventId={event.id} onView={onView} onEdit={onEdit} onDuplicate={onDuplicate} />
     </div>
     </HoverPreview>
   );

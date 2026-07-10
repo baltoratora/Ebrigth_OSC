@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { upsertQuotaRow } from "@fa/_lib/events.server";
 import { BranchCode } from "@fa/_types";
+import { requireSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 // PUT /api/fa/quotas — upsert by (sessionId, branch). quota=0 deletes the row.
 export async function PUT(req: NextRequest) {
+  const auth = await requireSession();
+  if (auth.error) return auth.error;
+
   try {
     const body = await req.json();
     const result = await upsertQuotaRow(

@@ -3,6 +3,7 @@ import { headers } from 'next/headers'
 import { auth } from '@/lib/crm/auth'
 import { prisma } from '@/lib/crm/db'
 import { updateStage, deleteStage } from '@/server/actions/pipelines'
+import { denyReadOnlyViewer } from '@/lib/crm/admin-session'
 
 async function resolveSession() {
   const session = await auth.api.getSession({ headers: await headers() })
@@ -20,6 +21,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
+    const denied = await denyReadOnlyViewer(); if (denied) return denied
     const ctx = await resolveSession()
     if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
@@ -39,6 +41,7 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
+    const denied = await denyReadOnlyViewer(); if (denied) return denied
     const ctx = await resolveSession()
     if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 

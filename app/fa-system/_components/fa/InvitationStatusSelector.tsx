@@ -9,7 +9,7 @@ export function InvitationStatusSelector({
   if (disabled) {
     return <InvitationStatusPill status={value} />;
   }
-  if (value === "attended" || value === "no_show") {
+  if (value === "attended" || value === "no_show" || value === "walk_in") {
     return <InvitationStatusPill status={value} />;
   }
   return (

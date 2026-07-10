@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { ArrowLeft, Award, ChevronRight, Clock, Printer, Download } from "lucide-react";
 import { Modal } from "@fa/_components/shared/Modal";
 import { useFAStore } from "@fa/_lib/store";
-import { BRANCHES, FAEvent, Invitation, Session, Student } from "@fa/_types";
+import { BRANCHES, FAEvent, Invitation, Session, Student, countsAsAttended, gradeLabel } from "@fa/_types";
 import { formatDateRange } from "@fa/_lib/date";
 import { downloadCSV } from "@fa/_lib/csv";
 
@@ -34,6 +34,31 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
   // below; the two flows render into the same print portal but only one is
   // populated at a time.
   const [bulk, setBulk] = useState<BulkBatch | null>(null);
+
+  // Grade filter — applies to every action in this modal (event/day/session
+  // Print + Canva CSV, and the student list). Empty set = no filter (all
+  // grades), matching the same "empty selection = show all" convention used
+  // elsewhere in this app (e.g. branch multi-selects).
+  const [gradeFilter, setGradeFilter] = useState<Set<number>>(new Set());
+
+  function certGrade(inv: Invitation, student: Student | null | undefined): number {
+    if (inv.targetGrade && inv.targetGrade > 0) return inv.targetGrade;
+    return student?.grade ?? 0;
+  }
+
+  function passesGradeFilter(inv: Invitation): boolean {
+    if (gradeFilter.size === 0) return true;
+    const student = allStudents.find(s => s.id === inv.studentId);
+    return gradeFilter.has(certGrade(inv, student));
+  }
+
+  function toggleGrade(g: number) {
+    setGradeFilter(prev => {
+      const next = new Set(prev);
+      if (next.has(g)) next.delete(g); else next.add(g);
+      return next;
+    });
+  }
 
   useEffect(() => {
     if (!bulk) return;
@@ -65,16 +90,16 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
 
   function printAllForSession(sessId: string) {
     const invs = allInvitations.filter(
-      i => i.sessionId === sessId && (i.status === "confirmed" || i.status === "attended")
-    );
+      i => i.sessionId === sessId && (i.status === "confirmed" || countsAsAttended(i.status))
+    ).filter(passesGradeFilter);
     if (invs.length === 0) return;
     setBulk(buildBatch(invs));
   }
 
   function printAllForEvent() {
     const invs = allInvitations.filter(
-      i => i.eventId === event.id && (i.status === "confirmed" || i.status === "attended")
-    );
+      i => i.eventId === event.id && (i.status === "confirmed" || countsAsAttended(i.status))
+    ).filter(passesGradeFilter);
     if (invs.length === 0) return;
     setBulk(buildBatch(invs));
   }
@@ -130,8 +155,8 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
 
   function exportCanvaForSession(sessId: string) {
     const invs = allInvitations.filter(
-      i => i.sessionId === sessId && (i.status === "confirmed" || i.status === "attended")
-    );
+      i => i.sessionId === sessId && (i.status === "confirmed" || countsAsAttended(i.status))
+    ).filter(passesGradeFilter);
     const sess = allSessions.find(s => s.id === sessId);
     const suffix = sess ? `D${sess.dayNumber}S${sess.sessionNumber}` : "session";
     exportCanvaCSV(invs, suffix);
@@ -139,18 +164,18 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
 
   function exportCanvaForEvent() {
     const invs = allInvitations.filter(
-      i => i.eventId === event.id && (i.status === "confirmed" || i.status === "attended")
-    );
+      i => i.eventId === event.id && (i.status === "confirmed" || countsAsAttended(i.status))
+    ).filter(passesGradeFilter);
     exportCanvaCSV(invs, "all");
   }
 
   function printAllForDay(day: number) {
     const dayInvs = allInvitations.filter(i => {
       if (i.eventId !== event.id) return false;
-      if (i.status !== "confirmed" && i.status !== "attended") return false;
+      if (i.status !== "confirmed" && !countsAsAttended(i.status)) return false;
       const sess = allSessions.find(s => s.id === i.sessionId);
       return sess?.dayNumber === day;
-    });
+    }).filter(passesGradeFilter);
     if (dayInvs.length === 0) return;
     setBulk(buildBatch(dayInvs));
   }
@@ -158,10 +183,10 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
   function exportCanvaForDay(day: number) {
     const dayInvs = allInvitations.filter(i => {
       if (i.eventId !== event.id) return false;
-      if (i.status !== "confirmed" && i.status !== "attended") return false;
+      if (i.status !== "confirmed" && !countsAsAttended(i.status)) return false;
       const sess = allSessions.find(s => s.id === i.sessionId);
       return sess?.dayNumber === day;
-    });
+    }).filter(passesGradeFilter);
     exportCanvaCSV(dayInvs, `D${day}`);
   }
 
@@ -178,16 +203,30 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
     [allSessions, event.id]
   );
 
+  // Every grade present among this event's cert-eligible invitations — drives
+  // the filter chips below. Only shows grades that actually exist here.
+  const availableGrades = useMemo(() => {
+    const set = new Set<number>();
+    for (const i of allInvitations) {
+      if (i.eventId !== event.id) continue;
+      if (i.status !== "confirmed" && !countsAsAttended(i.status)) continue;
+      const student = allStudents.find(s => s.id === i.studentId);
+      const g = certGrade(i, student);
+      if (g > 0) set.add(g);
+    }
+    return Array.from(set).sort((a, b) => a - b);
+  }, [allInvitations, allStudents, event.id]);
+
   // Per-session expected-attendee counts for the session picker view.
   const sessionExpectedCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const s of eventSessions) {
       counts[s.id] = allInvitations.filter(
-        i => i.sessionId === s.id && (i.status === "confirmed" || i.status === "attended")
-      ).length;
+        i => i.sessionId === s.id && (i.status === "confirmed" || countsAsAttended(i.status))
+      ).filter(passesGradeFilter).length;
     }
     return counts;
-  }, [eventSessions, allInvitations]);
+  }, [eventSessions, allInvitations, gradeFilter, allStudents]);
 
   const selectedSession = sessionId
     ? eventSessions.find(s => s.id === sessionId) ?? null
@@ -197,11 +236,12 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
   const sessionAttendees = useMemo(() => {
     if (!selectedSession) return [];
     return allInvitations
-      .filter(i => i.sessionId === selectedSession.id && (i.status === "confirmed" || i.status === "attended"))
+      .filter(i => i.sessionId === selectedSession.id && (i.status === "confirmed" || countsAsAttended(i.status)))
+      .filter(passesGradeFilter)
       .map(i => ({ inv: i, student: allStudents.find(s => s.id === i.studentId) ?? null }))
       .filter((x): x is { inv: Invitation; student: Student } => x.student !== null)
       .sort((a, b) => a.student.name.localeCompare(b.student.name));
-  }, [selectedSession, allInvitations, allStudents]);
+  }, [selectedSession, allInvitations, allStudents, gradeFilter]);
 
   const previewStudent = studentInv
     ? allStudents.find(s => s.id === studentInv.studentId) ?? null
@@ -238,6 +278,42 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
               know what to do with the CSV download. Always visible at the
               top of the session picker. */}
           <CanvaGuide />
+
+          {/* Grade filter — narrows every action below (event/day/session
+              Print + Canva CSV, and the student list) to only the selected
+              grade(s). No selection = all grades. */}
+          {availableGrades.length > 0 && (
+            <div className="flex items-center flex-wrap gap-1.5 pb-3 mb-3 border-b border-ivory-300">
+              <span className="fa-mono text-[10px] uppercase text-ink-400 mr-1" style={{ letterSpacing: "0.08em" }}>
+                Grade
+              </span>
+              <button
+                type="button"
+                onClick={() => setGradeFilter(new Set())}
+                className={`px-2.5 py-1 rounded-full text-xs font-semibold transition-colors ${
+                  gradeFilter.size === 0
+                    ? "bg-ink-900 text-ivory-50"
+                    : "bg-ivory-100 text-ink-600 hover:bg-ivory-200"
+                }`}
+              >
+                All
+              </button>
+              {availableGrades.map(g => (
+                <button
+                  key={g}
+                  type="button"
+                  onClick={() => toggleGrade(g)}
+                  className={`px-2.5 py-1 rounded-full text-xs font-semibold transition-colors ${
+                    gradeFilter.has(g)
+                      ? "bg-gold-500 text-white"
+                      : "bg-ivory-100 text-ink-600 hover:bg-ivory-200"
+                  }`}
+                >
+                  {gradeLabel(g)}
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* Bulk-print actions */}
           {(() => {
@@ -389,6 +465,11 @@ export function CertificatePreviewModal({ open, onClose, event, initialSessionId
             >
               <ArrowLeft className="w-3.5 h-3.5" /> All sessions
             </button>
+            {gradeFilter.size > 0 && (
+              <span className="fa-mono text-[10px] font-semibold px-2 py-0.5 rounded-full bg-gold-100 text-gold-700">
+                Grade filter: {Array.from(gradeFilter).sort((a, b) => a - b).map(gradeLabel).join(", ")}
+              </span>
+            )}
             <div className="text-xs text-ink-500 ml-auto">
               {sessionAttendees.length} certificate{sessionAttendees.length !== 1 ? "s" : ""}
             </div>
@@ -511,10 +592,10 @@ function formatCertDate(iso: string): string {
   return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`;
 }
 
-/** Module code derived from the student's age band. Until the DB carries a
- *  DOB column we fall back to the grade-based AgeCategory the server already
- *  computes (Junior G1–G3, Middler G4–G6, Senior G7+). When the DB ships an
- *  age field, just swap the input — the mapping is the same. */
+/** Module band = the student's real AGE GROUP. `student.ageCategory` is sourced
+ *  in students.server.ts from the `ade_group` table joined to studentrecords
+ *  (Heidi); it only falls back to a grade heuristic when that record is missing.
+ *  So the module reflects the student's age group, independent of the grade. */
 function moduleCodeForStudent(student: Student): string {
   switch (student.ageCategory) {
     case "Junior":  return "JUNIOR";
@@ -689,52 +770,58 @@ function CertificateRender({
         </div>
       </div>
 
-      {/* ── Signatures (bottom-left) ── */}
+      {/* ── Bottom row: Signatory · Date · Signatory ──
+          One flex row in the clear left area (clear of the red ribbon), evenly
+          spaced and bottom-aligned so the date never overlaps a signature and
+          all three underlines sit on the same baseline. */}
       <div
         className="absolute"
         style={{
           left: "7%",
+          right: "46%",
           bottom: "8%",
           display: "flex",
-          gap: "2.4rem",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          gap: "1.25rem",
           zIndex: 1,
         }}
       >
-        {CERT_SIGNATORIES.map(sig => (
-          <div key={sig.name} style={{ minWidth: "180px" }}>
-            <div style={{
-              borderBottom: "1px solid #1a1a1a",
-              height: "1.8rem",
-              marginBottom: "0.3rem",
-            }} />
-            <div className="fa-mono" style={{ fontSize: "0.7rem", fontWeight: 700, letterSpacing: "0.06em" }}>
-              {sig.name}
-            </div>
-            <div className="fa-mono" style={{ fontSize: "0.65rem", color: "#555", letterSpacing: "0.03em" }}>
-              {sig.title}
-            </div>
+        {/* First signatory */}
+        <div style={{ width: 150 }}>
+          <div style={{ height: "1.8rem" }} />
+          <div style={{ borderBottom: "1px solid #1a1a1a", marginBottom: "0.3rem" }} />
+          <div className="fa-mono" style={{ fontSize: "0.7rem", fontWeight: 700, letterSpacing: "0.06em" }}>
+            {CERT_SIGNATORIES[0].name}
           </div>
-        ))}
-      </div>
-
-      {/* ── DATE block (bottom-centre/right of white area) ── */}
-      <div
-        className="absolute"
-        style={{
-          right: "44%",
-          bottom: "8%",
-          textAlign: "center",
-          minWidth: "140px",
-          zIndex: 1,
-        }}
-      >
-        <div style={{ borderBottom: "1px solid #1a1a1a", height: "1.8rem", marginBottom: "0.3rem" }}>
-          <span className="fa-mono" style={{ fontSize: "0.95rem", lineHeight: "1.8rem", display: "inline-block" }}>
-            {completionDate}
-          </span>
+          <div className="fa-mono" style={{ fontSize: "0.65rem", color: "#555", letterSpacing: "0.03em" }}>
+            {CERT_SIGNATORIES[0].title}
+          </div>
         </div>
-        <div className="fa-mono" style={{ fontSize: "0.7rem", fontWeight: 700, letterSpacing: "0.1em" }}>
-          DATE
+
+        {/* Date — value sits above the line, "DATE" label below */}
+        <div style={{ width: 120, textAlign: "center", flexShrink: 0 }}>
+          <div style={{ height: "1.8rem" }}>
+            <span className="fa-mono" style={{ fontSize: "0.9rem", lineHeight: "1.8rem" }}>
+              {completionDate}
+            </span>
+          </div>
+          <div style={{ borderBottom: "1px solid #1a1a1a", marginBottom: "0.3rem" }} />
+          <div className="fa-mono" style={{ fontSize: "0.65rem", fontWeight: 700, letterSpacing: "0.1em" }}>
+            DATE
+          </div>
+        </div>
+
+        {/* Second signatory */}
+        <div style={{ width: 150 }}>
+          <div style={{ height: "1.8rem" }} />
+          <div style={{ borderBottom: "1px solid #1a1a1a", marginBottom: "0.3rem" }} />
+          <div className="fa-mono" style={{ fontSize: "0.7rem", fontWeight: 700, letterSpacing: "0.06em" }}>
+            {CERT_SIGNATORIES[1].name}
+          </div>
+          <div className="fa-mono" style={{ fontSize: "0.65rem", color: "#555", letterSpacing: "0.03em" }}>
+            {CERT_SIGNATORIES[1].title}
+          </div>
         </div>
       </div>
 

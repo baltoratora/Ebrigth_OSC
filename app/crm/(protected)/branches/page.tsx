@@ -5,7 +5,7 @@ import { prisma } from '@/lib/crm/db'
 import { resolveBranchAccess } from '@/lib/crm/branch-access'
 import { BranchesAdminClient, type BranchRow } from '@/components/crm/branches/branches-admin-client'
 
-export const metadata = { title: 'Branches | Ebright CRM' }
+export const metadata = { title: 'Branches | Ebright Nexus' }
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
 

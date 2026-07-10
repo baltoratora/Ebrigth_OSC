@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSession } from "next-auth/react";
-import { parseOverrides, type DashboardOverrides } from "./dashboard-access";
+import { parseOverrides, isCnsOnlyAccount, cnsOnlyOverrides, type DashboardOverrides } from "./dashboard-access";
 
 // Shared hook for the current user's role + dashboard overrides.
 //
@@ -92,5 +92,13 @@ export function useMyPermissions(): MyPermissions {
     return () => { cancelled = true; };
   }, [status, email]);
 
-  return { role, overrides, ready };
+  // CNS-only accounts (external CRM observers): force the homepage + sidebar to
+  // show only the CNS module by merging synthetic overrides OVER the fetched
+  // ones, so a permissive role default can't widen them. Lead in, ticket out.
+  const effectiveOverrides = useMemo(
+    () => (isCnsOnlyAccount(email) ? { ...overrides, ...cnsOnlyOverrides() } : overrides),
+    [email, overrides],
+  );
+
+  return { role, overrides: effectiveOverrides, ready };
 }

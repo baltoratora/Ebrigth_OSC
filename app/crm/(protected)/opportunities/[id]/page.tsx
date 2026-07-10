@@ -1,7 +1,7 @@
 import { headers } from 'next/headers'
 import { notFound, redirect } from 'next/navigation'
 import Link from 'next/link'
-import { ArrowLeft, Mail, Phone, MapPin, User, Tag, Clock, ArrowRight, Plus, GraduationCap, Users } from 'lucide-react'
+import { ArrowLeft, Mail, Phone, MapPin, User, Tag, Clock, ArrowRight, ArrowRightLeft, Plus, GraduationCap, Users } from 'lucide-react'
 import { format } from 'date-fns'
 import { auth } from '@/lib/crm/auth'
 import { prisma } from '@/lib/crm/db'
@@ -10,9 +10,10 @@ import { resolveBranchAccess } from '@/lib/crm/branch-access'
 import { getAgeCategory, ageCategoryClasses, formatChildAge, type AgeCategory } from '@/lib/crm/age-category'
 import { StudentEditCard } from '@/components/crm/opportunities/student-edit-card'
 import { NotesPanel, type NotePanelEntry } from '@/components/crm/opportunities/notes-panel'
+import { LeadTransferPanel } from '@/components/crm/opportunities/lead-transfer-panel'
 
 export const metadata = {
-  title: 'Lead Detail | Ebright CRM',
+  title: 'Lead Detail | Ebright Nexus',
 }
 
 interface PageProps {
@@ -146,6 +147,29 @@ export default async function OpportunityDetailPage({ params }: PageProps) {
     })
   }
 
+  // Branch transfer state — transfer history + the dropdown of accessible
+  // target branches for the panel at the bottom of the page. Elevated users
+  // (super/agency/regional admins) see every branch; everyone else sees the
+  // branches their crm_user_branch links grant them.
+  const transfers = await prisma.crm_lead_transfer.findMany({
+    where:  { tenantId: access.tenantId, opportunityId: opp.id },
+    orderBy: { transferredAt: 'asc' },
+    select: {
+      id:            true,
+      reason:        true,
+      transferredAt: true,
+      fromBranch:    { select: { id: true, name: true } },
+      toBranch:      { select: { id: true, name: true } },
+      transferredBy: { select: { name: true, email: true } },
+    },
+  })
+
+  const transferableBranches = await prisma.crm_branch.findMany({
+    where: { tenantId: access.tenantId },
+    select: { id: true, name: true },
+    orderBy: { name: 'asc' },
+  })
+
   // Build the timeline. Source events:
   //   - Opportunity creation (from opp.createdAt)
   //   - Each stage history row
@@ -223,15 +247,21 @@ export default async function OpportunityDetailPage({ params }: PageProps) {
                 <Clock className="h-3.5 w-3.5" />
                 Trial:{' '}
                 {new Date(trialAppointment.startAt).toLocaleDateString('en-GB', {
-                  weekday: 'short',
-                  day:     '2-digit',
-                  month:   'short',
-                  year:    'numeric',
+                  weekday:  'short',
+                  day:      '2-digit',
+                  month:    'short',
+                  year:     'numeric',
+                  // crm_appointment.startAt is stored as "naive-KL-as-UTC"
+                  // — its UTC fields ARE KL wall-clock fields. Force UTC
+                  // formatting so the display doesn't get double-shifted on
+                  // a browser or server outside the UTC zone.
+                  timeZone: 'UTC',
                 })}
                 {' @ '}
                 {new Date(trialAppointment.startAt).toLocaleTimeString('en-GB', {
-                  hour:   '2-digit',
-                  minute: '2-digit',
+                  hour:     '2-digit',
+                  minute:   '2-digit',
+                  timeZone: 'UTC',
                 })}
               </div>
             )}
@@ -294,7 +324,19 @@ export default async function OpportunityDetailPage({ params }: PageProps) {
               <Row icon={<User className="h-3.5 w-3.5" />}    label="Parent" value={parentDisplay} />
               <Row icon={<Mail className="h-3.5 w-3.5" />}    label="Email"  value={contact.email ?? '—'} />
               <Row icon={<Phone className="h-3.5 w-3.5" />}   label="Phone"  value={contact.phone ?? '—'} />
-              <Row icon={<MapPin className="h-3.5 w-3.5" />}  label="Branch" value={branch?.name ?? '—'} />
+              <Row
+                icon={<MapPin className="h-3.5 w-3.5" />}
+                label="Branch"
+                value={
+                  // Leads routed to "Ebright Marketing" arrived with no
+                  // resolvable branch in the source data — display Unknown
+                  // so the Marketing team knows to triage + transfer the
+                  // lead to the correct branch via the panel below.
+                  branch?.name === 'Ebright Marketing'
+                    ? 'Unknown'
+                    : (branch?.name ?? '—')
+                }
+              />
               {contact.leadSource && (
                 <Row icon={<Tag className="h-3.5 w-3.5" />}   label="Source" value={contact.leadSource.name} />
               )}
@@ -329,6 +371,40 @@ export default async function OpportunityDetailPage({ params }: PageProps) {
                   </span>
                 ))}
               </div>
+            </section>
+          )}
+
+          {/* Transfer history — surfaces every cross-branch move so the BM
+              can see where this lead has been routed and why. Hidden when
+              no transfers have happened. */}
+          {transfers.length > 0 && (
+            <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+              <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                <ArrowRightLeft className="h-3 w-3" /> Transfer History ({transfers.length}/3)
+              </h3>
+              <ul className="space-y-2.5">
+                {transfers.map((t) => (
+                  <li
+                    key={t.id}
+                    className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800"
+                  >
+                    <div className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-200">
+                      <span className="truncate">{t.fromBranch.name}</span>
+                      <ArrowRight className="h-3 w-3 shrink-0 text-slate-400" />
+                      <span className="truncate">{t.toBranch.name}</span>
+                    </div>
+                    <p className="mt-1 line-clamp-3 text-[11px] italic text-slate-600 dark:text-slate-300">
+                      &ldquo;{t.reason}&rdquo;
+                    </p>
+                    <p className="mt-1 text-[10px] text-slate-400">
+                      {format(t.transferredAt, 'd MMM yyyy, HH:mm')}
+                      {t.transferredBy && (
+                        <> &middot; by {t.transferredBy.name ?? t.transferredBy.email}</>
+                      )}
+                    </p>
+                  </li>
+                ))}
+              </ul>
             </section>
           )}
 
@@ -472,6 +548,13 @@ export default async function OpportunityDetailPage({ params }: PageProps) {
             )}
           </div>
         </section>
+
+        <LeadTransferPanel
+          opportunityId={opp.id}
+          currentBranchId={opp.branchId}
+          transferCount={transfers.length}
+          branches={transferableBranches}
+        />
         </div>
       </div>
     </div>

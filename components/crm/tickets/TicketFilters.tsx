@@ -25,6 +25,7 @@ interface TicketFiltersProps {
 
 const STATUS_OPTIONS = [
   { value: 'received', label: 'Received' },
+  { value: 'approved', label: 'Approved' },
   { value: 'in_progress', label: 'In Progress' },
   { value: 'complete', label: 'Complete' },
   { value: 'rejected', label: 'Rejected' },
@@ -90,7 +91,7 @@ export function TicketFilters({ filters, onChange, role }: TicketFiltersProps) {
     <div className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950">
       <div className="flex flex-wrap items-end gap-3">
         {/* Search */}
-        <div className="min-w-[180px] flex-1">
+        <div className="min-w-45 flex-1">
           <Label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">Search</Label>
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />

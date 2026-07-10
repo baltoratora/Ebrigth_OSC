@@ -11,6 +11,7 @@ interface ContactsPageClientProps {
   users: Array<{ id: string; name: string | null; email: string; image: string | null }>
   branches: Array<{ id: string; name: string }>
   tags: Array<{ id: string; name: string; color: string }>
+  canDelete: boolean
 }
 
 export function ContactsPageClient({
@@ -22,6 +23,7 @@ export function ContactsPageClient({
   users,
   branches,
   tags,
+  canDelete,
 }: ContactsPageClientProps) {
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900">
@@ -40,6 +42,7 @@ export function ContactsPageClient({
           users={users}
           branches={branches}
           tags={tags}
+          canDelete={canDelete}
         />
       </div>
     </div>

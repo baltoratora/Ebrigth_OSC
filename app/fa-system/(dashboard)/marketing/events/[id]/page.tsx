@@ -22,7 +22,7 @@ import { BulkSessionEditorModal } from "@fa/_components/fa/BulkSessionEditorModa
 import { QuotaModal } from "@fa/_components/fa/QuotaModal";
 import { MarketingSessionInvitesModal } from "@fa/_components/fa/MarketingSessionInvitesModal";
 import { EventInvitationListCard } from "@fa/_components/fa/EventInvitationListCard";
-import { EventStatus, Session } from "@fa/_types";
+import { EventStatus, Session, countsAsConfirmed } from "@fa/_types";
 import { addDays, parseISO } from "date-fns";
 import { formatDateRange } from "@fa/_lib/date";
 import { buildEventAttendanceCsv } from "@fa/_lib/eventAttendanceCsv";
@@ -90,7 +90,7 @@ export default function MarketingEventDetailPage() {
 
   const totalQuota     = quotas.filter(q => sessions.some(s => s.id === q.sessionId)).reduce((sum, q) => sum + q.quota, 0);
   const totalInvited   = invitations.length;
-  const totalConfirmed = invitations.filter(i => i.status === "confirmed" || i.status === "attended").length;
+  const totalConfirmed = invitations.filter(i => countsAsConfirmed(i.status)).length;
 
   // The top-level "Add session" entry point now opens the day-by-day bulk
   // editor instead of the single-session form. The per-day "+ Add to Day N"

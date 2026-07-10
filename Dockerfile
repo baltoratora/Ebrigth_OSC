@@ -31,7 +31,7 @@ COPY . .
 # which `next build` exceeds once Recharts + the rest are in the bundle.
 RUN SKIP_ENV_VALIDATION=1 \
     DATABASE_URL=postgres://buildtime:buildtime@127.0.0.1:5432/buildtime \
-    NODE_OPTIONS=--max-old-space-size=4096 \
+    NODE_OPTIONS=--max-old-space-size=3072 \
     npm run build
 
 # Drop devDependencies + npm cache. This cuts node_modules roughly in half

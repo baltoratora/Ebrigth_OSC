@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { hrfsPrisma } from '@/lib/hrfs';
 import { requireSession } from '@/lib/auth';
+import { normalizeLocation } from '@/lib/constants';
 
 // GET /api/profile — returns the caller's own profile, always.
 //
@@ -20,7 +22,7 @@ export async function GET() {
   });
   if (!user) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-  const staff = await prisma.branchStaff.findFirst({
+  const staff = await hrfsPrisma.branchStaff.findFirst({
     where:  { email: { equals: email, mode: 'insensitive' } },
     select: { phone: true, nickname: true, branch: true, name: true },
   });
@@ -30,7 +32,14 @@ export async function GET() {
     name:      user.name ?? staff?.name ?? '',
     nickname:  staff?.nickname ?? '',
     email:     user.email,
-    branch:    user.branchName ?? staff?.branch ?? '',
+    // Branch comes from the BranchStaff record (the source of truth);
+    // User.branchName is only a fallback when there's no matching staff row.
+    // normalizeLocation maps the stored short code ("KW") to the full branch
+    // name ("Kota Warisan") for display.
+    branch:    (() => {
+      const raw = staff?.branch ?? user.branchName ?? '';
+      return raw ? normalizeLocation(raw) : '';
+    })(),
     role:      user.role,
     phone:     staff?.phone ?? '',
   });

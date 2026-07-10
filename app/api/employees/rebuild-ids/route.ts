@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { hrfsPrisma } from '@/lib/hrfs';
 import { requireRole } from '@/lib/auth';
 import { ADMIN_ROLES } from '@/lib/roles';
 
@@ -35,11 +35,11 @@ export async function POST() {
   if (error) return error;
 
   try {
-    const all = await prisma.branchStaff.findMany({ orderBy: { id: 'asc' } });
+    const all = await hrfsPrisma.branchStaff.findMany({ orderBy: { id: 'asc' } });
 
     for (const s of all) {
       const newId = buildEmployeeId(s.role || '', s.branch || '', s.id);
-      await prisma.branchStaff.update({
+      await hrfsPrisma.branchStaff.update({
         where: { id: s.id },
         data: { employeeId: newId },
       });

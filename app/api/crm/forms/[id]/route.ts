@@ -5,6 +5,7 @@ import { auth } from '@/lib/crm/auth'
 import { prisma } from '@/lib/crm/db'
 import { logAudit } from '@/lib/crm/audit'
 import { normalizeToV2 } from '@/lib/crm/forms-types'
+import { denyReadOnlyViewer } from '@/lib/crm/admin-session'
 
 async function resolveSession() {
   const session = await auth.api.getSession({ headers: await headers() })
@@ -43,6 +44,7 @@ const UpdateSchema = z.object({
 })
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await denyReadOnlyViewer(); if (denied) return denied
   const ctx = await resolveSession()
   if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   if (!['SUPER_ADMIN', 'AGENCY_ADMIN'].includes(ctx.role)) {
@@ -80,6 +82,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 }
 
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await denyReadOnlyViewer(); if (denied) return denied
   const ctx = await resolveSession()
   if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   if (!['SUPER_ADMIN', 'AGENCY_ADMIN'].includes(ctx.role)) {

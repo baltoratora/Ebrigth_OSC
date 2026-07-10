@@ -1,0 +1,10 @@
+CREATE TABLE branch_quota (
+  id         SERIAL PRIMARY KEY,
+  branch     TEXT NOT NULL UNIQUE,
+  wed        INTEGER NOT NULL DEFAULT 5,
+  thu        INTEGER NOT NULL DEFAULT 5,
+  fri        INTEGER NOT NULL DEFAULT 5,
+  sat        INTEGER NOT NULL DEFAULT 5,
+  sun        INTEGER NOT NULL DEFAULT 5,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

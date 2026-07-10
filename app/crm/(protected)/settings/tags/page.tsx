@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, Loader2, Pencil, Trash2, X, Check } from 'lucide-react'
 import { cn } from '@/lib/crm/utils'
+import { useReadOnlyViewer } from '@/lib/crm/use-read-only-viewer'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -37,10 +38,12 @@ function TagChip({
   tag,
   onUpdate,
   onDelete,
+  readOnly = false,
 }: {
   tag: Tag
   onUpdate: (id: string, name: string, color: string) => Promise<void>
   onDelete: (id: string) => Promise<void>
+  readOnly?: boolean
 }) {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(tag.name)
@@ -114,12 +117,12 @@ function TagChip({
   return (
     <div className="relative group">
       <div
-        className="flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium cursor-pointer select-none"
+        className={`flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium select-none ${readOnly ? '' : 'cursor-pointer'}`}
         style={{ backgroundColor: color, color: textColor }}
-        onClick={() => setEditing(true)}
+        onClick={() => { if (!readOnly) setEditing(true) }}
       >
         <span>{tag.name}</span>
-        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-1">
+        <div className={`flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-1 ${readOnly ? 'hidden' : ''}`}>
           <button
             onClick={(e) => {
               e.stopPropagation()
@@ -271,6 +274,7 @@ function NewTagForm({ onSuccess }: { onSuccess: () => void }) {
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function TagsPage() {
+  const readOnly = useReadOnlyViewer()
   const qc = useQueryClient()
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['crm', 'tags'],
@@ -329,9 +333,10 @@ export default function TagsPage() {
               tag={tag}
               onUpdate={handleUpdate}
               onDelete={handleDelete}
+              readOnly={readOnly}
             />
           ))}
-          <NewTagForm onSuccess={() => void qc.invalidateQueries({ queryKey: ['crm', 'tags'] })} />
+          {!readOnly && <NewTagForm onSuccess={() => void qc.invalidateQueries({ queryKey: ['crm', 'tags'] })} />}
         </div>
       )}
 

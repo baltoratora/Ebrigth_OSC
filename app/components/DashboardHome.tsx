@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { canSeeKey } from "@/lib/dashboard-access";
 import { useMyPermissions } from "@/lib/use-my-permissions";
@@ -52,8 +53,8 @@ const dashboards: DashboardCard[] = [
   },
   {
     id: "crm",
-    title: "CRM",
-    icon: "📰",
+    title: "CNS",
+    icon: "🤝",
     color: "bg-yellow-500",
     items: [
       { name: "Content Manager", href: "#", icon: "✏️" },
@@ -110,6 +111,22 @@ const dashboards: DashboardCard[] = [
     color: "bg-amber-500",
     items: [],
   },
+  {
+    id: "annual-showcase",
+    title: "Annual Showcase",
+    icon: "🎪",
+    color: "bg-orange-500",
+    items: [
+      { name: "Organizing Committee", href: "/annual-showcase/oc",           icon: "🏛️" },
+      { name: "Procurement",          href: "/annual-showcase/procurement",   icon: "🛒" },
+      { name: "Sponsorship & VVIP",   href: "/annual-showcase/sponsorship",   icon: "🤝" },
+      { name: "Media & Publicity",    href: "/annual-showcase/media",         icon: "📣" },
+      { name: "Showcase & Production",href: "/annual-showcase/showcase",      icon: "🎤" },
+      { name: "Logistics",            href: "/annual-showcase/logistics",     icon: "🚛" },
+      { name: "Youthpreneur",         href: "/annual-showcase/youthpreneur",  icon: "💡" },
+      { name: "CEO Unit",             href: "/annual-showcase/ceo",           icon: "👔" },
+    ],
+  },
 ];
 
 export default function DashboardHome({ userRole }: { userRole?: string; userEmail?: string }) {
@@ -118,7 +135,23 @@ export default function DashboardHome({ userRole }: { userRole?: string; userEma
   const { role: sessionRole, overrides } = useMyPermissions();
   const effectiveRole = (sessionRole as string | undefined) ?? userRole;
 
-  const accessibleCount = dashboards.filter((d) => canSeeKey(effectiveRole, d.id, overrides)).length;
+  // Annual Showcase card is hidden entirely unless the user has at least one
+  // assigned unit (or is ADMIN/SUPER_ADMIN, which /my-access reports as "ALL").
+  // Defaults to hidden until the fetch resolves — fail closed, not open.
+  const [showcaseVisible, setShowcaseVisible] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/annual-showcase/my-access")
+      .then(r => (r.ok ? r.json() : { units: [] }))
+      .then((data: { units: string[] | "ALL" }) => {
+        setShowcaseVisible(data.units === "ALL" || (Array.isArray(data.units) && data.units.length > 0));
+      })
+      .catch(() => {});
+  }, []);
+
+  const visibleDashboards = dashboards.filter((d) => d.id !== "annual-showcase" || showcaseVisible);
+
+  const accessibleCount = visibleDashboards.filter((d) => canSeeKey(effectiveRole, d.id, overrides)).length;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -131,7 +164,7 @@ export default function DashboardHome({ userRole }: { userRole?: string; userEma
 
       <main className="max-w-5xl mx-auto px-4 py-6 sm:py-12">
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3 sm:gap-6">
-          {dashboards.map((dashboard) => {
+          {visibleDashboards.map((dashboard) => {
             const isDisabled = !canSeeKey(effectiveRole, dashboard.id, overrides);
 
 const targetHref =
@@ -139,6 +172,7 @@ const targetHref =
   dashboard.id === "inventory" ? "/api/launch-inventory" :
   dashboard.id === "fa-system" ? "/fa-system" :
   dashboard.id === "pcm-system" ? "/pcm-system" :
+  dashboard.id === "annual-showcase" ? "/annual-showcase/editions" :
   `/dashboards/${dashboard.id}`;
 
 const href = isDisabled ? "#" : targetHref;

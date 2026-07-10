@@ -5,6 +5,7 @@ import { prisma } from '@/lib/crm/db'
 import { isPreviewMode } from '@/lib/crm/preview-mode'
 import { auth } from '@/lib/crm/auth'
 import { logAudit } from '@/lib/crm/audit'
+import { denyReadOnlyViewer } from '@/lib/crm/admin-session'
 
 // Accepts either:
 //   - userId (CRM user id) — used when the picked user already has a crm_auth_user row
@@ -27,6 +28,8 @@ const Schema = z
  *      compliance trail.
  */
 export async function POST(req: NextRequest) {
+  // A read-only viewer must never impersonate (it would bypass every write guard).
+  const denied = await denyReadOnlyViewer(); if (denied) return denied
   const previewBypass = isPreviewMode()
 
   // In production we need the caller's identity to (a) authorise and (b) log.

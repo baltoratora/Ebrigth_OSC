@@ -9,6 +9,7 @@
 import {
   BRANCHES,
   BranchCode,
+  BranchRegion,
   FAEvent,
   Invitation,
   Session,
@@ -33,6 +34,16 @@ export const MOCK_USERS: User[] = [
     email: `${b.code.toLowerCase()}@ebright.my`,
     role: "BM" as const,
     branch: b.code as BranchCode,
+  })),
+  // One Regional Manager per region (A/B/C). SessionSync maps a real RM's
+  // login email to the matching u-rm-* via RM_REGION_BY_EMAIL.
+  ...(["A", "B", "C"] as BranchRegion[]).map(region => ({
+    id: `u-rm-${region.toLowerCase()}`,
+    name: `Regional Manager — Region ${region}`,
+    email: `rm-${region.toLowerCase()}@ebright.my`,
+    role: "RM" as const,
+    branch: null,
+    region,
   })),
 ];
 

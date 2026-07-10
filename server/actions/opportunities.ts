@@ -107,7 +107,7 @@ export async function createOpportunity(
 export interface MoveOpportunityExtras {
   trialDate?: string
   trialTimeSlot?: string
-  enrollmentMonths?: 3 | 6 | 9 | 12
+  enrollmentMonths?: 3 | 6 | 9 | 12 | 18 | 24
   rescheduleDate?: string
 }
 
@@ -135,13 +135,38 @@ export async function moveOpportunity(
   // Look up destination stage name so we can branch on semantics
   const toStage = await prisma.crm_stage.findFirst({
     where: { id: toStageId, tenantId },
-    select: { name: true },
+    select: { name: true, shortCode: true },
   })
   const toStageName = toStage?.name?.toLowerCase() ?? ''
+  const toCode = (toStage?.shortCode ?? '').toUpperCase()
 
   const isConfirmedTrial = toStageName === 'confirmed for trial'
   const isEnrolled = toStageName === 'enrolled'
   const isReschedule = toStageName === 'reschedule'
+
+  // A lead's Trial Class record is RETAINED while the lead is anywhere the trial
+  // still "counts": CT (booked), SU (showed), SNE / CNS (showed-no-enrol /
+  // confirmed-no-show), ENR (enrolled) and RSD (rescheduling). The Leads-Dashboard
+  // CT headline counts these records by trial date, so they must survive the move.
+  // Any OTHER destination (FU*, CL, DND, NL, UR_W*, …) means the lead backed out
+  // before the trial — we delete the record and the CT count drops. Keyed on the
+  // DESTINATION so multi-hop paths (e.g. CT → SU → CL) free correctly. The
+  // schedule grid + slot-capacity scope themselves by CURRENT stage, so a
+  // retained-but-not-CT record never occupies a live trial slot.
+  const TRIAL_RETAIN_CODES = new Set(['CT', 'SU', 'SNE', 'CNS', 'ENR', 'RSD'])
+  const dropTrialRecord = !isConfirmedTrial && !TRIAL_RETAIN_CODES.has(toCode)
+
+  // Live "Confirmed for Trial" stage IDs — used to scope the slot-capacity count
+  // below so retained records for leads who've moved on don't block new bookings.
+  const ctSeatStageIds = (
+    await prisma.crm_stage.findMany({
+      where: {
+        tenantId,
+        OR: [{ shortCode: 'CT' }, { name: { equals: 'Confirmed for Trial', mode: 'insensitive' } }],
+      },
+      select: { id: true },
+    })
+  ).map((s) => s.id)
 
   // Enforce required stage-specific fields
   if (isConfirmedTrial && (!extras.trialDate || !extras.trialTimeSlot)) {
@@ -171,12 +196,23 @@ export async function moveOpportunity(
       const [startStr] = extras.trialTimeSlot.split('–').map((s) => s.trim())
       const startAt = new Date(`${extras.trialDate}T${toHHMM(startStr)}:00`)
 
+      // Re-booking a trial (e.g. after a reschedule back into CT) must replace
+      // the lead's prior Trial Class appointment, not stack a second one —
+      // otherwise the old slot stays "booked" forever (ghost capacity) and the
+      // card's latest-appointment pill can show the wrong date.
+      await tx.crm_appointment.deleteMany({
+        where: { tenantId, contactId: opportunity.contactId, title: 'Trial Class' },
+      })
+
       const booked = await tx.crm_appointment.count({
         where: {
           tenantId,
           branchId: opportunity.branchId,
           title: 'Trial Class',
           startAt,
+          // Only live CT seats occupy the slot — retained records for leads who
+          // moved on (SU/ENR/RSD/…) must not count toward capacity.
+          contact: { opportunities: { some: { stageId: { in: ctSeatStageIds } } } },
         },
       })
       if (booked >= TRIAL_CAPACITY) {
@@ -197,6 +233,32 @@ export async function moveOpportunity(
           title: 'Trial Class',
           notes: note ?? undefined,
         },
+      })
+
+      // Mirror the trial weekday onto the contact. The Region "Day
+      // Distribution" dashboard buckets CT/ENR by contact.preferredTrialDay,
+      // so without this a confirmed trial booked from the kanban never shows
+      // there (only the appointment-based Trial Schedule widget did).
+      const TRIAL_DAY_BY_DOW: Record<number, 'WED' | 'THU' | 'FRI' | 'SAT' | 'SUN'> = {
+        3: 'WED', 4: 'THU', 5: 'FRI', 6: 'SAT', 0: 'SUN',
+      }
+      const trialDay = TRIAL_DAY_BY_DOW[new Date(`${extras.trialDate}T00:00:00`).getDay()]
+      if (trialDay) {
+        await tx.crm_contact.update({
+          where: { id: opportunity.contactId },
+          data: { preferredTrialDay: trialDay },
+        })
+      }
+    }
+
+    // Drop the lead's Trial Class record when it backs out before the trial
+    // (destination outside TRIAL_RETAIN_CODES). Runs inside the move txn so the
+    // kanban refetch immediately reflects the cleared slot. Rescheduling (RSD)
+    // RETAINS the record — the CT headline still counts it — while the schedule
+    // grid + capacity (scoped by current stage) free the live slot.
+    if (dropTrialRecord) {
+      await tx.crm_appointment.deleteMany({
+        where: { tenantId, contactId: opportunity.contactId, title: 'Trial Class' },
       })
     }
 
@@ -265,21 +327,26 @@ async function runStageSideEffects(args: {
     }
   }
 
-  if (isReschedule && extras.rescheduleDate) {
-    try {
-      const dueAt = new Date(`${extras.rescheduleDate}T09:00:00`)
-      await prisma.crm_task.create({
-        data: {
-          tenantId,
-          branchId: opportunity.branchId,
-          contactId: opportunity.contactId,
-          assignedUserId: userId,
-          title: 'Reschedule follow-up',
-          dueAt,
-        },
-      })
-    } catch (err) {
-      console.error('[moveOpportunity] failed to create reschedule task:', err)
+  if (isReschedule) {
+    // The trial RECORD is retained (the CT headline still counts it) but the
+    // live slot is freed because the schedule grid + capacity scope by current
+    // stage (RSD is not CT). Here we only schedule the new-date follow-up task.
+    if (extras.rescheduleDate) {
+      try {
+        const dueAt = new Date(`${extras.rescheduleDate}T09:00:00`)
+        await prisma.crm_task.create({
+          data: {
+            tenantId,
+            branchId: opportunity.branchId,
+            contactId: opportunity.contactId,
+            assignedUserId: userId,
+            title: 'Reschedule follow-up',
+            dueAt,
+          },
+        })
+      } catch (err) {
+        console.error('[moveOpportunity] failed to create reschedule task:', err)
+      }
     }
   }
 
@@ -394,6 +461,24 @@ export async function bulkMoveOpportunities(
       changedAt: now,
     })),
   })
+
+  // Drop Trial Class records for leads bulk-moved to a stage where the trial no
+  // longer counts (anything outside TRIAL_RETAIN_CODES) — mirrors moveOpportunity.
+  // Keyed on the destination, regardless of the from-stage, so the CT headline
+  // count stays correct after a bulk move.
+  const toStageRow = await prisma.crm_stage.findFirst({
+    where: { id: toStageId, tenantId },
+    select: { shortCode: true },
+  })
+  const toCode = (toStageRow?.shortCode ?? '').toUpperCase()
+  if (!new Set(['CT', 'SU', 'SNE', 'CNS', 'ENR', 'RSD']).has(toCode)) {
+    const contactIds = Array.from(new Set(opportunities.map((o) => o.contactId)))
+    if (contactIds.length > 0) {
+      await prisma.crm_appointment.deleteMany({
+        where: { tenantId, title: 'Trial Class', contactId: { in: contactIds } },
+      })
+    }
+  }
 
   void logAudit({
     tenantId,

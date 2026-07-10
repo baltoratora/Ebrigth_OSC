@@ -13,8 +13,9 @@ import { HeroCard } from "@fa/_components/fa/HeroCard";
 import { EventRow } from "@fa/_components/fa/EventRow";
 import { ArchiveRow } from "@fa/_components/fa/ArchiveRow";
 import { MultiGradeManagerModal } from "@fa/_components/fa/MultiGradeManagerModal";
+import { DuplicateEventModal } from "@fa/_components/fa/DuplicateEventModal";
 import { Z } from "@fa/_lib/zIndex";
-import { EventStatus, FAEvent } from "@fa/_types";
+import { EventStatus, FAEvent, countsAsConfirmed, countsAsAttended } from "@fa/_types";
 
 export default function MarketingEventsPage() {
   const user = useCurrentUser();
@@ -30,6 +31,7 @@ export default function MarketingEventsPage() {
   const [editEvent,    setEditEvent]    = useState<FAEvent | null>(null);
   const [savedToast,   setSavedToast]   = useState(false);
   const [multiGradeOpen, setMultiGradeOpen] = useState(false);
+  const [duplicateSource, setDuplicateSource] = useState<FAEvent | null>(null);
 
   // Total branches currently unlocked across all events — surfaced as a
   // counter pip on the "Multi-Grade" button so Marketing notices at a
@@ -72,6 +74,12 @@ export default function MarketingEventsPage() {
 
   const sessionCount  = (id: string) => sessions.filter(s => s.eventId === id).length;
   const invitationCount = (id: string) => invitations.filter(i => i.eventId === id).length;
+  // Confirmed = everyone who confirmed (attended + no_show both confirmed first).
+  const confirmedCount = (id: string) =>
+    invitations.filter(i => i.eventId === id && countsAsConfirmed(i.status)).length;
+  // Attended = students who actually showed up (marked attended, or walked in).
+  const attendedCount = (id: string) =>
+    invitations.filter(i => i.eventId === id && countsAsAttended(i.status)).length;
   const quotaTotal = (id: string) => {
     const sessionIds = new Set(sessions.filter(s => s.eventId === id).map(s => s.id));
     return quotas.filter(q => sessionIds.has(q.sessionId)).reduce((sum, q) => sum + q.quota, 0);
@@ -196,9 +204,11 @@ export default function MarketingEventsPage() {
             event={heroEvent}
             sessionCount={sessionCount(heroEvent.id)}
             invitationCount={invitationCount(heroEvent.id)}
+            confirmedCount={confirmedCount(heroEvent.id)}
             quotaTotal={quotaTotal(heroEvent.id)}
             onView={() => setPreviewEvent(heroEvent)}
             onEdit={() => setEditEvent(heroEvent)}
+            onDuplicate={() => setDuplicateSource(heroEvent)}
           />
         </section>
       )}
@@ -220,9 +230,11 @@ export default function MarketingEventsPage() {
                 event={event}
                 sessionCount={sessionCount(event.id)}
                 invitationCount={invitationCount(event.id)}
+                confirmedCount={confirmedCount(event.id)}
                 quotaTotal={quotaTotal(event.id)}
                 onView={() => setPreviewEvent(event)}
                 onEdit={() => setEditEvent(event)}
+                onDuplicate={() => setDuplicateSource(event)}
               />
             ))}
           </div>
@@ -246,6 +258,8 @@ export default function MarketingEventsPage() {
                 event={event}
                 sessionCount={sessionCount(event.id)}
                 invitationCount={invitationCount(event.id)}
+                confirmedCount={confirmedCount(event.id)}
+                attendedCount={attendedCount(event.id)}
                 quotaTotal={quotaTotal(event.id)}
                 isLast={i === archive.length - 1}
               />
@@ -275,6 +289,12 @@ export default function MarketingEventsPage() {
       <MultiGradeManagerModal
         open={multiGradeOpen}
         onClose={() => setMultiGradeOpen(false)}
+      />
+
+      <DuplicateEventModal
+        open={!!duplicateSource}
+        onClose={() => setDuplicateSource(null)}
+        source={duplicateSource}
       />
 
       {/* ── Save toast ──────────────────────────────────────────────── */}

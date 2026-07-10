@@ -59,7 +59,7 @@ export default function CrmLoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 to-indigo-50 dark:from-slate-950 dark:to-indigo-950 px-4">
+    <div className="flex min-h-screen items-center justify-center bg-linear-to-br from-slate-50 to-indigo-50 dark:from-slate-950 dark:to-indigo-950 px-4">
       <div className="w-full max-w-sm">
         {/* Brand */}
         <div className="mb-8 text-center">
@@ -67,7 +67,7 @@ export default function CrmLoginPage() {
             E
           </div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">
-            Ebright CRM
+            Ebright Nexus
           </h1>
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
             Sign in to your account
@@ -170,7 +170,7 @@ export default function CrmLoginPage() {
               disabled={isLoading}
               className={cn(
                 'flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition',
-                'hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600',
+                'hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600',
                 'disabled:opacity-60 disabled:cursor-not-allowed',
               )}
             >

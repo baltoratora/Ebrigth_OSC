@@ -2,6 +2,8 @@ import { headers } from 'next/headers'
 import { redirect } from 'next/navigation'
 import { auth } from '@/lib/crm/auth'
 import { prisma } from '@/lib/crm/db'
+import { resolveBranchAccess } from '@/lib/crm/branch-access'
+import { hasPermission } from '@/lib/crm/permissions'
 import { ContactsPageClient } from './contacts-page-client'
 
 export const dynamic = 'force-dynamic'
@@ -52,6 +54,10 @@ export default async function ContactsPage() {
   const stages = userBranch.branch.pipelines.flatMap((p) => p.stages)
   const tags = userBranch.branch.tags
 
+  // Only SUPER_ADMIN may delete contacts (the deleteContact action re-checks).
+  const access = await resolveBranchAccess(session.user.id)
+  const canDelete = access ? hasPermission(access.role, 'contacts:delete') : false
+
   const usersData = users.map((ub) => ({
     id: ub.user.id,
     name: ub.user.name,
@@ -69,6 +75,7 @@ export default async function ContactsPage() {
       users={usersData}
       branches={branches}
       tags={tags.map((t) => ({ id: t.id, name: t.name, color: t.color }))}
+      canDelete={canDelete}
     />
   )
 }

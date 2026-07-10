@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createSessionRow } from "@fa/_lib/events.server";
+import { requireSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
+  const auth = await requireSession();
+  if (auth.error) return auth.error;
+
   try {
     const body = await req.json();
     const created = await createSessionRow({

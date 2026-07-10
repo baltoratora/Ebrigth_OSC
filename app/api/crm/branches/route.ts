@@ -3,21 +3,15 @@ import { headers } from 'next/headers'
 import { auth } from '@/lib/crm/auth'
 import { prisma } from '@/lib/crm/db'
 import { createBranch } from '@/server/actions/branches'
+import { resolveCrmAdminSession } from '@/lib/crm/admin-session'
 
 // Always re-fetch so newly seeded branches (e.g. HR) appear without a hard refresh
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
 
-async function resolveSession() {
-  const session = await auth.api.getSession({ headers: await headers() })
-  if (!session?.user?.id) return null
-  const ub = await prisma.crm_user_branch.findFirst({
-    where: { userId: session.user.id },
-    select: { tenantId: true, role: true },
-  })
-  if (!ub) return null
-  return { tenantId: ub.tenantId, userId: session.user.id, role: ub.role }
-}
+// Read-only viewer (CEO) gets a synthetic elevated reader (viewerOnly) so the
+// Branches admin page renders; POST rejects viewerOnly.
+const resolveSession = resolveCrmAdminSession
 
 export async function GET() {
   try {
@@ -50,6 +44,7 @@ export async function POST(req: NextRequest) {
   try {
     const ctx = await resolveSession()
     if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (ctx.viewerOnly) return NextResponse.json({ error: 'Read-only access' }, { status: 403 })
     if (!['SUPER_ADMIN', 'AGENCY_ADMIN'].includes(ctx.role)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }

@@ -32,6 +32,12 @@ interface AuditLog {
   ipAddress: string | null
   createdAt: string
   meta: Record<string, unknown> | null
+  // Enriched server-side:
+  actorName: string | null
+  actorEmail: string | null
+  actorBranch: string | null      // the branch that made the change
+  affectedBranch: string | null   // the branch the change was about
+  description: string | null      // human-readable "what was done"
 }
 
 const ACTION_COLORS: Record<string, string> = {
@@ -112,13 +118,16 @@ export default function AuditLogPage() {
   const totalPages = Math.ceil(total / pageSize)
 
   function handleExportCsv() {
-    const headers = ['Timestamp', 'User', 'Action', 'Entity', 'Entity ID', 'IP']
+    const headers = ['Timestamp', 'User', 'Email', 'Branch', 'Action', 'What was done', 'Affected Branch', 'Entity', 'IP']
     const rows = logs.map((log) => [
       formatDateTime(log.createdAt),
-      log.userEmail ?? log.userId ?? '—',
+      log.actorName ?? log.userEmail ?? log.userId ?? '—',
+      log.actorEmail ?? log.userEmail ?? '—',
+      log.actorBranch ?? '—',
       log.action,
+      log.description ?? `${log.action} ${log.entity}`,
+      log.affectedBranch ?? '—',
       log.entity,
-      log.entityId ?? '—',
       log.ipAddress ?? '—',
     ])
     const csv = [headers, ...rows]
@@ -142,11 +151,28 @@ export default function AuditLogPage() {
         </span>
       ),
     }),
-    col.accessor('userEmail', {
+    col.display({
+      id: 'user',
       header: 'User',
+      cell: ({ row }) => {
+        const r = row.original
+        const name = r.actorName ?? r.userEmail ?? r.userId ?? '—'
+        const email = r.actorEmail ?? r.userEmail
+        return (
+          <div className="min-w-0 max-w-44">
+            <div className="truncate text-xs font-medium text-slate-800 dark:text-slate-200">{name}</div>
+            {email && email !== name && (
+              <div className="truncate text-[10px] text-slate-400 dark:text-slate-500">{email}</div>
+            )}
+          </div>
+        )
+      },
+    }),
+    col.accessor('actorBranch', {
+      header: 'Branch',
       cell: (info) => (
-        <span className="text-xs text-slate-700 dark:text-slate-300 truncate max-w-[120px] block">
-          {info.getValue() ?? info.row.original.userId ?? '—'}
+        <span className="text-xs text-slate-600 dark:text-slate-300 whitespace-nowrap">
+          {info.getValue() ?? '—'}
         </span>
       ),
     }),
@@ -161,21 +187,24 @@ export default function AuditLogPage() {
         </span>
       ),
     }),
-    col.accessor('entity', {
-      header: 'Entity',
-      cell: (info) => (
-        <code className="text-xs bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded text-slate-700 dark:text-slate-300">
-          {info.getValue()}
-        </code>
-      ),
-    }),
-    col.accessor('entityId', {
-      header: 'Entity ID',
-      cell: (info) => (
-        <code className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">
-          {info.getValue()?.slice(0, 8) ?? '—'}
-        </code>
-      ),
+    col.display({
+      id: 'details',
+      header: 'What was done',
+      cell: ({ row }) => {
+        const r = row.original
+        const showAffected = r.affectedBranch && r.affectedBranch !== r.actorBranch
+        return (
+          <div className="min-w-0">
+            <div className="text-xs text-slate-700 dark:text-slate-300">
+              {r.description ?? `${r.action} ${r.entity}`}
+              {showAffected && (
+                <span className="text-slate-400 dark:text-slate-500"> → {r.affectedBranch}</span>
+              )}
+            </div>
+            <code className="text-[10px] text-slate-400 dark:text-slate-500">{r.entity}</code>
+          </div>
+        )
+      },
     }),
     col.accessor('ipAddress', {
       header: 'IP',

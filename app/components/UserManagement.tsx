@@ -2,11 +2,18 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
-import { BRANCH_OPTIONS, ROLE_OPTIONS, CONTRACT_OPTIONS, GENDER_OPTIONS, ROLE_CODES } from "@/lib/constants";
+import { BRANCH_OPTIONS, DEPARTMENT_OPTIONS, ROLE_OPTIONS, CONTRACT_OPTIONS, GENDER_OPTIONS, ROLE_CODES, COACH_ROLES_WITH_LEGACY } from "@/lib/constants";
 import { isAdmin, isAcademy, isHR } from "@/lib/roles";
 import { isInTraining } from "@/lib/training";
 import EmployeeIdInput from "@/app/components/EmployeeIdInput";
 import { splitEmployeeId, composeEmployeeId, isValidSuffix, isValidEmployeeId } from "@/lib/employeeId";
+
+// Department applies only to HQ staff; Rate only to part-time coaches (paid
+// hourly). Both fields are conditionally shown based on these checks.
+const isPartTimeCoach = (role?: string | null) => {
+  const r = (role ?? "").trim().toUpperCase();
+  return r === "PT COACH" || r.startsWith("PT - COACH");
+};
 
 interface User {
   id: string;
@@ -22,6 +29,7 @@ interface User {
   dob: string;
   homeAddress: string;
   branch: string;
+  department: string;
   role: string;
   contract: string;
   startDate: string;
@@ -40,7 +48,6 @@ interface User {
   Bank_Account?: string;
   University?: string;
   accessStatus: string;
-  biometricTemplate: string | null;
   registeredAt: string;
   updatedAt: string;
   trainingStartDate?: string;
@@ -226,6 +233,10 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
     } else if (name === "accessStatus") {
       updates.Emp_Status = value === "AUTHORIZED" ? "Active" : value === "UNAUTHORIZED" ? "Inactive" : editData.Emp_Status;
     }
+    // Department only applies to HQ; Rate only to part-time coaches. Clear the
+    // stale value when the controlling field changes so it isn't saved.
+    if (name === "branch" && value !== "HQ") updates.department = "";
+    if (name === "role" && !isPartTimeCoach(value)) updates.rate = "";
     setEditData({ ...editData, ...updates });
   };
 
@@ -233,7 +244,7 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
     user.fullName || `${user.firstName ?? ""} ${user.lastName ?? ""}`.trim() || "-";
 
   const filteredUsers = users
-    .filter((u) => !academyView || ["FT - Coach", "PT - Coach"].includes(u.role))
+    .filter((u) => !academyView || (COACH_ROLES_WITH_LEGACY as readonly string[]).includes(u.role))
     .filter(
       (user) =>
         getDisplayName(user).toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -396,7 +407,8 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
                       {field("Full Name", getDisplayName(selectedUser))}
                       {field("Phone", selectedUser.phone)}
                       {field("Role", selectedUser.role)}
-                      {field("Branch/Dept", selectedUser.branch)}
+                      {field("Branch", selectedUser.branch)}
+                      {field("Department", selectedUser.department)}
                       {field("Contract", selectedUser.contract)}
                       {field("Start Date", selectedUser.startDate)}
                       {field("Status", selectedUser.Emp_Status)}
@@ -475,12 +487,22 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
                     <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide border-b pb-2 mb-4">Employment</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Branch/Dept</label>
-                        <select name="branch" value={editData?.branch || "HQ"} onChange={handleInputChange}
+                        <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Branch</label>
+                        <select name="branch" value={editData?.branch || ""} onChange={handleInputChange}
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                          <option value="">— None —</option>
                           {BRANCH_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                         </select>
                       </div>
+                      {editData?.branch === "HQ" && (
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Department</label>
+                          <select name="department" value={editData?.department || ""} onChange={handleInputChange}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            {DEPARTMENT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                          </select>
+                        </div>
+                      )}
                       <div>
                         <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Role</label>
                         <select name="role" value={editData?.role || ""} onChange={handleInputChange}
@@ -498,7 +520,8 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
                       {inp("Start Date", "startDate", "date")}
                       {inp("Probation", "probation", "date")}
                       {inp("End Date", "endDate", "date")}
-                      {inp("Rate", "rate", "number")}
+                      {/* Rate — only for part-time coaches (paid hourly) */}
+                      {isPartTimeCoach(editData?.role) && inp("Rate", "rate", "number")}
                       {inp("Hire Date", "Emp_Hire_Date", "date")}
                       {inp("Signed Date", "Signed_Date", "date")}
                       {inp("Employee Type", "Emp_Type")}
@@ -589,7 +612,8 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
                       {field("Full Name", getDisplayName(selectedUser))}
                       {field("Phone", selectedUser.phone)}
                       {field("Role", selectedUser.role)}
-                      {field("Branch/Dept", selectedUser.branch)}
+                      {field("Branch", selectedUser.branch)}
+                      {field("Department", selectedUser.department)}
                       {field("Contract", selectedUser.contract)}
                       {field("Start Date", selectedUser.startDate)}
                       {field("Status", selectedUser.Emp_Status)}
@@ -626,7 +650,8 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
                   <section>
                     <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide border-b pb-2 mb-4">Employment</h4>
                     <div className="grid grid-cols-2 gap-3">
-                      {field("Branch/Dept", selectedUser.branch)}
+                      {field("Branch", selectedUser.branch)}
+                      {field("Department", selectedUser.department)}
                       {field("Role", selectedUser.role)}
                       {field("Contract", selectedUser.contract)}
                       {field("Start Date", selectedUser.startDate)}
@@ -638,7 +663,6 @@ export default function UserManagement({ userRole = "" }: UserManagementProps) {
                       {field("Employee Type", selectedUser.Emp_Type)}
                       {field("Employee Status", selectedUser.Emp_Status)}
                       {field("Access Status", selectedUser.accessStatus)}
-                      {field("Biometrics", selectedUser.biometricTemplate ? "✓ Enrolled" : "✗ Not Enrolled")}
                       {field("Registered On", selectedUser.registeredAt ? new Date(selectedUser.registeredAt).toLocaleDateString() : "")}
                     </div>
                   </section>

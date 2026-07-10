@@ -13,21 +13,24 @@ import {
   Draggable,
   type DropResult,
 } from '@hello-pangea/dnd'
-import { Plus, Search, X, Loader2, ChevronDown, Users, CalendarRange, CalendarDays, AlertTriangle, ArrowRight, MoveRight, PenLine, Settings2 } from 'lucide-react'
+import { Plus, Search, X, Loader2, ChevronDown, Users, CalendarRange, CalendarDays, AlertTriangle, ArrowRight, MoveRight, PenLine, Settings2, ArrowDownWideNarrow, ArrowUpWideNarrow, Info, ShieldAlert, MoreHorizontal, Download, RotateCcw } from 'lucide-react'
+import { exportOpportunities, type OppExportRow } from '@/server/actions/export-opportunities'
 import { useQueryClient } from '@tanstack/react-query'
 import { CustomiseCardDrawer } from './customise-card-drawer'
 import { loadCardPrefs, saveCardPrefs, type CardPrefs, DEFAULT_CARD_PREFS } from '@/lib/crm/kanban-card-prefs'
 import { toast } from 'sonner'
 import { startOfWeek, endOfWeek, addWeeks } from 'date-fns'
-import { cn, formatMYR, formatDate } from '@/lib/crm/utils'
+import { cn, formatMYR, formatDate, formatDateTime } from '@/lib/crm/utils'
 import { useKanban, useMoveOpportunity, useOpportunity, useDeleteOpportunity, opportunityKeys } from '@/hooks/crm/useOpportunities'
 import { getAgeCategory, ageCategoryClasses, formatChildAge } from '@/lib/crm/age-category'
 import { Trash2 } from 'lucide-react'
 import { useBranchContext } from '../branch-context'
+import { useOppFilter } from './opp-filter-context'
 import { KanbanCard } from './kanban-card'
 import { StageChangeModal } from './stage-change-modal'
 import { OpportunityModal } from './opportunity-modal'
 import { DeleteConfirmDialog } from './delete-confirm-dialog'
+import { LeadActionContent } from './lead-action-panel'
 import type { KanbanStage, OpportunityCard } from '@/server/queries/opportunities'
 
 // ─── Lead transition rules ───────────────────────────────────────────────────
@@ -40,30 +43,72 @@ function normalizeStageCode(code: string): string {
   return code.toUpperCase().replace(/_/g, '')
 }
 
+/**
+ * Trial Class appointments are stored as KL-wall-clock-as-UTC (the picked
+ * "2026-06-18 10:00" is saved as 10:00Z, not 02:00Z). To compare a trial date
+ * against the kanban's week filter — whose bounds are browser-local wall clock —
+ * we must read the appointment's UTC fields and rebuild a local Date with the
+ * SAME wall-clock numbers. Comparing the raw instant instead skews trials by 8h
+ * and drops Sunday-evening / Monday-morning trials into the wrong week.
+ */
+function trialWallClock(startAt: string | Date): Date {
+  const d = new Date(startAt)
+  return new Date(
+    d.getUTCFullYear(),
+    d.getUTCMonth(),
+    d.getUTCDate(),
+    d.getUTCHours(),
+    d.getUTCMinutes(),
+    d.getUTCSeconds(),
+    d.getUTCMilliseconds(),
+  )
+}
+
+/** A stage is "Confirmed for Trial" (not the Trial Buffer CTB). */
+function isConfirmedTrialStage(shortCode: string, name: string): boolean {
+  const code = normalizeStageCode(shortCode)
+  return code === 'CT' || (/confirmed for trial/i.test(name) && code !== 'CTB')
+}
+
 const ALLOWED_LEAD_TRANSITIONS: Record<string, string[]> = {
   // NL: must start with FU1 (no skipping to FU2 / FU3), but can short-cut
-  // directly to CT when a lead is already confirmed for a trial. Forward-
-  // only — no NL ← FU.
-  NL: ['FU1', 'CT'],
-  // FU1/FU2/FU3: can advance to a later follow-up, jump to CT, or drop the
-  // lead directly to Cold Lead without going through UR_W1/UR_W2/FU3M first.
-  FU1: ['FU2', 'FU3', 'CT', 'CL', 'DND'],
-  FU2: ['FU3', 'CT', 'CL', 'DND'],
-  FU3: ['RSD', 'URW1', 'CT', 'CL', 'DND'],
-  RSD: ['CT', 'DND'],
-  // CT → RSD is the ONLY allowed backward move in the entire ruleset, so a
-  // trial that needs rescheduling doesn't require an admin override.
+  // directly to CT when a lead is already confirmed for a trial, enrol, drop
+  // to Cold Lead / DND, or reschedule (RSD). CTB stays as an optional Trial
+  // Buffer holding-pen destination.
+  NL: ['FU1', 'CT', 'CTB', 'ENR', 'RSD', 'CL', 'DND'],
+  // FU1/FU2/FU3: can advance to a later follow-up, jump to CT (or park in the
+  // Trial Buffer CTB), reschedule (RSD), or drop the lead directly to Cold Lead
+  // without going through UR_W1/UR_W2/FU3M first.
+  FU1: ['FU2', 'FU3', 'CT', 'CTB', 'RSD', 'CL', 'DND'],
+  FU2: ['FU3', 'CT', 'CTB', 'RSD', 'CL', 'DND'],
+  FU3: ['RSD', 'URW1', 'CT', 'CTB', 'CL', 'DND'],
+  // RSD (Reschedule) is a fully open recovery hub — a rescheduled lead can be
+  // re-confirmed for trial, dropped back into any follow-up, parked in CNS/SU/
+  // SNE, enrolled, escalated to UR_W1, or closed (CL/DND). CTB stays as an
+  // optional Trial Buffer destination.
+  RSD: ['CT', 'CTB', 'FU1', 'FU2', 'FU3', 'CNS', 'SU', 'SNE', 'ENR', 'URW1', 'CL', 'DND'],
+  // Recovery to RSD: CT → RSD lets a confirmed trial be rescheduled without
+  // an admin override. The "terminal-ish" / unresponsive stages below
+  // (NL, CNS, SNE, URW1-3, CL, DND) also allow → RSD so a lead that was
+  // parked or written off can be revived back into the active funnel. RSD
+  // is the ONLY backward destination permitted from those stages.
   CT: ['SU', 'CNS', 'RSD'],
-  CNS: ['URW1'],
-  URW1: ['URW2', 'CL', 'DND'],
-  URW2: ['URW3', 'FU3M', 'CL', 'DND'],
-  URW3: ['CL', 'DND'],
+  CNS: ['URW1', 'RSD'],
+  URW1: ['URW2', 'CL', 'DND', 'RSD'],
+  URW2: ['URW3', 'FU3M', 'CL', 'DND', 'RSD'],
+  URW3: ['CL', 'DND', 'RSD'],
   FU3M: ['CL', 'DND'],
-  SU: ['ENR', 'SNE'],
-  SNE: ['CL'],
+  // Trial Buffer (CTB): a holding pen for imported "confirmed for trial" leads
+  // that lack a trial date. Moving CTB → CT fires the trial date/slot popup.
+  CTB: ['CT', 'RSD', 'CL', 'DND'],
+  SU: ['ENR', 'ENRB', 'SNE'],
+  SNE: ['CL', 'RSD'],
+  // Enroll Buffer (ENRB): a holding pen for imported "enrolled" leads that lack
+  // a package. Moving ENRB → ENR fires the package popup.
+  ENRB: ['ENR', 'SNE', 'CL', 'DND', 'RSD'],
   ENR: [],
-  CL: [],
-  DND: [],
+  CL: ['RSD'],
+  DND: ['RSD'],
   // Buffer (OD use only) — entry state, allow hand-off into early/confirmed stages.
   SG: ['NL', 'FU1', 'FU2', 'FU3', 'CT'],
 }
@@ -89,11 +134,18 @@ function useDebounce<T>(value: T, delay: number): T {
 
 // ─── Virtual list for a column ────────────────────────────────────────────────
 
-const CARD_HEIGHT = 96 // approximate px height per card
 const CARD_GAP = 8
+
+// Progressive reveal: a column shows the first INITIAL_REVEAL cards, then loads
+// REVEAL_STEP more each time the user scrolls near the bottom, until the whole
+// (already-filtered) stage is shown. This is a render-only concern — counts,
+// drag/drop, search, and select-all all still operate on the full stage list.
+const INITIAL_REVEAL = 50
+const REVEAL_STEP = 20
 
 function VirtualColumnList({
   items,
+  resetSignature,
   stuckHoursYellow,
   stuckHoursRed,
   selectedIds,
@@ -104,6 +156,8 @@ function VirtualColumnList({
   cardPrefs,
 }: {
   items: OpportunityCard[]
+  /** Changing this (filters/sort/pipeline) resets the reveal back to the top. */
+  resetSignature: string
   stuckHoursYellow: number
   stuckHoursRed: number
   selectedIds: Set<string>
@@ -114,80 +168,83 @@ function VirtualColumnList({
   cardPrefs: CardPrefs
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const [scrollTop, setScrollTop] = useState(0)
-  const [containerHeight, setContainerHeight] = useState(600)
+  const [revealLimit, setRevealLimit] = useState(INITIAL_REVEAL)
+
+  // Keep latest values readable inside the (mount-once) scroll listener.
+  const revealRef = useRef(revealLimit)
+  revealRef.current = revealLimit
+  const totalRef = useRef(items.length)
+  totalRef.current = items.length
+
+  // Reset the reveal window when the filter/sort/pipeline context changes, and
+  // jump the column back to the top so the user starts from the first 50.
+  useEffect(() => {
+    setRevealLimit(INITIAL_REVEAL)
+    if (containerRef.current) containerRef.current.scrollTop = 0
+  }, [resetSignature])
 
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
-    setContainerHeight(el.clientHeight)
-    const obs = new ResizeObserver(() => setContainerHeight(el.clientHeight))
-    obs.observe(el)
-    return () => obs.disconnect()
-  }, [])
-
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const onScroll = () => setScrollTop(el.scrollTop)
+    const onScroll = () => {
+      // Near the bottom and more cards remain → reveal the next batch.
+      if (
+        el.scrollTop + el.clientHeight >= el.scrollHeight - 200 &&
+        revealRef.current < totalRef.current
+      ) {
+        setRevealLimit((l) => Math.min(l + REVEAL_STEP, totalRef.current))
+      }
+    }
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
   }, [])
 
-  const itemHeight = CARD_HEIGHT + CARD_GAP
-
-  const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - 2)
-  const visibleCount = Math.ceil(containerHeight / itemHeight) + 4
-  const endIndex = Math.min(items.length, startIndex + visibleCount)
-
-  const visibleItems = items.slice(startIndex, endIndex)
-  const topSpacer = startIndex * itemHeight
-  const bottomSpacer = (items.length - endIndex) * itemHeight
+  // Render the revealed slice directly. We deliberately do NOT virtual-window
+  // with spacers: cards vary in height (trial pill, tags, age badge), so a
+  // fixed-height estimate made the scroll position drift and "jump" as the user
+  // scrolled. Progressive reveal alone keeps the DOM light (50 cards, +20 per
+  // scroll) while leaving scroll position rock-steady.
+  const revealedItems = items.slice(0, revealLimit)
+  const hasMore = revealLimit < items.length
 
   return (
     <div
       ref={containerRef}
-      className="flex-1 overflow-y-auto pr-1"
-      style={{ minHeight: 80 }}
+      className="cns-scroll flex-1 min-h-0 overflow-y-auto pr-1"
     >
-      {/* Top spacer keeps scroll position accurate */}
-      {topSpacer > 0 && (
-        <div style={{ height: topSpacer }} aria-hidden="true" />
-      )}
-      {visibleItems.map((opp, localIdx) => {
-        const index = startIndex + localIdx
-        return (
-          <Draggable key={opp.id} draggableId={opp.id} index={index}>
-            {(provided, snapshot) => (
-              <div
-                ref={provided.innerRef}
-                {...provided.draggableProps}
-                style={{
-                  ...provided.draggableProps.style,
-                  marginBottom: CARD_GAP,
-                }}
-              >
-                <KanbanCard
-                  opportunity={opp}
-                  stageShortCode={stageShortCode}
-                  stageName={stageName}
-                  stuckHoursYellow={stuckHoursYellow}
-                  stuckHoursRed={stuckHoursRed}
-                  isSelected={selectedIds.has(opp.id)}
-                  dragHandleProps={provided.dragHandleProps as unknown as Record<string, unknown>}
-                  isDragging={snapshot.isDragging}
-                  onClick={() => onCardClick?.(opp)}
-                  onToggleSelect={onToggleSelect ? () => onToggleSelect(opp.id) : undefined}
-                  prefs={cardPrefs}
-                />
-              </div>
-            )}
-          </Draggable>
-        )
-      })}
-      {/* Bottom spacer */}
-      {bottomSpacer > 0 && (
-        <div style={{ height: bottomSpacer }} aria-hidden="true" />
+      {revealedItems.map((opp, index) => (
+        <Draggable key={opp.id} draggableId={opp.id} index={index}>
+          {(provided, snapshot) => (
+            <div
+              ref={provided.innerRef}
+              {...provided.draggableProps}
+              style={{
+                ...provided.draggableProps.style,
+                marginBottom: CARD_GAP,
+              }}
+            >
+              <KanbanCard
+                opportunity={opp}
+                stageShortCode={stageShortCode}
+                stageName={stageName}
+                stuckHoursYellow={stuckHoursYellow}
+                stuckHoursRed={stuckHoursRed}
+                isSelected={selectedIds.has(opp.id)}
+                dragHandleProps={provided.dragHandleProps as unknown as Record<string, unknown>}
+                isDragging={snapshot.isDragging}
+                onClick={() => onCardClick?.(opp)}
+                onToggleSelect={onToggleSelect ? () => onToggleSelect(opp.id) : undefined}
+                prefs={cardPrefs}
+              />
+            </div>
+          )}
+        </Draggable>
+      ))}
+      {/* Reveal hint — shown while more cards remain to be scrolled into view. */}
+      {hasMore && (
+        <div className="py-2 text-center text-[10px] font-medium text-slate-400 dark:text-slate-500">
+          Scroll for more — {items.length - revealLimit} more
+        </div>
       )}
     </div>
   )
@@ -201,24 +258,65 @@ function KanbanColumn({
   onAddCard,
   onCardClick,
   onToggleSelect,
+  onToggleStage,
   cardPrefs,
+  filterKey,
 }: {
   stage: KanbanStage
   selectedIds: Set<string>
   onAddCard: (stageId: string) => void
   onCardClick?: (opp: OpportunityCard) => void
   onToggleSelect?: (id: string) => void
+  /** Select/deselect every lead in this stage. Given the full id list. */
+  onToggleStage?: (oppIds: string[]) => void
   cardPrefs: CardPrefs
+  /** Board-level filter signature; combined with this column's sort to reset
+   *  the progressive-reveal window when the visible set changes. */
+  filterKey: string
 }) {
   const totalValue = stage.opportunities.reduce(
     (sum, o) => sum + Number(o.value),
     0,
   )
 
+  // Per-stage "select all" — only shown once bulk mode is active (≥1 card
+  // selected anywhere). Checked when every card in this stage is selected;
+  // indeterminate when only some are.
+  const bulkActive = selectedIds.size > 0
+  const stageOppIds = stage.opportunities.map((o) => o.id)
+  const allSelected = stageOppIds.length > 0 && stageOppIds.every((id) => selectedIds.has(id))
+  const someSelected = stageOppIds.some((id) => selectedIds.has(id))
+  const selectAllRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = someSelected && !allSelected
+  }, [someSelected, allSelected])
+
+  // Per-stage sort by created date. 'desc' = newest first (default), 'asc' =
+  // oldest first. Each column remembers its own direction.
+  const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc')
+  const sortedOpportunities = useMemo(() => {
+    return [...stage.opportunities].sort((a, b) => {
+      const da = new Date(a.createdAt).getTime()
+      const db = new Date(b.createdAt).getTime()
+      return sortDir === 'asc' ? da - db : db - da
+    })
+  }, [stage.opportunities, sortDir])
+
   return (
-    <div className="flex flex-col w-72 shrink-0 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
+    <div className="flex flex-col w-72 shrink-0 h-full min-h-0 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
       {/* Column header */}
       <div className="flex items-center gap-2 px-3 py-2.5 border-b border-slate-200 dark:border-slate-700">
+        {/* Select-all-in-stage — appears only in bulk mode. */}
+        {bulkActive && onToggleStage && stageOppIds.length > 0 && (
+          <input
+            ref={selectAllRef}
+            type="checkbox"
+            checked={allSelected}
+            onChange={() => onToggleStage(stageOppIds)}
+            title={allSelected ? 'Deselect all in this stage' : 'Select all in this stage'}
+            className="h-4 w-4 shrink-0 cursor-pointer rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 dark:border-slate-600"
+          />
+        )}
         <div
           className="h-2.5 w-2.5 rounded-full shrink-0"
           style={{ backgroundColor: stage.color || '#6366f1' }}
@@ -232,6 +330,15 @@ function KanbanColumn({
         <span className="shrink-0 rounded-full bg-indigo-100 dark:bg-indigo-900 px-2 py-0.5 text-[10px] font-semibold text-indigo-700 dark:text-indigo-300">
           {stage.opportunities.length}
         </span>
+        <button
+          onClick={() => setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))}
+          title={sortDir === 'desc' ? 'Sorted newest first — click for oldest first' : 'Sorted oldest first — click for newest first'}
+          className="shrink-0 flex h-5 w-5 items-center justify-center rounded text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 hover:text-slate-700 dark:hover:text-white transition-colors"
+        >
+          {sortDir === 'desc'
+            ? <ArrowDownWideNarrow className="h-3.5 w-3.5" />
+            : <ArrowUpWideNarrow className="h-3.5 w-3.5" />}
+        </button>
         <button
           onClick={() => onAddCard(stage.id)}
           title="Add opportunity"
@@ -255,14 +362,14 @@ function KanbanColumn({
             ref={provided.innerRef}
             {...provided.droppableProps}
             className={cn(
-              'flex flex-col p-2 flex-1 min-h-20 transition-colors',
+              'flex flex-col p-2 flex-1 min-h-0 transition-colors',
               snapshot.isDraggingOver &&
                 'bg-indigo-50 dark:bg-indigo-950/30',
             )}
-            style={{ minHeight: 80 }}
           >
             <VirtualColumnList
-              items={stage.opportunities}
+              items={sortedOpportunities}
+              resetSignature={`${filterKey}|${sortDir}`}
               stuckHoursYellow={stage.stuckHoursYellow}
               stuckHoursRed={stage.stuckHoursRed}
               selectedIds={selectedIds}
@@ -295,7 +402,11 @@ interface BranchUser {
   email: string
 }
 
-export type WeekFilter = 'today' | 'yesterday' | 'this' | 'next' | 'last' | 'custom' | 'all'
+export type WeekFilter = 'today' | 'yesterday' | 'this' | 'next' | 'sat_sun' | 'last' | 'custom' | 'all'
+/** Which timestamp the day/week filter matches against:
+ *  'created' = when the lead came in (createdAt),
+ *  'updated' = when it was last moved/worked (lastStageChangeAt). */
+export type DateBasis = 'created' | 'updated'
 
 /**
  * Resolve the selected preset into a concrete {from, to} Date range (inclusive
@@ -344,6 +455,22 @@ function resolveRange(
       to: endOfWeek(d, { weekStartsOn: 1 }),
     }
   }
+  if (filter === 'sat_sun') {
+    // "Sat–Sun": the most recent Saturday through the SECOND Sunday — a fixed
+    // 9-day span (Saturday → Sunday-next-week) that rolls forward every
+    // Saturday. On a weekday you sit mid-window (last Saturday → next Sunday);
+    // cards have no future timestamps so the visible set is "last Saturday →
+    // today". Mirrors the dashboard 'sat_sun' preset (computed in local time
+    // here, matching the other kanban ranges).
+    const from = new Date(now)
+    const daysSinceSat = (from.getDay() + 1) % 7 // Sat→0, Sun→1, … Fri→6
+    from.setDate(from.getDate() - daysSinceSat)
+    from.setHours(0, 0, 0, 0)
+    const to = new Date(from)
+    to.setDate(to.getDate() + 8) // 9-day inclusive window: Sat + 8 = 2nd Sun
+    to.setHours(23, 59, 59, 999)
+    return { from, to }
+  }
   // custom — inclusive range; guard against empty inputs
   if (!customFrom || !customTo) return null
   return {
@@ -367,6 +494,8 @@ interface FiltersBarProps {
   pipelineLocked?: boolean
   weekFilter: WeekFilter
   onWeekFilterChange: (f: WeekFilter) => void
+  dateBasis: DateBasis
+  onDateBasisChange: (b: DateBasis) => void
   customFrom: string
   customTo: string
   onCustomFromChange: (s: string) => void
@@ -395,6 +524,8 @@ function FiltersBar({
   pipelineLocked = false,
   weekFilter,
   onWeekFilterChange,
+  dateBasis,
+  onDateBasisChange,
   customFrom,
   customTo,
   onCustomFromChange,
@@ -482,11 +613,34 @@ function FiltersBar({
           <option value="yesterday">Yesterday</option>
           <option value="this">This week</option>
           <option value="next">Next week</option>
+          <option value="sat_sun">Sat–Sun</option>
           <option value="last">Last week</option>
           <option value="custom">Custom range…</option>
           <option value="all">All</option>
         </select>
         <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+      </div>
+
+      {/* Which timestamp the day/week range matches: created vs last-updated. */}
+      <div
+        className="inline-flex overflow-hidden rounded-lg border border-slate-300 text-xs dark:border-slate-600"
+        title="Filter the date range by when the lead was created, or when it was last moved/updated"
+      >
+        {(['created', 'updated'] as const).map((b) => (
+          <button
+            key={b}
+            type="button"
+            onClick={() => onDateBasisChange(b)}
+            className={cn(
+              'px-2.5 py-1.5 font-medium capitalize transition',
+              dateBasis === b
+                ? 'bg-indigo-600 text-white'
+                : 'bg-white text-slate-600 hover:bg-slate-50 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700',
+            )}
+          >
+            {b}
+          </button>
+        ))}
       </div>
 
       {weekFilter === 'custom' && (
@@ -574,12 +728,16 @@ function BulkActionBar({
   onMoveAll,
   onDeleteAll,
   onClear,
+  canEditLeads,
+  canDeleteLeads,
 }: {
   count: number
   stages: KanbanStage[]
   onMoveAll: (toStageId: string) => void
   onDeleteAll: () => void
   onClear: () => void
+  canEditLeads: boolean
+  canDeleteLeads: boolean
 }) {
   const [targetStage, setTargetStage] = useState('')
 
@@ -592,31 +750,39 @@ function BulkActionBar({
             Force a readable white-panel/dark-text combo on the options so it
             stays legible against the indigo BulkActionBar in both light and
             dark mode. */}
-        <select
-          value={targetStage}
-          onChange={(e) => setTargetStage(e.target.value)}
-          className="rounded bg-white/20 border border-white/30 px-2 py-1 text-sm text-white focus:outline-none [&>option]:bg-white [&>option]:text-slate-900"
-        >
-          <option value="" className="bg-white text-slate-900">Move to stage...</option>
-          {stages.map((s) => (
-            <option key={s.id} value={s.id} className="bg-white text-slate-900">
-              {s.name}
-            </option>
-          ))}
-        </select>
-        <button
-          onClick={() => targetStage && onMoveAll(targetStage)}
-          disabled={!targetStage}
-          className="rounded bg-white/20 px-3 py-1 hover:bg-white/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          Move all
-        </button>
-        <button
-          onClick={onDeleteAll}
-          className="rounded bg-red-500/80 px-3 py-1 hover:bg-red-500 transition-colors"
-        >
-          Delete all
-        </button>
+        {/* Bulk move = lead editing (hidden for read-only AGENCY_ADMIN). */}
+        {canEditLeads && (
+          <>
+            <select
+              value={targetStage}
+              onChange={(e) => setTargetStage(e.target.value)}
+              className="rounded bg-white/20 border border-white/30 px-2 py-1 text-sm text-white focus:outline-none [&>option]:bg-white [&>option]:text-slate-900"
+            >
+              <option value="" className="bg-white text-slate-900">Move to stage...</option>
+              {stages.map((s) => (
+                <option key={s.id} value={s.id} className="bg-white text-slate-900">
+                  {s.name}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => targetStage && onMoveAll(targetStage)}
+              disabled={!targetStage}
+              className="rounded bg-white/20 px-3 py-1 hover:bg-white/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              Move all
+            </button>
+          </>
+        )}
+        {/* Delete = SUPER_ADMIN only. */}
+        {canDeleteLeads && (
+          <button
+            onClick={onDeleteAll}
+            className="rounded bg-red-500/80 px-3 py-1 hover:bg-red-500 transition-colors"
+          >
+            Delete all
+          </button>
+        )}
         <button
           onClick={onClear}
           className="rounded bg-white/20 px-3 py-1 hover:bg-white/30 transition-colors"
@@ -630,6 +796,25 @@ function BulkActionBar({
 
 // ─── Main KanbanBoard ─────────────────────────────────────────────────────────
 
+/**
+ * In-session memory for the FiltersBar selections (day/week range, lead source,
+ * age class, tag, and search). Module-scoped on purpose: it survives client-side
+ * navigation — open a lead and come back and the filters are still applied — but
+ * is wiped on a full page refresh or tab close. It does NOT track the pipeline,
+ * which is driven by the top-bar branch switcher.
+ */
+interface KanbanFilterMemory {
+  search: string
+  weekFilter: WeekFilter
+  dateBasis: DateBasis
+  customFrom: string
+  customTo: string
+  sourceFilter: string
+  ageFilter: string
+  tagFilter: string
+}
+const kanbanFilterMemory: Partial<KanbanFilterMemory> = {}
+
 interface KanbanBoardProps {
   initialPipelineId: string
   pipelines: Pipeline[]
@@ -638,6 +823,80 @@ interface KanbanBoardProps {
   defaultBranchId?: string
   /** When false (BRANCH_MANAGER and below), the pipeline dropdown is locked. */
   canSwitchBranches?: boolean
+  /** False for AGENCY_ADMIN — leads are read-only (no create/edit/move/drag). */
+  canEditLeads?: boolean
+  /** True only for SUPER_ADMIN — lead deletion. */
+  canDeleteLeads?: boolean
+}
+
+// CSV download for the opportunities export (BOM so Excel reads UTF-8 right).
+function downloadOpportunitiesCsv(rows: OppExportRow[]) {
+  const esc = (v: string) => `"${(v ?? '').replace(/"/g, '""')}"`
+  const header = ['Name', 'Parent', 'Phone', 'Email', 'Branch', 'Date Created', 'Date Updated', 'Current Stage', 'Lead Source', 'Remarks']
+  const lines = [
+    header.join(','),
+    ...rows.map((r) => [r.name, r.parent, r.phone, r.email, r.branch, r.createdAt, r.updatedAt, r.stage, r.leadSource, r.remarks].map(esc).join(',')),
+  ]
+  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `opportunities-${new Date().toISOString().slice(0, 10)}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// 3-dot menu next to "New Opportunity": Export (detailed CSV) + Reset card layout.
+function KanbanActionsMenu({ onResetCard, shownIds }: { onResetCard: () => void; shownIds: string[] }) {
+  const [open, setOpen] = useState(false)
+  const [exporting, setExporting] = useState(false)
+
+  async function doExport() {
+    setExporting(true)
+    const res = await exportOpportunities(shownIds)
+    setExporting(false)
+    setOpen(false)
+    if (!res.ok || !res.rows) { toast.error(res.error ?? 'Export failed'); return }
+    if (res.rows.length === 0) { toast.info('No opportunities to export'); return }
+    downloadOpportunitiesCsv(res.rows)
+    toast.success(`Exported ${res.rows.length} opportunities`)
+  }
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-label="More actions"
+        className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+      >
+        <MoreHorizontal className="h-4 w-4" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 z-20 mt-1 w-56 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-700 dark:bg-slate-800">
+            <button
+              type="button"
+              onClick={doExport}
+              disabled={exporting}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-100 disabled:opacity-50 dark:text-slate-200 dark:hover:bg-slate-700"
+            >
+              {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              Export to CSV
+            </button>
+            <button
+              type="button"
+              onClick={() => { onResetCard(); setOpen(false); toast.success('Card layout reset to default') }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700"
+            >
+              <RotateCcw className="h-4 w-4" /> Reset card to default
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  )
 }
 
 export function KanbanBoard({
@@ -647,9 +906,11 @@ export function KanbanBoard({
   users,
   defaultBranchId,
   canSwitchBranches = true,
+  canEditLeads = true,
+  canDeleteLeads = true,
 }: KanbanBoardProps) {
   const [selectedPipelineId, setSelectedPipelineId] = useState(initialPipelineId)
-  const [searchInput, setSearchInput] = useState('')
+  const [searchInput, setSearchInput] = useState(() => kanbanFilterMemory.search ?? '')
   // Card customisation — persisted per browser via localStorage.
   // Starts at the project default so first render matches SSR; the
   // localStorage value is hydrated client-side after mount.
@@ -683,14 +944,39 @@ export function KanbanBoard({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contextBranch?.id])
-  const [weekFilter, setWeekFilter] = useState<WeekFilter>('this')
-  const [customFrom, setCustomFrom] = useState<string>('')
-  const [customTo, setCustomTo] = useState<string>('')
+  const [weekFilter, setWeekFilter] = useState<WeekFilter>(() => kanbanFilterMemory.weekFilter ?? 'all')
+  const [dateBasis, setDateBasis] = useState<DateBasis>(() => kanbanFilterMemory.dateBasis ?? 'created')
+  const [customFrom, setCustomFrom] = useState<string>(() => kanbanFilterMemory.customFrom ?? '')
+  const [customTo, setCustomTo] = useState<string>(() => kanbanFilterMemory.customTo ?? '')
+
+  // Mirror the resolved day/week range into the shared context so sibling
+  // widgets (the header WhatsApp button) filter to the same window.
+  const oppFilter = useOppFilter()
+  useEffect(() => {
+    const r = resolveRange(weekFilter, customFrom, customTo)
+    oppFilter.setRange(r ? { from: r.from.toISOString(), to: r.to.toISOString() } : null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [weekFilter, customFrom, customTo])
   // Refinement filters (lead source / age class / tag). Empty string = "all".
-  const [sourceFilter, setSourceFilter] = useState<string>('')
-  const [ageFilter, setAgeFilter] = useState<string>('')
-  const [tagFilter, setTagFilter] = useState<string>('')
+  const [sourceFilter, setSourceFilter] = useState<string>(() => kanbanFilterMemory.sourceFilter ?? '')
+  const [ageFilter, setAgeFilter] = useState<string>(() => kanbanFilterMemory.ageFilter ?? '')
+  const [tagFilter, setTagFilter] = useState<string>(() => kanbanFilterMemory.tagFilter ?? '')
   const search = useDebounce(searchInput, 350)
+
+  // Persist the FiltersBar selections for the tab session (see kanbanFilterMemory).
+  useEffect(() => {
+    kanbanFilterMemory.search = searchInput
+    kanbanFilterMemory.weekFilter = weekFilter
+    kanbanFilterMemory.dateBasis = dateBasis
+    kanbanFilterMemory.customFrom = customFrom
+    kanbanFilterMemory.customTo = customTo
+    kanbanFilterMemory.sourceFilter = sourceFilter
+    kanbanFilterMemory.ageFilter = ageFilter
+    kanbanFilterMemory.tagFilter = tagFilter
+  }, [searchInput, weekFilter, dateBasis, customFrom, customTo, sourceFilter, ageFilter, tagFilter])
+
+  // Filter signature for the columns' progressive-reveal reset (see KanbanColumn).
+  const filterKey = `${selectedPipelineId}|${weekFilter}|${dateBasis}|${customFrom}|${customTo}|${sourceFilter}|${ageFilter}|${tagFilter}|${search}`
 
   // Always pass undefined for branchId — the pipeline itself already scopes to one branch.
   const { data, isLoading, isError, refetch } = useKanban(
@@ -743,7 +1029,7 @@ export function KanbanBoard({
   const [moveNote, setMoveNote] = useState('')
   const [trialDate, setTrialDate] = useState<string>('')
   const [trialTimeSlot, setTrialTimeSlot] = useState<string>('')
-  const [enrollmentMonths, setEnrollmentMonths] = useState<3 | 6 | 9 | 12 | undefined>(undefined)
+  const [enrollmentMonths, setEnrollmentMonths] = useState<3 | 6 | 9 | 12 | 18 | 24 | undefined>(undefined)
   const [rescheduleDate, setRescheduleDate] = useState<string>('')
   // Local pending flag scoped to the modal confirm action. Using
   // moveMutation.isPending directly would leak state from any other in-flight
@@ -791,16 +1077,21 @@ export function KanbanBoard({
     return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name))
   }, [stages])
 
-  // Filter by creation date range + lead source + age class + tag (client-side)
+  // Filter by date range + lead source + age class + tag (client-side).
+  // The date basis toggle picks which timestamp the range matches: 'created'
+  // (createdAt — leads that came in during the period, mirrors the dashboard's
+  // New Leads count) or 'updated' (lastStageChangeAt — leads last moved/worked
+  // during the period).
   const filteredStages = useMemo(() => {
     const range = resolveRange(weekFilter, customFrom, customTo)
-    return stages.map((stage) => ({
+    return stages.map((stage) => {
+      return {
       ...stage,
       opportunities: stage.opportunities.filter((o) => {
-        // Date range
+        // Date range — match on created or last-updated date per the toggle.
         if (range) {
-          const created = new Date(o.createdAt)
-          if (created < range.from || created > range.to) return false
+          const when = new Date(dateBasis === 'updated' ? o.lastStageChangeAt : o.createdAt)
+          if (when < range.from || when > range.to) return false
         }
         // Lead source / platform
         if (sourceFilter && o.contact.leadSource?.name !== sourceFilter) return false
@@ -816,8 +1107,9 @@ export function KanbanBoard({
         }
         return true
       }),
-    }))
-  }, [stages, weekFilter, customFrom, customTo, sourceFilter, ageFilter, tagFilter])
+    }
+    })
+  }, [stages, weekFilter, dateBasis, customFrom, customTo, sourceFilter, ageFilter, tagFilter])
 
   // ── Drag & Drop ──────────────────────────────────────────────────────────────
 
@@ -825,6 +1117,12 @@ export function KanbanBoard({
     (result: DropResult) => {
       const { source, destination, draggableId } = result
       if (!destination || source.droppableId === destination.droppableId) return
+
+      // AGENCY_ADMIN has read-only leads — moving a card is an edit.
+      if (!canEditLeads) {
+        toast.error('Your role has read-only access to leads.')
+        return
+      }
 
       const fromStage = stages.find((s) => s.id === source.droppableId)
       const toStage = stages.find((s) => s.id === destination.droppableId)
@@ -923,7 +1221,7 @@ export function KanbanBoard({
         })()
       }
     },
-    [stages, moveMutation, pipelines, selectedPipelineId, canSwitchBranches],
+    [stages, moveMutation, pipelines, selectedPipelineId, canSwitchBranches, canEditLeads],
   )
 
   // Stage change kicked off from the OpportunityDetailModal's picker. The
@@ -1300,6 +1598,18 @@ export function KanbanBoard({
     })
   }
 
+  // Select (or, if already all-selected, deselect) every lead in a stage —
+  // driven by the per-column header checkbox in bulk mode.
+  function toggleStageSelect(oppIds: string[]) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      const allSelected = oppIds.length > 0 && oppIds.every((id) => next.has(id))
+      if (allSelected) oppIds.forEach((id) => next.delete(id))
+      else oppIds.forEach((id) => next.add(id))
+      return next
+    })
+  }
+
   const selectedPipeline = pipelines.find((p) => p.id === selectedPipelineId)
 
   // ── Render ───────────────────────────────────────────────────────────────────
@@ -1314,14 +1624,24 @@ export function KanbanBoard({
               not the raw `data` from the API. */}
           {filteredStages.reduce((acc, s) => acc + s.opportunities.length, 0)} opportunities
         </span>
-        <button
-          type="button"
-          onClick={() => setShowNewOpportunity(true)}
-          className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3.5 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 transition"
-        >
-          <Plus className="h-4 w-4" />
-          New Opportunity
-        </button>
+        {/* Creating a lead is read-only for AGENCY_ADMIN; the 3-dot menu
+            (Export / Reset card) is available to everyone. */}
+        <div className="flex items-center gap-2">
+          {canEditLeads && (
+            <button
+              type="button"
+              onClick={() => setShowNewOpportunity(true)}
+              className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3.5 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 transition"
+            >
+              <Plus className="h-4 w-4" />
+              New Opportunity
+            </button>
+          )}
+          <KanbanActionsMenu
+            shownIds={filteredStages.flatMap((s) => s.opportunities.map((o) => o.id))}
+            onResetCard={() => { setCardPrefs(DEFAULT_CARD_PREFS); saveCardPrefs(DEFAULT_CARD_PREFS) }}
+          />
+        </div>
       </div>
 
       {/* Filters */}
@@ -1340,6 +1660,8 @@ export function KanbanBoard({
         pipelineLocked={!!contextBranch}
         weekFilter={weekFilter}
         onWeekFilterChange={setWeekFilter}
+        dateBasis={dateBasis}
+        onDateBasisChange={setDateBasis}
         customFrom={customFrom}
         customTo={customTo}
         onCustomFromChange={setCustomFrom}
@@ -1363,6 +1685,8 @@ export function KanbanBoard({
           onMoveAll={handleBulkMove}
           onDeleteAll={openBulkDelete}
           onClear={() => setSelectedIds(new Set())}
+          canEditLeads={canEditLeads}
+          canDeleteLeads={canDeleteLeads}
         />
       )}
 
@@ -1375,8 +1699,9 @@ export function KanbanBoard({
         onConfirm={confirmBulkDelete}
       />
 
-      {/* Board */}
-      <div className="flex-1 overflow-auto">
+      {/* Board — scrolls horizontally between stages; each column scrolls its
+          own card list vertically (so the stage header stays put). */}
+      <div className="cns-scroll flex-1 min-h-0 overflow-x-auto overflow-y-hidden">
         {isLoading ? (
           <div className="flex h-full items-center justify-center">
             <Loader2 className="h-8 w-8 animate-spin text-indigo-500" />
@@ -1397,7 +1722,7 @@ export function KanbanBoard({
           </div>
         ) : (
           <DragDropContext onDragEnd={onDragEnd}>
-            <div className="flex h-full gap-4 p-4 items-start">
+            <div className="flex h-full gap-4 p-4 items-stretch">
               {filteredStages.map((stage) => (
                 <KanbanColumn
                   key={stage.id}
@@ -1406,7 +1731,9 @@ export function KanbanBoard({
                   onAddCard={(stageId) => setAddCardStageId(stageId)}
                   onCardClick={setDetailCard}
                   onToggleSelect={toggleSelect}
+                  onToggleStage={toggleStageSelect}
                   cardPrefs={cardPrefs}
+                  filterKey={filterKey}
                 />
               ))}
             </div>
@@ -1477,7 +1804,7 @@ export function KanbanBoard({
             stageName={stages.find((s) => s.id === detailCard.stageId)?.name ?? '—'}
             stageShortCode={stages.find((s) => s.id === detailCard.stageId)?.shortCode ?? ''}
             branchName={branches.find((b) => b.id === detailCard.branchId)?.name ?? null}
-            canDelete={canSwitchBranches}
+            canDelete={canDeleteLeads}
             pipelineStages={stages.map((s) => ({
               id: s.id,
               name: s.name,
@@ -1485,7 +1812,9 @@ export function KanbanBoard({
               order: s.order,
             }))}
             canBypassRules={canBypassRules}
+            isSuperAdmin={canDeleteLeads}
             onChangeStage={(toStageId) => handleStageChangeFromDetail(detailCard.id, toStageId)}
+            onChanged={() => void refetch()}
             onClose={() => setDetailCard(null)}
           />
         )
@@ -1580,7 +1909,9 @@ function OpportunityDetailModal({
   canDelete,
   pipelineStages,
   canBypassRules,
+  isSuperAdmin = false,
   onChangeStage,
+  onChanged,
   onClose,
 }: {
   opportunity: OpportunityCard
@@ -1593,9 +1924,13 @@ function OpportunityDetailModal({
   pipelineStages: StageLite[]
   /** True for admins (canSwitchBranches) and non-lead pipelines (no enforced flow). */
   canBypassRules: boolean
+  /** SUPER_ADMIN only — surfaces the "Admin" action panel (trial/package/week edits). */
+  isSuperAdmin?: boolean
   /** Fires when the user picks a new stage in the dropdown. The parent
    *  handles the optimistic update + popup-or-fire decision. */
   onChangeStage: (toStageId: string) => void
+  /** Fires after an admin edit so the board refetches. */
+  onChanged?: () => void
   onClose: () => void
 }) {
   const { contact } = opportunity
@@ -1614,6 +1949,11 @@ function OpportunityDetailModal({
       stageHistory?: HistoryEntry[]
       contact?: {
         id: string
+        /** Parent's free-text remarks from the registration/Wix form. */
+        remarks?: string | null
+        /** Raw source label captured on import (e.g. "roadshow") — shown in
+         *  parentheses after the normalised source name. */
+        leadSourceDetail?: string | null
         notes?: Array<{
           id: string
           body: string
@@ -1627,6 +1967,18 @@ function OpportunityDetailModal({
     isLoading: boolean
   }
   const notes = full?.contact?.notes ?? []
+  const formRemarks = (full?.contact?.remarks ?? '').trim()
+  // Source label: normalised bucket from the kanban payload, annotated with the
+  // raw source detail when the import captured one and it adds information
+  // beyond the bucket name — e.g. "Others (roadshow)". The detail arrives on
+  // the full-opportunity fetch (getOpportunityById includes all contact
+  // scalars), so it fills in once that settles.
+  const sourceName = contact.leadSource?.name ?? ''
+  const sourceDetail = (full?.contact?.leadSourceDetail ?? '').trim()
+  const sourceLabel =
+    sourceDetail && sourceDetail.toLowerCase() !== sourceName.toLowerCase()
+      ? `${sourceName} (${sourceDetail})`
+      : sourceName
   // Stage remarks history — every prior stage move with a non-empty note.
   // Newest-first so the most recent context is at the top of the section.
   const stageRemarks = (full?.stageHistory ?? [])
@@ -1665,6 +2017,7 @@ function OpportunityDetailModal({
 
   const deleteMutation = useDeleteOpportunity()
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
+  const [adminTab, setAdminTab] = useState<'details' | 'action'>('details')
   const queryClient = useQueryClient()
   const [noteText, setNoteText] = useState('')
   const [savingNote, setSavingNote] = useState(false)
@@ -1791,7 +2144,29 @@ function OpportunityDetailModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-lg max-h-[85vh] overflow-y-auto rounded-xl bg-white shadow-2xl border border-slate-200 dark:border-slate-700 dark:bg-slate-900">
+      <div className={cn('relative z-10 flex w-full max-h-[85vh] overflow-hidden rounded-xl bg-white shadow-2xl border border-slate-200 dark:border-slate-700 dark:bg-slate-900', isSuperAdmin ? 'max-w-3xl' : 'max-w-lg')}>
+        {/* Super-admin sidebar — Details | Action */}
+        {isSuperAdmin && (
+          <nav className="flex w-32 shrink-0 flex-col gap-1 border-r border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/50">
+            <div className="mb-1 flex items-center gap-1 px-1 text-[10px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+              <ShieldAlert className="h-3 w-3" /> Super Admin
+            </div>
+            {([['details', 'Details', Info], ['action', 'Action', Settings2]] as const).map(([key, label, Icon]) => (
+              <button
+                key={key}
+                onClick={() => setAdminTab(key)}
+                className={cn(
+                  'flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition',
+                  adminTab === key ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800',
+                )}
+              >
+                <Icon className="h-4 w-4" /> {label}
+              </button>
+            ))}
+          </nav>
+        )}
+        {/* Content column */}
+        <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
         {/* Header */}
         <div className="flex items-start justify-between border-b border-slate-200 dark:border-slate-700 px-5 py-4">
           <div>
@@ -1812,9 +2187,9 @@ function OpportunityDetailModal({
               return (
                 <div className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
                   <CalendarDays className="h-3 w-3" />
-                  Trial: {startAt.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' })}
+                  Trial: {startAt.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', timeZone: 'UTC' })}
                   {' @ '}
-                  {startAt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                  {startAt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })}
                 </div>
               )
             })()}
@@ -1827,8 +2202,8 @@ function OpportunityDetailModal({
           </button>
         </div>
 
-        {/* Body */}
-        <div className="space-y-4 px-5 py-4 text-sm">
+        {/* Body — Details view (hidden when the Action tab is active) */}
+        <div className={cn('space-y-4 px-5 py-4 text-sm', isSuperAdmin && adminTab === 'action' && 'hidden')}>
           {/* Journey — actual stages this lead has been dragged through */}
           <section>
             <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
@@ -2068,11 +2443,13 @@ function OpportunityDetailModal({
               {contact.leadSource && (
                 <>
                   <div className="text-slate-500 dark:text-slate-400">Source</div>
-                  <div className="text-slate-900 dark:text-slate-100">{contact.leadSource.name}</div>
+                  <div className="text-slate-900 dark:text-slate-100">{sourceLabel}</div>
                 </>
               )}
               <div className="text-slate-500 dark:text-slate-400">Campaign</div>
               <div className="text-slate-900 dark:text-slate-100">{contact.campaignName || '-'}</div>
+              <div className="text-slate-500 dark:text-slate-400">Created On</div>
+              <div className="text-slate-900 dark:text-slate-100">{formatDateTime(opportunity.createdAt)}</div>
             </div>
           </section>
 
@@ -2131,6 +2508,19 @@ function OpportunityDetailModal({
                   </span>
                 ))}
               </div>
+            </section>
+          )}
+
+          {/* Parent's form remarks — the free-text the parent typed on the
+              registration/Wix form, stored on the contact. Read-only. */}
+          {formRemarks && (
+            <section>
+              <h3 className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                <PenLine className="h-3 w-3" /> Remarks from form
+              </h3>
+              <p className="whitespace-pre-wrap rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-slate-800 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-slate-100">
+                {formRemarks}
+              </p>
             </section>
           )}
 
@@ -2227,6 +2617,13 @@ function OpportunityDetailModal({
           </section>
         </div>
 
+        {/* Action view (super-admin) — re-bucket week, edit trial/package/RSD */}
+        {isSuperAdmin && adminTab === 'action' && (
+          <div className="px-5 py-4">
+            <LeadActionContent opportunityId={opportunity.id} onChanged={() => onChanged?.()} />
+          </div>
+        )}
+
         {/* Footer */}
         <div className="flex items-center justify-between gap-3 border-t border-slate-200 dark:border-slate-700 px-5 py-4">
           {canDelete ? (
@@ -2245,6 +2642,7 @@ function OpportunityDetailModal({
           >
             Close
           </button>
+        </div>
         </div>
       </div>
 

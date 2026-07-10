@@ -9,8 +9,9 @@ import {
 } from '@hello-pangea/dnd'
 import { toast } from 'sonner'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, Loader2, GripVertical, Trash2, X, AlertTriangle, GitBranch, Layers, Users } from 'lucide-react'
+import { Plus, Loader2, GripVertical, Trash2, X, AlertTriangle, GitBranch, Layers, Users, Globe } from 'lucide-react'
 import { cn } from '@/lib/crm/utils'
+import { useReadOnlyViewer } from '@/lib/crm/use-read-only-viewer'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -29,11 +30,20 @@ interface Pipeline {
   id: string
   name: string
   stages: Stage[]
+  /** The branch this pipeline belongs to — used to label + order the dropdown
+   *  consistently with the topbar branch switcher ("01 …" → "23 …"). */
+  branch?: { id: string; name: string }
+}
+
+/** Dropdown label: prefer the branch name (matches the topbar numbering) and
+ *  fall back to the pipeline's own name. */
+function pipelineLabel(p: Pipeline): string {
+  return p.branch?.name ?? p.name
 }
 
 // ─── Fetch ────────────────────────────────────────────────────────────────────
 
-async function fetchPipelines(): Promise<{ pipelines: Pipeline[] }> {
+async function fetchPipelines(): Promise<{ pipelines: Pipeline[]; canManageGlobal?: boolean }> {
   const res = await fetch('/api/crm/pipelines')
   if (!res.ok) throw new Error('Failed to fetch pipelines')
   return res.json()
@@ -55,12 +65,14 @@ function StageRow({
   otherStages,
   onUpdate,
   onDelete,
+  readOnly = false,
 }: {
   stage: Stage
   index: number
   otherStages: Stage[]
   onUpdate: (stageId: string, data: Partial<Stage>) => Promise<void>
   onDelete: (stageId: string, reassignToStageId?: string) => void
+  readOnly?: boolean
 }) {
   const [name, setName] = useState(stage.name)
   const [shortCode, setShortCode] = useState(stage.shortCode)
@@ -80,7 +92,7 @@ function StageRow({
   }
 
   return (
-    <Draggable draggableId={stage.id} index={index}>
+    <Draggable draggableId={stage.id} index={index} isDragDisabled={readOnly}>
       {(provided, snapshot) => (
         <div
           ref={provided.innerRef}
@@ -91,22 +103,25 @@ function StageRow({
             snapshot.isDragging && 'shadow-xl',
           )}
         >
-          {/* Drag handle */}
-          <div
-            {...provided.dragHandleProps}
-            className="cursor-grab active:cursor-grabbing text-slate-300 dark:text-slate-600 hover:text-slate-500 transition-colors"
-          >
-            <GripVertical className="h-4 w-4" />
-          </div>
+          {/* Drag handle — hidden for read-only viewers */}
+          {!readOnly && (
+            <div
+              {...provided.dragHandleProps}
+              className="cursor-grab active:cursor-grabbing text-slate-300 dark:text-slate-600 hover:text-slate-500 transition-colors"
+            >
+              <GripVertical className="h-4 w-4" />
+            </div>
+          )}
 
           {/* Color swatch */}
           <div className="relative">
             <button
               type="button"
-              onClick={() => setShowColorPicker((p) => !p)}
+              disabled={readOnly}
+              onClick={() => { if (!readOnly) setShowColorPicker((p) => !p) }}
               className="h-6 w-6 rounded-full border-2 border-white dark:border-slate-800 shadow"
               style={{ backgroundColor: color }}
-              title="Change color"
+              title={readOnly ? undefined : 'Change color'}
             />
             {showColorPicker && (
               <div className="absolute top-8 left-0 z-20 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-2 shadow-lg">
@@ -134,16 +149,18 @@ function StageRow({
           {/* Name */}
           <input
             value={name}
+            readOnly={readOnly}
             onChange={(e) => setName(e.target.value)}
-            onBlur={save}
+            onBlur={() => { if (!readOnly) void save() }}
             className="flex-1 rounded border border-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-indigo-400 dark:focus:border-indigo-500 bg-transparent px-2 py-1 text-sm font-medium text-slate-900 dark:text-white focus:outline-none"
           />
 
           {/* Short code */}
           <input
             value={shortCode}
+            readOnly={readOnly}
             onChange={(e) => setShortCode(e.target.value.toUpperCase().slice(0, 6))}
-            onBlur={save}
+            onBlur={() => { if (!readOnly) void save() }}
             placeholder="CODE"
             className="w-16 rounded border border-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-indigo-400 bg-transparent px-2 py-1 text-xs font-mono uppercase text-slate-600 dark:text-slate-400 focus:outline-none text-center"
           />
@@ -158,8 +175,9 @@ function StageRow({
               <input
                 type="number"
                 value={stuckY}
+                disabled={readOnly}
                 onChange={(e) => setStuckY(parseInt(e.target.value) || 24)}
-                onBlur={save}
+                onBlur={() => { if (!readOnly) void save() }}
                 className="w-10 rounded border border-transparent hover:border-slate-300 focus:border-indigo-400 bg-transparent px-1 py-0.5 text-xs text-slate-600 dark:text-slate-400 focus:outline-none text-center"
               />
               <span className="text-[10px] text-slate-400">h</span>
@@ -169,8 +187,9 @@ function StageRow({
               <input
                 type="number"
                 value={stuckR}
+                disabled={readOnly}
                 onChange={(e) => setStuckR(parseInt(e.target.value) || 48)}
-                onBlur={save}
+                onBlur={() => { if (!readOnly) void save() }}
                 className="w-10 rounded border border-transparent hover:border-slate-300 focus:border-indigo-400 bg-transparent px-1 py-0.5 text-xs text-slate-600 dark:text-slate-400 focus:outline-none text-center"
               />
               <span className="text-[10px] text-slate-400">h</span>
@@ -188,13 +207,15 @@ function StageRow({
 
           {saving && <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400 shrink-0" />}
 
-          {/* Delete */}
-          <button
-            onClick={() => onDelete(stage.id)}
-            className="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950 dark:hover:text-red-400 transition-colors shrink-0"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
+          {/* Delete — hidden for read-only viewers */}
+          {!readOnly && (
+            <button
+              onClick={() => onDelete(stage.id)}
+              className="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950 dark:hover:text-red-400 transition-colors shrink-0"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
       )}
     </Draggable>
@@ -332,9 +353,164 @@ function AddStageForm({
   )
 }
 
+// ─── Global (all-branches) stage panel — SUPER_ADMIN / AGENCY_ADMIN only ───────
+
+function GlobalStagePanel({
+  pipelines,
+  onChanged,
+}: {
+  pipelines: Pipeline[]
+  onChanged: () => void
+}) {
+  // Canonical stage list (pipelines are uniform across branches) for the selects.
+  const stages = [...(pipelines[0]?.stages ?? [])].sort((a, b) => a.order - b.order)
+
+  const [name, setName] = useState('')
+  const [shortCode, setShortCode] = useState('')
+  const [beforeShortCode, setBeforeShortCode] = useState('')
+  const [color, setColor] = useState('#6366f1')
+  const [adding, setAdding] = useState(false)
+
+  const [delCode, setDelCode] = useState('')
+  const [reassignTo, setReassignTo] = useState('')
+  const [deleting, setDeleting] = useState(false)
+
+  async function handleAdd() {
+    if (!name.trim() || !shortCode.trim()) { toast.error('Name and short code are required'); return }
+    setAdding(true)
+    try {
+      const res = await fetch('/api/crm/pipelines/global-stage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, shortCode, color, beforeShortCode: beforeShortCode || undefined }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || 'Failed to add stage')
+      toast.success(`Added "${name}" to ${json.created} pipeline(s)${json.skipped ? `, ${json.skipped} already had it` : ''}`)
+      setName(''); setShortCode(''); setBeforeShortCode('')
+      onChanged()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to add stage')
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  async function handleDelete() {
+    if (!delCode) { toast.error('Pick a stage to delete'); return }
+    if (!window.confirm(`Delete "${delCode}" from ALL branch pipelines? Any opportunities there will move to "${reassignTo || '—'}".`)) return
+    setDeleting(true)
+    try {
+      const res = await fetch('/api/crm/pipelines/global-stage', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shortCode: delCode, reassignToShortCode: reassignTo || undefined }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || 'Failed to delete stage')
+      toast.success(`Deleted "${delCode}" from ${json.deleted} pipeline(s); reassigned ${json.reassigned} opportunities`)
+      setDelCode(''); setReassignTo('')
+      onChanged()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to delete stage')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-indigo-200 dark:border-indigo-900 bg-indigo-50/40 dark:bg-indigo-950/20 p-4 space-y-4">
+      <div className="flex items-center gap-2">
+        <Globe className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
+        <h2 className="text-sm font-semibold text-slate-900 dark:text-white">All branches</h2>
+        <span className="text-xs text-slate-500 dark:text-slate-400">— add or remove a stage across every branch pipeline at once</span>
+      </div>
+
+      {/* Add across all branches */}
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Stage name"
+          className="flex-1 min-w-40 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder:text-slate-400"
+        />
+        <input
+          value={shortCode}
+          onChange={(e) => setShortCode(e.target.value.toUpperCase().slice(0, 6))}
+          placeholder="CODE"
+          className="w-20 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-mono uppercase text-slate-600 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-center placeholder:text-slate-400"
+        />
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-slate-500 dark:text-slate-400">before</span>
+          <select
+            value={beforeShortCode}
+            onChange={(e) => setBeforeShortCode(e.target.value)}
+            className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-2 text-sm text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          >
+            <option value="">(end)</option>
+            {stages.map((s) => (
+              <option key={s.id} value={s.shortCode}>{s.name} ({s.shortCode})</option>
+            ))}
+          </select>
+        </div>
+        <input
+          type="color"
+          value={color}
+          onChange={(e) => setColor(e.target.value)}
+          title="Stage color"
+          className="h-9 w-9 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 p-0.5 cursor-pointer"
+        />
+        <button
+          onClick={handleAdd}
+          disabled={adding}
+          className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+        >
+          {adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+          Add to all
+        </button>
+      </div>
+
+      {/* Delete across all branches */}
+      <div className="flex flex-wrap items-center gap-2 border-t border-indigo-200/60 dark:border-indigo-900/60 pt-3">
+        <span className="text-xs text-slate-500 dark:text-slate-400">Delete</span>
+        <select
+          value={delCode}
+          onChange={(e) => setDelCode(e.target.value)}
+          className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-2 text-sm text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-red-500"
+        >
+          <option value="">Select stage…</option>
+          {stages.map((s) => (
+            <option key={s.id} value={s.shortCode}>{s.name} ({s.shortCode})</option>
+          ))}
+        </select>
+        <span className="text-xs text-slate-500 dark:text-slate-400">move its leads to</span>
+        <select
+          value={reassignTo}
+          onChange={(e) => setReassignTo(e.target.value)}
+          className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-2 text-sm text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-red-500"
+        >
+          <option value="">(none — only if empty)</option>
+          {stages.filter((s) => s.shortCode !== delCode).map((s) => (
+            <option key={s.id} value={s.shortCode}>{s.name} ({s.shortCode})</option>
+          ))}
+        </select>
+        <button
+          onClick={handleDelete}
+          disabled={deleting || !delCode}
+          className="flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50 transition-colors"
+        >
+          {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+          Delete from all
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function PipelinesPage() {
+  const readOnly = useReadOnlyViewer()
   const qc = useQueryClient()
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['crm', 'pipelines'],
@@ -345,7 +521,11 @@ export default function PipelinesPage() {
   const [pendingDelete, setPendingDelete] = useState<Stage | null>(null)
   const [deleting, setDeleting] = useState(false)
 
-  const pipelines = data?.pipelines ?? []
+  // Order branches the same way the topbar switcher does: numerically by the
+  // "NN …" prefix of the BRANCH name, not the pipeline's own (region-order) name.
+  const pipelines = [...(data?.pipelines ?? [])].sort((a, b) =>
+    pipelineLabel(a).localeCompare(pipelineLabel(b), undefined, { numeric: true }),
+  )
   const selectedPipeline = pipelines.find((p) => p.id === selectedPipelineId) ?? pipelines[0]
   const [stages, setStages] = useState<Stage[]>([])
 
@@ -456,7 +636,7 @@ export default function PipelinesPage() {
             className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
           >
             {pipelines.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}</option>
+              <option key={p.id} value={p.id}>{pipelineLabel(p)}</option>
             ))}
           </select>
           <span className="ml-auto text-xs text-slate-500 dark:text-slate-400">
@@ -517,6 +697,7 @@ export default function PipelinesPage() {
                       key={stage.id}
                       stage={stage}
                       index={index}
+                      readOnly={readOnly}
                       otherStages={stages.filter((s) => s.id !== stage.id)}
                       onUpdate={handleUpdateStage}
                       onDelete={(stageId) => {
@@ -532,7 +713,7 @@ export default function PipelinesPage() {
           </DragDropContext>
         )}
 
-        {selectedPipeline && (
+        {selectedPipeline && !readOnly && (
           <AddStageForm
             pipelineId={selectedPipeline.id}
             onSuccess={() => {
@@ -554,6 +735,14 @@ export default function PipelinesPage() {
         </div>
         <span className="ml-auto">Drag rows to reorder</span>
       </div>
+
+      {/* All-branches global stage management (elevated roles only) */}
+      {data?.canManageGlobal && pipelines.length > 0 && (
+        <GlobalStagePanel
+          pipelines={pipelines}
+          onChanged={() => { void refetch() }}
+        />
+      )}
 
       {/* Delete modal */}
       {pendingDelete && (

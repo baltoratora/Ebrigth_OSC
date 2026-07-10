@@ -85,7 +85,7 @@ export function useMoveOpportunity() {
       note?: string
       trialDate?: string
       trialTimeSlot?: string
-      enrollmentMonths?: 3 | 6 | 9 | 12
+      enrollmentMonths?: 3 | 6 | 9 | 12 | 18 | 24
       rescheduleDate?: string
     }) => {
       const res = await fetch(`/api/crm/opportunities/${opportunityId}/move`, {

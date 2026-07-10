@@ -2,6 +2,29 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
 import { prisma } from "@/lib/prisma";
 import { normalizeRole, ROLES, type Role } from "@/lib/roles";
+import { isReadOnlyViewer } from "@/lib/crm/operation-accounts";
+import { isPathGated, checkGatedPathOverride, parseOverrides } from "@/lib/dashboard-access";
+
+// ─── Read-only viewer (marketing-advisor monitor) write-block ────────────────
+// Hard backstop for the view-only account (see AGENCY_VIEW_EMAILS): it may VIEW
+// the whole lead CRM like a super admin but must never mutate anything. This
+// catches every mutating request (HTTP method or RSC server action) under
+// /crm + /api/crm, EXCEPT the ticket system and auth. Per-route guards are the
+// first line; this guarantees a missed guard can't leak a write.
+const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+function isLeadCrmMutation(req: NextRequest): boolean {
+  const p = req.nextUrl.pathname;
+  const inCrm = p.startsWith("/crm") || p.startsWith("/api/crm");
+  if (!inCrm) return false;
+  // Tickets are explicitly out of scope; auth must keep working (login/session).
+  if (/^\/(api\/)?crm\/(tickets|tkt-)/.test(p)) return false;
+  if (p.startsWith("/api/crm/auth")) return false;
+  if (p === "/crm/login") return false;
+  // A mutation is either a write HTTP method or a server-action invocation
+  // (Next sends those as POST with a `next-action` header to the page route).
+  return MUTATING_METHODS.has(req.method) || req.headers.has("next-action");
+}
 
 // Runs on the Node.js runtime, not Edge. The Edge runtime cannot load
 // @prisma/client without a driver adapter, and we need Prisma here to mirror
@@ -34,8 +57,10 @@ const ROLE_RULES: Array<{ prefix: string; allowed: readonly Role[] }> = [
   { prefix: "/manpower-schedule",             allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.BRANCH_MANAGER, ROLES.HOD] },
 
   { prefix: "/hr-dashboard",                  allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD] },
+  { prefix: "/recruitment",                   allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD] },
   { prefix: "/onboarding",                    allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD] },
   { prefix: "/offboarding",                   allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.HR, ROLES.HOD] },
+  { prefix: "/annual-showcase",               allowed: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.ACADEMY, ROLES.HOD, ROLES.EXECUTIVE, ROLES.HR, ROLES.MARKETING] },
 ];
 
 // FT/PT users see the same home/HRMS chrome as everyone else, with the
@@ -47,11 +72,27 @@ const ROLE_RULES: Array<{ prefix: string; allowed: readonly Role[] }> = [
 // widened accidentally by adding a new ROLE_RULES entry that happens to
 // include FULL_TIME / PART_TIME.
 const EMPLOYEE_FALLBACK_PATH = "/manpower-cost-report";
+// FT/PT coaches may reach only two feature pages — the Manpower Cost Report
+// (scoped to their own data by /api/manpower-cost) and the Staff Directory.
+// /home + /dashboards/hrms are kept as the navigation shell (every other tile
+// renders locked client-side); /profile stays for self-service. Anything else
+// redirects to EMPLOYEE_FALLBACK_PATH.
 const EMPLOYEE_ALLOWED_PATHS = [
   "/home",              // tile dashboard — non-HRMS tiles are locked client-side
-  "/dashboards/hrms",   // HRMS hub — only Manpower Cost Report tile is enabled
+  "/dashboards/hrms",   // HRMS hub — only the allowed tiles are enabled
   "/manpower-cost-report",
+  "/staff-directory",   // coaches may view the staff directory
   "/profile",           // standard self-service page
+  // Self-service Attendance Report ONLY — deliberately NOT the bare
+  // "/attendance" hub, because isEmployeeAllowed() matches by prefix
+  // ("/attendance/*"), which would also reopen /attendance/summary,
+  // /attendance/appeal, /attendance/leave (other staff's attendance data) to
+  // FT/PT. The HRMS dashboard's "Attendance" tile is pointed straight here
+  // for FT/PT instead of at the hub (see DashboardDetail.tsx). Self-service
+  // Attendance Report locks them to their own record only (session email →
+  // BranchStaff), and lets them submit a reason on a "No Record" day for HR
+  // to approve.
+  "/attendance/report",
 ];
 const EMPLOYEE_LOCKED_ROLES: readonly Role[] = [ROLES.FULL_TIME, ROLES.PART_TIME];
 
@@ -93,6 +134,16 @@ function redirectToLogin(
 // ─── Middleware ─────────────────────────────────────────────────────────────
 
 export async function middleware(req: NextRequest) {
+  const isApi = req.nextUrl.pathname.startsWith("/api");
+
+  // 0a. API fast-path: reads (and anything that isn't a lead-CRM mutation) need
+  //     no middleware work — the route enforces its own auth. This keeps the
+  //     /api/crm matcher (added only for the viewer write-block) cheap: no token
+  //     decrypt, no DB, on the hot read path.
+  if (isApi && !isLeadCrmMutation(req)) {
+    return NextResponse.next();
+  }
+
   // 1. Decrypt the JWT cookie. A malformed cookie or missing secret throws —
   //    we treat that the same as "no session".
   let token: Awaited<ReturnType<typeof getToken>>;
@@ -101,6 +152,21 @@ export async function middleware(req: NextRequest) {
   } catch {
     token = null;
   }
+
+  // 0b. Read-only viewer (CEO monitor) hard write-block — covers /crm server
+  //     actions AND /api/crm mutations. Runs before everything else so a missed
+  //     per-route guard still can't leak a write.
+  if (token?.email && isReadOnlyViewer(String(token.email)) && isLeadCrmMutation(req)) {
+    return NextResponse.json(
+      { error: "Read-only access — this account cannot modify the CRM." },
+      { status: 403 },
+    );
+  }
+
+  // API routes do their own role/scope enforcement and must not receive the
+  // page-navigation redirects below (a redirect would corrupt a JSON/RSC
+  // response). The viewer write-block above is the only middleware concern here.
+  if (isApi) return NextResponse.next();
 
   if (!token) {
     return redirectToLogin(req, { withCallback: true, clearCookies: false });
@@ -162,6 +228,31 @@ export async function middleware(req: NextRequest) {
   // 5. SUPER_ADMIN bypasses every per-route rule.
   if (role === ROLES.SUPER_ADMIN) return NextResponse.next();
 
+  // 5b. Path-gated modules (Manpower Planning / Attendance / Recruitment /
+  //     Employee Dashboard sub-pages): admins can grant or deny individual
+  //     sub-pages per user via the Account Management permission modal. Only
+  //     fetches overrides when the path is actually one of these — a no-op
+  //     DB-wise for every other route. Overrides-only: a user with no custom
+  //     overrides here falls straight through to ROLE_RULES below, unchanged.
+  if (isPathGated(pathname) && token.email) {
+    try {
+      const user = await prisma.user.findUnique({
+        where:  { email: String(token.email) },
+        select: { dashboardOverrides: true },
+      });
+      const decision = checkGatedPathOverride(pathname, parseOverrides(user?.dashboardOverrides));
+      if (decision === true)  return NextResponse.next();
+      if (decision === false) {
+        const homeUrl = new URL("/home", req.url);
+        homeUrl.searchParams.set("forbidden", pathname);
+        return NextResponse.redirect(homeUrl);
+      }
+      // decision === null: no relevant override — fall through to ROLE_RULES.
+    } catch (err) {
+      console.error("[middleware] gated-path override lookup DB error — failing open:", err);
+    }
+  }
+
   // 6. Per-prefix role rules. Any path not in ROLE_RULES is allowed for any
   //    authenticated, non-locked role — the API layer is the actual data
   //    boundary, and this middleware is just navigation UX.
@@ -180,8 +271,12 @@ export const config = {
   // Run on every page navigation, but skip:
   //   - API routes (they enforce their own role/scope and return JSON 401/403)
   //   - Static assets (_next/static, _next/image, favicon)
-  //   - /login and /forgot-password (public auth pages)
+  //   - /login, /signup and /forgot-password (public auth pages)
   matcher: [
-    "/((?!api|_next/static|_next/image|favicon.ico|login|forgot-password).*)",
+    "/((?!api|_next/static|_next/image|favicon.ico|login|signup|forgot-password|showcase-register|showcase-checkin).*)",
+    // Also run on /api/crm so the read-only viewer write-block can backstop API
+    // mutations. The fast-path in middleware() returns immediately for API reads,
+    // so this adds no cost to the hot path.
+    "/api/crm/:path*",
   ],
 };

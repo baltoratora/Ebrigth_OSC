@@ -1,8 +1,7 @@
-﻿"use client";
+"use client";
 
-import { useState, useMemo } from "react";
-import { CalendarDays, Clock, Users, ChevronRight, MapPin, Filter, GripVertical, UserPlus, Check, Download } from "lucide-react";
-import { addDays, parseISO } from "date-fns";
+import { useState, useMemo, useEffect } from "react";
+import { CalendarDays, Users, MapPin, Search, UserPlus, Check, Download, ClipboardCheck, GripVertical } from "lucide-react";
 import {
   DndContext,
   DragEndEvent,
@@ -10,32 +9,23 @@ import {
   DragStartEvent,
   PointerSensor,
   pointerWithin,
-  useDroppable,
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
 import { arrayMove } from "@dnd-kit/sortable";
+import { addDays, parseISO, format } from "date-fns";
 import { useFAStore } from "@pcm/_lib/store";
 import { useCurrentUser } from "@pcm/_hooks/useCurrentUser";
 import { AppShell } from "@pcm/_components/shared/AppShell";
 import { EventStatusPill } from "@pcm/_components/fa/StatusPill";
-import { EventPickerGrid } from "@pcm/_components/fa/EventPickerGrid";
 import { AttendanceRoster } from "@pcm/_components/fa/AttendanceRoster";
-import { ConfirmDialog } from "@pcm/_components/shared/ConfirmDialog";
 import { WalkInModal } from "@pcm/_components/fa/WalkInModal";
 import { getDisplayOrder, mergeFilteredReorder } from "@pcm/_lib/sessionOrder";
-import { BRANCHES, BranchCode, Session } from "@pcm/_types";
+import { BRANCHES, BranchCode, Invitation, Session, resolveStudentById } from "@pcm/_types";
 import { downloadCSV } from "@pcm/_lib/csv";
 import { buildEventAttendanceCsv } from "@pcm/_lib/eventAttendanceCsv";
 
-const SESSION_DROPPABLE_PREFIX = "session:";
-
-type PendingTransfer = {
-  invitationId: string;
-  studentName: string;
-  targetSessionId: string;
-  targetSessionLabel: string;
-};
+type AttStatusFilter = "all" | "confirmed" | "attended" | "no_show" | "invited";
 
 export default function AttendancePage() {
   const user = useCurrentUser();
@@ -46,184 +36,321 @@ export default function AttendancePage() {
   const users = useFAStore(s => s.users);
   const sessionOrderMap = useFAStore(s => s.sessionOrder);
   const setSessionOrder = useFAStore(s => s.setSessionOrder);
-  const moveInvitationToSession = useFAStore(s => s.moveInvitationToSession);
 
+  // Invitations-style filters
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
-  const [selectedDay, setSelectedDay] = useState<number>(1);
+  const [selectedDay, setSelectedDay] = useState<number | "all">("all");
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [branchFilter, setBranchFilter] = useState<BranchCode | "all">("all");
+  const [statusFilter, setStatusFilter] = useState<AttStatusFilter>("all");
+  const [search, setSearch] = useState("");
+
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
-  const [pendingTransfer, setPendingTransfer] = useState<PendingTransfer | null>(null);
   const [walkInOpen, setWalkInOpen] = useState(false);
   const [walkInBanner, setWalkInBanner] = useState<string | null>(null);
 
-  // Pointer sensor with a small activation distance prevents click-as-drag.
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
   );
 
-  // Relevant events — ongoing, closed, or recently completed
-  const relevantEvents = useMemo(() => {
-    return events
-      .filter(e => e.status === "ongoing" || e.status === "closed" || e.status === "completed")
-      .sort((a, b) => b.startDate.localeCompare(a.startDate));
-  }, [events]);
+  // Relevant events — every status except draft, newest first.
+  const relevantEvents = useMemo(
+    () => events.filter(e => e.status !== "draft").sort((a, b) => b.startDate.localeCompare(a.startDate)),
+    [events]
+  );
+  const selectedEvent = relevantEvents.find(e => e.id === selectedEventId) ?? null;
 
-  const selectedEvent = relevantEvents.find(e => e.id === selectedEventId);
-  const eventSessions = selectedEvent
-    ? sessions.filter(s => s.eventId === selectedEvent.id)
-        .sort((a, b) => a.dayNumber - b.dayNumber || a.sessionNumber - b.sessionNumber)
-    : [];
-  const daySessions = eventSessions.filter(s => s.dayNumber === selectedDay);
-  const selectedSession = daySessions.find(s => s.id === selectedSessionId);
+  const eventSessions = useMemo(
+    () => selectedEvent
+      ? sessions.filter(s => s.eventId === selectedEvent.id)
+          .sort((a, b) => a.dayNumber - b.dayNumber || a.sessionNumber - b.sessionNumber)
+      : [],
+    [selectedEvent, sessions]
+  );
+  const filteredSessions = useMemo(
+    () => eventSessions.filter(s => selectedDay === "all" || s.dayNumber === selectedDay),
+    [eventSessions, selectedDay]
+  );
+  // Default the event to the newest one once data lands.
+  useEffect(() => {
+    if (!selectedEventId && relevantEvents[0]) setSelectedEventId(relevantEvents[0].id);
+  }, [relevantEvents, selectedEventId]);
 
-  // BMs only see their branch — MKT sees all
+  // Keep a valid session selected as event/day filters change. "all" stays valid.
+  useEffect(() => {
+    if (filteredSessions.length === 0) {
+      if (selectedSessionId !== null) setSelectedSessionId(null);
+    } else if (selectedSessionId !== "all" && !filteredSessions.some(s => s.id === selectedSessionId)) {
+      setSelectedSessionId(filteredSessions[0].id);
+    }
+  }, [filteredSessions, selectedSessionId]);
+
   const visibleBranchFilter = user?.role === "BM" ? user.branch : branchFilter;
-
-  // Drag-and-drop is MKT-only per spec.
   const canDrag = user?.role === "MKT";
 
-  // Compute the ordered, filtered roster for the selected session. This is the
-  // single source of truth for both the displayed table and the dnd-kit
-  // handler — so reorders/transfers always operate on the visible sequence.
-  const fullSessionOrder = useMemo(
-    () => selectedSession ? getDisplayOrder(selectedSession.id, invitations, sessionOrderMap) : [],
-    [selectedSession, invitations, sessionOrderMap]
-  );
+  // The calendar date (→ weekday) for a 1-based day number of the selected event.
+  const dayDateOf = (dayNumber: number): Date | null =>
+    selectedEvent ? addDays(parseISO(selectedEvent.startDate), dayNumber - 1) : null;
 
-  const orderedInvitations = useMemo(() => {
-    if (!selectedSession) return [];
+  // Which sessions to render: "all" → every session in the current day filter;
+  // a concrete id → just that one; null → none.
+  const sessionsToRender = useMemo<Session[]>(() => {
+    if (filteredSessions.length === 0) return [];
+    if (selectedSessionId === "all") return filteredSessions;
+    const one = filteredSessions.find(s => s.id === selectedSessionId);
+    return one ? [one] : [];
+  }, [filteredSessions, selectedSessionId]);
+
+  // Build the ordered + filtered roster (branch + status + search) for a session.
+  function orderedFor(session: Session): Invitation[] {
+    const fullOrder = getDisplayOrder(session.id, invitations, sessionOrderMap);
+    const q = search.trim().toLowerCase();
     const byId = new Map(
       invitations
         .filter(i =>
-          i.sessionId === selectedSession.id &&
+          i.sessionId === session.id &&
           i.status !== "declined" &&
-          i.status !== "invited" &&
-          (visibleBranchFilter === "all" || i.branch === visibleBranchFilter)
+          (visibleBranchFilter === "all" || i.branch === visibleBranchFilter) &&
+          (statusFilter === "all" || i.status === statusFilter) &&
+          (q === "" || (() => {
+            const st = resolveStudentById(students, i.studentId);
+            const name = (st?.name ?? i.studentName ?? "").toLowerCase();
+            return name.includes(q) || i.studentId.toLowerCase().includes(q);
+          })())
         )
         .map(i => [i.id, i] as const)
     );
-    const out = [];
+    const out: Invitation[] = [];
     const seen = new Set<string>();
-    for (const id of fullSessionOrder) {
+    for (const id of fullOrder) {
       const inv = byId.get(id);
       if (inv) { out.push(inv); seen.add(id); }
     }
-    // Newcomers fall back to branch + student name (matches pre-feature default)
     const newcomers = Array.from(byId.values())
       .filter(i => !seen.has(i.id))
       .sort((a, b) => {
         if (a.branch !== b.branch) return a.branch.localeCompare(b.branch);
-        const sa = students.find(s => s.id === a.studentId);
-        const sb = students.find(s => s.id === b.studentId);
+        const sa = resolveStudentById(students, a.studentId);
+        const sb = resolveStudentById(students, b.studentId);
         return (sa?.name || "").localeCompare(sb?.name || "");
       });
     return [...out, ...newcomers];
-  }, [selectedSession, invitations, fullSessionOrder, visibleBranchFilter, students]);
+  }
 
-  const pendingConfirmationsCount = useMemo(() => {
-    if (!selectedSession) return 0;
+  // Ordered roster per rendered session (recomputed each render — a day has only
+  // a handful of sessions, so this stays cheap).
+  const orderedBySession = new Map<string, Invitation[]>();
+  for (const s of sessionsToRender) orderedBySession.set(s.id, orderedFor(s));
+
+  function pendingFor(session: { id: string }): number {
     return invitations.filter(i =>
-      i.sessionId === selectedSession.id &&
-      i.status === "invited" &&
+      i.sessionId === session.id && i.status === "invited" &&
       (visibleBranchFilter === "all" || i.branch === visibleBranchFilter)
     ).length;
-  }, [invitations, selectedSession, visibleBranchFilter]);
-
-  const activeInvitation = activeDragId
-    ? invitations.find(i => i.id === activeDragId) ?? null
-    : null;
-  const activeStudent = activeInvitation
-    ? students.find(s => s.id === activeInvitation.studentId) ?? null
-    : null;
-
-  function handleDragStart(event: DragStartEvent) {
-    setActiveDragId(String(event.active.id));
   }
 
-  function handleDragCancel() {
-    setActiveDragId(null);
-  }
+  // Aggregate counts across every rendered session for the summary line.
+  const counts = (() => {
+    let rows = 0, attended = 0, absent = 0, awaiting = 0;
+    for (const list of orderedBySession.values()) {
+      rows += list.length;
+      attended += list.filter(i => i.status === "attended").length;
+      absent += list.filter(i => i.status === "no_show").length;
+      awaiting += list.filter(i => i.status === "confirmed").length;
+    }
+    return { rows, attended, absent, awaiting };
+  })();
 
+  const activeInvitation = activeDragId ? invitations.find(i => i.id === activeDragId) ?? null : null;
+  const activeStudent = activeInvitation ? resolveStudentById(students, activeInvitation.studentId) ?? null : null;
+
+  function handleDragStart(event: DragStartEvent) { setActiveDragId(String(event.active.id)); }
+  function handleDragCancel() { setActiveDragId(null); }
   function handleDragEnd(event: DragEndEvent) {
     setActiveDragId(null);
     const { active, over } = event;
-    if (!over || !selectedSession) return;
+    if (!over) return;
     const activeId = String(active.id);
     const overId = String(over.id);
-
-    if (overId.startsWith(SESSION_DROPPABLE_PREFIX)) {
-      // Cross-session transfer
-      const targetSessionId = overId.slice(SESSION_DROPPABLE_PREFIX.length);
-      const inv = invitations.find(i => i.id === activeId);
-      if (!inv || inv.sessionId === targetSessionId) return;
-      const target = sessions.find(s => s.id === targetSessionId);
-      const student = students.find(s => s.id === inv.studentId);
-      if (!target || !student) return;
-      setPendingTransfer({
-        invitationId: activeId,
-        studentName: student.name,
-        targetSessionId,
-        targetSessionLabel: target.label
-          ? `${target.label} (Day ${target.dayNumber} · Session ${target.sessionNumber})`
-          : `Day ${target.dayNumber} · Session ${target.sessionNumber}`,
-      });
-      return;
-    }
-
-    // Reorder within the same session
     if (activeId === overId) return;
-    const visibleIds = orderedInvitations.map(i => i.id);
+    // Reorder within the dragged item's own session (cross-session drops are
+    // ignored — overId won't be in that session's visible list).
+    const inv = invitations.find(i => i.id === activeId);
+    if (!inv) return;
+    const sessId = inv.sessionId;
+    const visibleIds = (orderedBySession.get(sessId) ?? []).map(i => i.id);
     const oldIndex = visibleIds.indexOf(activeId);
     const newIndex = visibleIds.indexOf(overId);
     if (oldIndex === -1 || newIndex === -1) return;
     const newVisibleOrder = arrayMove(visibleIds, oldIndex, newIndex);
-    const mergedFullOrder = mergeFilteredReorder(fullSessionOrder, visibleIds, newVisibleOrder);
-    setSessionOrder(selectedSession.id, mergedFullOrder);
-  }
-
-  function confirmTransfer() {
-    if (!pendingTransfer) return;
-    moveInvitationToSession(pendingTransfer.invitationId, pendingTransfer.targetSessionId);
-    setPendingTransfer(null);
+    const fullOrder = getDisplayOrder(sessId, invitations, sessionOrderMap);
+    const mergedFullOrder = mergeFilteredReorder(fullOrder, visibleIds, newVisibleOrder);
+    setSessionOrder(sessId, mergedFullOrder);
   }
 
   function handleDownloadCSV() {
     if (!selectedEvent) return;
-    const { filename, rows } = buildEventAttendanceCsv({
-      event: selectedEvent,
-      sessions: eventSessions,
-      invitations,
-      students,
-      users,
-    });
+    const { filename, rows } = buildEventAttendanceCsv({ event: selectedEvent, sessions: eventSessions, invitations, students, users });
     downloadCSV(filename, rows);
   }
 
   if (!user) return null;
 
+  const numberOfDays = selectedEvent?.numberOfDays ?? 0;
+  const preferredDay = typeof selectedDay === "number" ? selectedDay : (sessionsToRender[0]?.dayNumber ?? null);
+  const canEdit = user.role === "MKT" || (!!selectedEvent && selectedEvent.status !== "draft");
+
   return (
     <AppShell>
-      <div className="mb-8">
-        <div className="text-xs uppercase tracking-wider font-semibold text-ink-400 mb-1">
-          FA Shared
+      {/* Hero */}
+      <div className="mb-6 relative overflow-hidden rounded-2xl p-6 bg-gradient-to-r from-violet-600 to-indigo-600 text-white">
+        <ClipboardCheck className="absolute -right-4 -top-6 w-32 h-32 text-white/10" aria-hidden="true" />
+        <div className="fa-mono text-[10px] uppercase text-white/80 mb-1" style={{ letterSpacing: "0.14em" }}>
+          PCM · Attendance
         </div>
-        <h1 className="fa-display text-4xl text-ink-900">Attendance</h1>
-        <p className="text-ink-500 mt-1">
-          Track who showed up during the event.
-        </p>
+        <h1 className="fa-display text-3xl md:text-4xl leading-tight">Attendance</h1>
+        <p className="text-white/80 mt-1 text-sm">Track who showed up during the event.</p>
       </div>
 
-      {/* Event picker */}
-      {!selectedEventId ? (
-        <EventPickerGrid
-          events={relevantEvents}
-          onSelect={(id) => {
-            setSelectedEventId(id);
-            setSelectedDay(1);
-            setSelectedSessionId(null);
-          }}
-        />
+      {/* Filter bar — Invitations-style */}
+      <div className="rounded-2xl bg-white border border-ivory-300 shadow-sm p-4 mb-4 space-y-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="fa-mono text-[10px] uppercase text-ink-400 inline-flex items-center gap-1.5" style={{ letterSpacing: "0.1em" }}>
+            <CalendarDays className="w-3.5 h-3.5" /> Event
+          </span>
+          <select
+            className="fa-input flex-1 min-w-[260px] py-2 text-sm font-medium"
+            value={selectedEventId ?? ""}
+            onChange={e => { setSelectedEventId(e.target.value || null); setSelectedDay("all"); }}
+          >
+            {relevantEvents.length === 0 && <option value="">No events</option>}
+            {relevantEvents.map(ev => (
+              <option key={ev.id} value={ev.id}>{ev.name}</option>
+            ))}
+          </select>
+
+          <span className="fa-mono text-[10px] uppercase text-ink-400" style={{ letterSpacing: "0.1em" }}>Day</span>
+          <select
+            className="fa-input w-44 py-2 text-sm"
+            value={selectedDay === "all" ? "all" : String(selectedDay)}
+            onChange={e => setSelectedDay(e.target.value === "all" ? "all" : Number(e.target.value))}
+          >
+            <option value="all">All days</option>
+            {Array.from({ length: numberOfDays }, (_, i) => i + 1).map(d => {
+              const dt = dayDateOf(d);
+              return (
+                <option key={d} value={d}>
+                  {dt ? format(dt, "EEEE · d MMM") : `Day ${d}`}
+                </option>
+              );
+            })}
+          </select>
+
+          <select
+            className="fa-input min-w-[240px] py-2 text-sm"
+            value={selectedSessionId ?? ""}
+            onChange={e => setSelectedSessionId(e.target.value || null)}
+          >
+            {filteredSessions.length === 0 ? (
+              <option value="">No sessions</option>
+            ) : (
+              <option value="all">All sessions</option>
+            )}
+            {filteredSessions.map(s => {
+              const dt = dayDateOf(s.dayNumber);
+              const wd = dt ? format(dt, "EEE, d MMM") : `Day ${s.dayNumber}`;
+              return (
+                <option key={s.id} value={s.id}>
+                  {wd} · Session {s.sessionNumber} · {s.startTime}–{s.endTime}
+                </option>
+              );
+            })}
+          </select>
+
+          {user.role === "MKT" && (
+            <select
+              className="fa-input min-w-[170px] py-2 text-sm"
+              value={branchFilter}
+              onChange={e => setBranchFilter(e.target.value as BranchCode | "all")}
+            >
+              <option value="all">All branches</option>
+              {BRANCHES.map(b => (
+                <option key={b.code} value={b.code}>{b.code} — {b.name}</option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        <select
+          className="fa-input w-full py-2 text-sm"
+          value={statusFilter}
+          onChange={e => setStatusFilter(e.target.value as AttStatusFilter)}
+        >
+          <option value="all">All statuses</option>
+          <option value="confirmed">Confirmed (awaiting)</option>
+          <option value="attended">Attended</option>
+          <option value="no_show">Absent</option>
+          <option value="invited">Pending confirmation</option>
+        </select>
+
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-400 pointer-events-none" />
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search name or ID…"
+            className="fa-input w-full pl-9 py-2 text-sm"
+          />
+        </div>
+
+        {/* Counts line */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+          {selectedEvent && <EventStatusPill status={selectedEvent.status} />}
+          <span><strong className="text-ink-900">{counts.rows}</strong> <span className="text-ink-400">rows</span></span>
+          <span className="text-emerald-700"><strong>{counts.attended}</strong> attended</span>
+          <span className="text-red-600"><strong>{counts.absent}</strong> absent</span>
+          <span className="text-ink-600"><strong>{counts.awaiting}</strong> awaiting</span>
+          {selectedEvent && (
+            <span className="ml-auto text-ink-400 inline-flex items-center gap-1">
+              <MapPin className="w-3 h-3" /> {selectedEvent.venue}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Action row — Walk-in + CSV (MKT only) */}
+      {user.role === "MKT" && selectedEvent && (
+        <div className="rounded-2xl bg-white border border-ivory-300 shadow-sm px-4 py-3 mb-4 flex items-center gap-2">
+          <span className="fa-mono text-[10px] uppercase text-ink-400 mr-1" style={{ letterSpacing: "0.1em" }}>Actions</span>
+          <button onClick={() => setWalkInOpen(true)} className="fa-btn-secondary inline-flex items-center gap-1.5" title="Add a walk-in student">
+            <UserPlus className="w-4 h-4" /> Walk-in
+          </button>
+          {invitations.some(i => i.eventId === selectedEvent.id) && (
+            <button onClick={handleDownloadCSV} className="fa-btn-secondary inline-flex items-center gap-1.5" title="Download attendance CSV">
+              <Download className="w-4 h-4" /> Download CSV
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Walk-in success banner */}
+      {walkInBanner && (
+        <div className="rounded-2xl bg-success-soft border border-success/30 px-4 py-3 mb-4 flex items-center gap-2 fa-toast-in" role="status" aria-live="polite">
+          <Check className="w-4 h-4 text-success flex-shrink-0" />
+          <span className="text-sm text-ink-700">{walkInBanner}</span>
+        </div>
+      )}
+
+      {/* Roster(s) — one per rendered session ("All sessions" stacks them) */}
+      {sessionsToRender.length === 0 ? (
+        <div className="rounded-2xl bg-white border border-ivory-300 shadow-sm p-12 text-center">
+          <div className="w-14 h-14 rounded-full bg-ivory-200 text-ink-400 flex items-center justify-center mx-auto mb-4">
+            <Users className="w-6 h-6" />
+          </div>
+          <h3 className="fa-display text-xl text-ink-900">No sessions</h3>
+          <p className="text-sm text-ink-500 mt-1">This event / day has no sessions scheduled.</p>
+        </div>
       ) : (
         <DndContext
           sensors={sensors}
@@ -232,170 +359,22 @@ export default function AttendancePage() {
           onDragCancel={handleDragCancel}
           onDragEnd={handleDragEnd}
         >
-          {/* Event header bar */}
-          <div className="fa-card p-4 mb-6 flex items-center gap-4">
-            <button
-              onClick={() => { setSelectedEventId(null); setSelectedSessionId(null); }}
-              className="fa-btn-ghost text-sm"
-            >
-              ← Change event
-            </button>
-            <div className="w-px h-8 bg-ivory-300" />
-            <div className="flex-1">
-              <div className="flex items-center gap-3">
-                <h2 className="fa-display text-lg text-ink-900">{selectedEvent?.name}</h2>
-                {selectedEvent && <EventStatusPill status={selectedEvent.status} />}
-              </div>
-              <div className="text-xs text-ink-400 flex items-center gap-3 mt-0.5">
-                <span className="inline-flex items-center gap-1">
-                  <CalendarDays className="w-3 h-3" />
-                  {selectedEvent && new Date(selectedEvent.startDate).toLocaleDateString()}
-                </span>
-                <span className="inline-flex items-center gap-1">
-                  <MapPin className="w-3 h-3" />
-                  {selectedEvent?.venue}
-                </span>
-              </div>
-            </div>
-            {user.role === "MKT" && (
-              <>
-                {invitations.some(i => i.eventId === selectedEvent?.id) && (
-                  <button
-                    onClick={handleDownloadCSV}
-                    className="fa-btn-secondary flex-shrink-0"
-                    title="Download all invitations + attendance for this event as a CSV (opens in Excel)"
-                  >
-                    <Download className="w-4 h-4" /> Download CSV
-                  </button>
-                )}
-                <button
-                  onClick={() => setWalkInOpen(true)}
-                  className="fa-btn-primary flex-shrink-0"
-                  title="Add a walk-in student to this event"
-                >
-                  <UserPlus className="w-4 h-4" /> Walk-in
-                </button>
-              </>
-            )}
+          <div className="space-y-8">
+            {sessionsToRender.map(s => (
+              <AttendanceRoster
+                key={s.id}
+                session={s}
+                orderedInvitations={orderedBySession.get(s.id) ?? []}
+                pendingConfirmationsCount={pendingFor(s)}
+                canEdit={canEdit}
+                canDrag={canDrag}
+                academyView={user.role === "MKT"}
+              />
+            ))}
           </div>
-
-          {/* Walk-in success banner */}
-          {walkInBanner && (
-            <div
-              className="fa-card p-3 mb-4 bg-success-soft border-success/30 flex items-center gap-2 fa-toast-in"
-              role="status"
-              aria-live="polite"
-            >
-              <Check className="w-4 h-4 text-success flex-shrink-0" />
-              <span className="text-sm text-ink-700">{walkInBanner}</span>
-            </div>
-          )}
-
-          {/* Day tabs */}
-          <div className="flex items-center gap-1 mb-4 bg-ivory-200 p-1 rounded-lg w-fit">
-            {selectedEvent && Array.from({ length: selectedEvent.numberOfDays }, (_, i) => i + 1).map(d => {
-              const dayDate = addDays(parseISO(selectedEvent.startDate), d - 1);
-              return (
-                <button
-                  key={d}
-                  onClick={() => { setSelectedDay(d); setSelectedSessionId(null); }}
-                  className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                    selectedDay === d ? "bg-white text-ink-900 shadow-sm" : "text-ink-500 hover:text-ink-900"
-                  }`}
-                >
-                  Day {d}
-                  <span className="text-xs text-ink-400 ml-1.5">
-                    {dayDate.toLocaleDateString(undefined, { month: "short", day: "numeric" })}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Branch filter (MKT only) */}
-          {user.role === "MKT" && (
-            <div className="flex items-center gap-2 mb-4">
-              <Filter className="w-4 h-4 text-ink-400" />
-              <span className="text-xs text-ink-400">Branch:</span>
-              <select
-                className="fa-input w-48 py-1.5 text-sm"
-                value={branchFilter}
-                onChange={e => setBranchFilter(e.target.value as BranchCode | "all")}
-              >
-                <option value="all">All branches</option>
-                {BRANCHES.map(b => (
-                  <option key={b.code} value={b.code}>{b.code} — {b.name}</option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          <div className="grid lg:grid-cols-[320px_1fr] gap-6">
-            {/* Session list */}
-            <div>
-              <h3 className="fa-display text-base text-ink-900 mb-3">Sessions on day {selectedDay}</h3>
-              {daySessions.length === 0 ? (
-                <div className="fa-card p-4 text-sm text-ink-400 text-center">
-                  No sessions scheduled.
-                </div>
-              ) : (
-                <div className="space-y-1.5">
-                  {daySessions.map(session => (
-                    <DroppableSessionButton
-                      key={session.id}
-                      session={session}
-                      isSelected={session.id === selectedSessionId}
-                      isDragSource={activeInvitation?.sessionId === session.id}
-                      canDropTarget={canDrag && activeDragId !== null}
-                      onSelect={() => setSelectedSessionId(session.id)}
-                      attended={invitations.filter(i =>
-                        i.sessionId === session.id &&
-                        i.status === "attended" &&
-                        (visibleBranchFilter === "all" || i.branch === visibleBranchFilter)
-                      ).length}
-                      confirmed={invitations.filter(i =>
-                        i.sessionId === session.id &&
-                        (i.status === "confirmed" || i.status === "attended") &&
-                        (visibleBranchFilter === "all" || i.branch === visibleBranchFilter)
-                      ).length}
-                      inviteCount={invitations.filter(i =>
-                        i.sessionId === session.id &&
-                        (visibleBranchFilter === "all" || i.branch === visibleBranchFilter)
-                      ).length}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Roster */}
-            <div>
-              {!selectedSession ? (
-                <div className="fa-card p-12 text-center">
-                  <div className="w-14 h-14 rounded-full bg-ivory-200 text-ink-400 flex items-center justify-center mx-auto mb-4">
-                    <Users className="w-6 h-6" />
-                  </div>
-                  <h3 className="fa-display text-xl text-ink-900">Pick a session</h3>
-                  <p className="text-sm text-ink-500 mt-1">
-                    Select a session on the left to take attendance.
-                  </p>
-                </div>
-              ) : (
-                <AttendanceRoster
-                  session={selectedSession}
-                  orderedInvitations={orderedInvitations}
-                  pendingConfirmationsCount={pendingConfirmationsCount}
-                  canEdit={user.role === "MKT" || selectedEvent?.status === "ongoing"}
-                  canDrag={canDrag}
-                />
-              )}
-            </div>
-          </div>
-
-          {/* Drag overlay — visual feedback while dragging */}
           <DragOverlay dropAnimation={null}>
             {activeStudent && activeInvitation ? (
-              <div className="fa-card px-4 py-2.5 shadow-lg flex items-center gap-3 bg-ivory-50 border border-gold-300">
+              <div className="rounded-xl px-4 py-2.5 shadow-lg flex items-center gap-3 bg-ivory-50 border border-gold-300">
                 <GripVertical className="w-4 h-4 text-ink-400" />
                 <div>
                   <div className="text-sm font-medium text-ink-900">{activeStudent.name}</div>
@@ -407,97 +386,19 @@ export default function AttendancePage() {
         </DndContext>
       )}
 
-      {/* Walk-in modal — MKT only, requires a selected event */}
+      {/* Walk-in modal */}
       {selectedEvent && walkInOpen && user.role === "MKT" && (
         <WalkInModal
           open={walkInOpen}
           onClose={() => setWalkInOpen(false)}
           event={selectedEvent}
-          preferredDay={selectedDay}
+          preferredDay={preferredDay}
           onSuccess={(studentName) => {
             setWalkInBanner(`${studentName} added as walk-in.`);
             window.setTimeout(() => setWalkInBanner(null), 3000);
           }}
         />
       )}
-
-      {/* Cross-session transfer confirm */}
-      <ConfirmDialog
-        open={pendingTransfer !== null}
-        onClose={() => setPendingTransfer(null)}
-        onConfirm={confirmTransfer}
-        title={pendingTransfer ? `Move ${pendingTransfer.studentName} to ${pendingTransfer.targetSessionLabel}?` : ""}
-        description="The student's invitation will move to the new session. The session quota for the source session frees up; the destination session's count goes up by 1."
-        confirmLabel="Move"
-      />
     </AppShell>
-  );
-}
-
-/* ── Droppable session button ───────────────────────────────────────────── */
-
-function DroppableSessionButton({
-  session, isSelected, isDragSource, canDropTarget, onSelect,
-  attended, confirmed, inviteCount,
-}: {
-  session: Session;
-  isSelected: boolean;
-  /** True when the current drag originated from this session — prevents the
-   *  user's own session from being highlighted as a transfer target. */
-  isDragSource: boolean;
-  /** True when a drag is in progress and the user has MKT role. Used to gate
-   *  the highlight ring even if `useDroppable` returns isOver. */
-  canDropTarget: boolean;
-  onSelect: () => void;
-  attended: number;
-  confirmed: number;
-  inviteCount: number;
-}) {
-  const { setNodeRef, isOver } = useDroppable({
-    id: `session:${session.id}`,
-    disabled: !canDropTarget || isDragSource,
-  });
-  const showDropTarget = canDropTarget && !isDragSource;
-  const isDropOver = isOver && showDropTarget;
-
-  return (
-    <button
-      ref={setNodeRef}
-      onClick={onSelect}
-      className={`w-full text-left p-3 rounded-[10px] border transition-all ${
-        isDropOver
-          ? "bg-gold-100 border-gold-500 ring-4 ring-gold-300/40"
-          : isSelected
-            ? "bg-brand-50 border-brand-600 ring-2 ring-brand-100"
-            : showDropTarget
-              ? "bg-white border-dashed border-gold-300 hover:border-gold-400"
-              : "bg-white border-ivory-300 hover:border-ink-300"
-      }`}
-    >
-      <div className="flex items-center gap-2 mb-1">
-        <Clock className="w-3 h-3 text-ink-400" />
-        <span className="text-sm font-medium text-ink-900">
-          {session.startTime} – {session.endTime}
-        </span>
-        {isSelected && !isDropOver && <ChevronRight className="w-3.5 h-3.5 text-brand-700 ml-auto" />}
-        {isDropOver && (
-          <span className="ml-auto fa-mono text-[10px] uppercase text-gold-700" style={{ letterSpacing: "0.1em" }}>
-            Drop to move
-          </span>
-        )}
-      </div>
-      {session.label && (
-        <div className="text-xs text-ink-500 mb-1.5">{session.label}</div>
-      )}
-      <div className="flex items-center justify-between gap-2 text-xs text-ink-500">
-        <span>
-          <strong className="text-ink-900">{attended}</strong>
-          <span className="text-ink-300"> / {confirmed}</span> attended
-        </span>
-        <span className="text-ink-400">
-          {inviteCount} invite{inviteCount !== 1 ? "s" : ""}
-        </span>
-      </div>
-    </button>
   );
 }

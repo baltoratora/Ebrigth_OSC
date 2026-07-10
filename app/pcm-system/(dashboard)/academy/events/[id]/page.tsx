@@ -494,7 +494,12 @@ export default function MarketingEventDetailPage() {
         <EditEventModal
           open={editingEventOpen}
           onClose={() => setEditingEventOpen(false)}
-          event={event}
+          event={{
+            ...event,
+            // Highest dayNumber currently in use — lets the modal warn
+            // when shrinking the event below it would orphan sessions.
+            maxSessionDay: sessions.reduce((m, s) => Math.max(m, s.dayNumber), 0) || undefined,
+          }}
           onSave={(patch) => { updateEvent(event.id, patch); setEditingEventOpen(false); }}
         />
       )}

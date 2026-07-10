@@ -12,11 +12,17 @@ import { sanitiseCallbackUrl } from "@/lib/callback-url";
 // fails the production build otherwise (prerender error on /login).
 function ResetBanner() {
   const searchParams = useSearchParams();
-  if (searchParams.get("reset") !== "1") return null;
+  const message =
+    searchParams.get("reset") === "1"
+      ? "Password updated. Please sign in with your new password."
+      : searchParams.get("registered") === "1"
+        ? "Account created. Please sign in with your new password."
+        : null;
+  if (!message) return null;
   return (
     <div role="status" className="mb-5 flex items-start gap-2 bg-emerald-500/20 border border-emerald-500/50 text-emerald-100 text-sm py-2.5 px-3 rounded-xl font-medium">
       <CircleCheck className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
-      <span>Password updated. Please sign in with your new password.</span>
+      <span>{message}</span>
     </div>
   );
 }
@@ -67,7 +73,7 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen flex items-center justify-center relative overflow-hidden">
       {/* Animated background */}
-      <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900">
+      <div className="absolute inset-0 bg-linear-to-br from-slate-900 via-blue-900 to-slate-900">
         <div className="absolute inset-0 opacity-30">
           <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-blue-500 rounded-full mix-blend-multiply filter blur-3xl animate-pulse"></div>
           <div className="absolute top-1/3 right-1/4 w-96 h-96 bg-cyan-500 rounded-full mix-blend-multiply filter blur-3xl animate-pulse" style={{ animationDelay: '1s' }}></div>
@@ -80,7 +86,7 @@ export default function LoginPage() {
         <div className="bg-white/10 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/20 p-8">
           {/* Logo/Header */}
           <div className="text-center mb-8">
-            <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-blue-500 to-cyan-400 rounded-2xl mb-4 shadow-lg">
+            <div className="inline-flex items-center justify-center w-16 h-16 bg-linear-to-br from-blue-500 to-cyan-400 rounded-2xl mb-4 shadow-lg">
               <Lock className="w-8 h-8 text-white" />
             </div>
             <h1 className="text-3xl font-bold text-white mb-2">Welcome Back</h1>
@@ -170,7 +176,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full py-3 px-4 bg-gradient-to-r from-blue-500 to-cyan-400 text-white font-semibold rounded-xl hover:from-blue-600 hover:to-cyan-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+              className="w-full py-3 px-4 bg-linear-to-r from-blue-500 to-cyan-400 text-white font-semibold rounded-xl hover:from-blue-600 hover:to-cyan-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900 transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
             >
               {isLoading ? (
                 <span className="flex items-center justify-center space-x-2">
@@ -184,6 +190,14 @@ export default function LoginPage() {
                 "Sign In"
               )}
             </button>
+
+            {/* Sign up link */}
+            <p className="text-center text-sm text-blue-200">
+              Don&apos;t have an account?{" "}
+              <Link href="/signup" className="text-blue-300 font-semibold hover:text-white transition-colors">
+                Sign up
+              </Link>
+            </p>
           </form>
 
           {/* Footer */}

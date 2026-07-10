@@ -8,6 +8,7 @@ import {
   deleteAutomation,
 } from '@/server/actions/automations'
 import { UpdateAutomationSchema } from '@/lib/crm/validations/automation'
+import { denyReadOnlyViewer } from '@/lib/crm/admin-session'
 
 async function resolveTenant() {
   const session = await auth.api.getSession({ headers: await headers() })
@@ -50,6 +51,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 
 // PATCH — save changes to an existing automation (used by the editor auto-save).
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await denyReadOnlyViewer(); if (denied) return denied
   const tenantId = await resolveTenant()
   if (!tenantId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
@@ -70,6 +72,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
 // DELETE — remove an automation.
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await denyReadOnlyViewer(); if (denied) return denied
   const tenantId = await resolveTenant()
   if (!tenantId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 

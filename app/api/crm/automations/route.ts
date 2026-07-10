@@ -6,6 +6,7 @@ import { scopedPrisma } from '@/lib/crm/tenancy'
 import { CreateAutomationSchema } from '@/lib/crm/validations/automation'
 import { createAutomation } from '@/server/actions/automations'
 import { createHash } from 'crypto'
+import { resolveCrmAdminSession, denyReadOnlyViewer } from '@/lib/crm/admin-session'
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 
@@ -34,7 +35,13 @@ async function resolveTenantId(req: NextRequest): Promise<string | null> {
 
 export async function GET(req: NextRequest) {
   try {
-    const tenantId = await resolveTenantId(req)
+    let tenantId = await resolveTenantId(req)
+    // Read-only viewer (CEO) without a branch link still gets to VIEW automations.
+    // (POST keeps using resolveTenantId, which returns null for them → 403/401.)
+    if (!tenantId) {
+      const viewer = await resolveCrmAdminSession()
+      if (viewer?.viewerOnly) tenantId = viewer.tenantId
+    }
     if (!tenantId) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
@@ -93,6 +100,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
+    const denied = await denyReadOnlyViewer(); if (denied) return denied
     const tenantId = await resolveTenantId(req)
     if (!tenantId) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })

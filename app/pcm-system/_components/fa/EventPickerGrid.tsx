@@ -30,15 +30,17 @@ export function EventPickerGrid({
           <button
             key={event.id}
             onClick={() => onSelect(event.id)}
-            className="fa-card-hover p-5 text-left"
+            className="group relative overflow-hidden rounded-2xl bg-white border border-ivory-300 shadow-sm p-5 pt-6 text-left transition-all hover:shadow-md hover:border-violet-300"
           >
+            {/* Violet accent strip to echo the Invitations theme */}
+            <span className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-violet-500 to-indigo-500" aria-hidden="true" />
             <div className="flex items-center justify-between mb-3">
-              <div className="text-xs uppercase tracking-wider font-semibold text-brand-900">
+              <div className="fa-mono text-[10px] uppercase tracking-wider font-semibold text-violet-700" style={{ letterSpacing: "0.12em" }}>
                 {MONTHS[event.month - 1]} {event.year}
               </div>
               <EventStatusPill status={event.status} />
             </div>
-            <h3 className="fa-display text-lg text-ink-900 mb-1">{event.name}</h3>
+            <h3 className="fa-display text-lg text-ink-900 mb-1 group-hover:text-violet-900 transition-colors">{event.name}</h3>
             <div className="text-sm text-ink-500 flex items-center gap-1.5">
               <CalendarDays className="w-3.5 h-3.5" />
               {dateDisplay}

@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { Plus, Trash2, Loader2, Search, Building2, ArrowLeft } from 'lucide-react'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -24,6 +25,18 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { cn } from '@/lib/crm/utils'
+
+// Roles a SUPER_ADMIN can grant from this page. SUPER_ADMIN is intentionally
+// omitted — promoting another super-admin is a one-line audit-sensitive
+// action that belongs in a more guarded place than a checkbox dialog.
+type GrantableRole = 'AGENCY_ADMIN' | 'REGIONAL_MANAGER' | 'BRANCH_MANAGER' | 'BRANCH_STAFF'
+
+const ROLE_OPTIONS: Array<{ value: GrantableRole; label: string; hint: string }> = [
+  { value: 'AGENCY_ADMIN',     label: 'Agency Admin',     hint: 'Sees every branch in the tenant. Pick any branch as their primary.' },
+  { value: 'REGIONAL_MANAGER', label: 'Regional Manager', hint: 'Sees all branches granted here. Pick every branch in their region.' },
+  { value: 'BRANCH_MANAGER',   label: 'Branch Manager',   hint: 'Sees only the branches granted here. Standard scope.' },
+  { value: 'BRANCH_STAFF',     label: 'Branch Staff',     hint: 'Sees only the branches granted here. Limited write actions.' },
+]
 
 interface Link {
   id: string
@@ -101,10 +114,14 @@ export default function BranchAccessPage() {
           <ArrowLeft className="h-4 w-4" /> Back
         </Link>
         <h1 className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">
-          Manage Branch Access
+          Branch & Agency Access
         </h1>
         <p className="text-sm text-slate-500 dark:text-slate-400">
-          Grant branch managers and staff access to additional branches. Users only see branches they&apos;re linked to in the Agency View switcher.
+          Grant a user access to one or more branches. Use this to create{' '}
+          <span className="font-medium text-slate-700 dark:text-slate-300">agency accounts</span>
+          {' '}(one user, many branches) and to assign{' '}
+          <span className="font-medium text-slate-700 dark:text-slate-300">regional managers</span>
+          {' '}(grant every branch in their region). Users switch between their granted branches with the topbar branch picker.
         </p>
       </div>
 
@@ -226,74 +243,192 @@ function GrantDialog({
 }) {
   const qc = useQueryClient()
   const available = branches.filter((b) => !existingBranchIds.has(b.id))
-  const [branchId, setBranchId] = useState(available[0]?.id ?? '')
-  const [role, setRole] = useState<'BRANCH_MANAGER' | 'BRANCH_STAFF'>('BRANCH_MANAGER')
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [role, setRole] = useState<GrantableRole>('BRANCH_MANAGER')
+  const [search, setSearch] = useState('')
 
+  const roleHint = ROLE_OPTIONS.find((r) => r.value === role)?.hint ?? ''
+
+  const filteredAvailable = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return available
+    return available.filter((b) => b.name.toLowerCase().includes(q))
+  }, [available, search])
+
+  const toggleBranch = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+  const selectAllFiltered = () => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      for (const b of filteredAvailable) next.add(b.id)
+      return next
+    })
+  }
+  const clearSelection = () => setSelected(new Set())
+
+  // Sequential POSTs — keeps the API simple (no batch endpoint) and lets us
+  // collate per-branch errors (e.g. a duplicate link returns 409 and we
+  // continue with the rest instead of aborting the whole grant).
   const grantMutation = useMutation({
-    mutationFn: () =>
-      fetchJson('/api/crm/branch-access', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: user.id, branchId, role }),
-      }),
-    onSuccess: () => {
-      toast.success('Access granted')
+    mutationFn: async () => {
+      const branchIds = Array.from(selected)
+      const failures: Array<{ branchId: string; message: string }> = []
+      let succeeded = 0
+      for (const branchId of branchIds) {
+        try {
+          await fetchJson('/api/crm/branch-access', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId: user.id, branchId, role }),
+          })
+          succeeded++
+        } catch (e) {
+          failures.push({ branchId, message: (e as Error).message })
+        }
+      }
+      return { succeeded, failures, total: branchIds.length }
+    },
+    onSuccess: (result) => {
+      if (result.failures.length === 0) {
+        toast.success(
+          result.succeeded === 1
+            ? 'Access granted'
+            : `Granted access to ${result.succeeded} branches`,
+        )
+      } else if (result.succeeded === 0) {
+        toast.error(`Grant failed: ${result.failures[0].message}`)
+      } else {
+        toast.warning(
+          `Granted ${result.succeeded} of ${result.total} — ${result.failures.length} failed`,
+        )
+      }
       void qc.invalidateQueries({ queryKey: ['branch-access'] })
-      onClose()
+      if (result.succeeded > 0) onClose()
     },
     onError: (e: Error) => toast.error(e.message),
   })
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
+      <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>Grant branch access</DialogTitle>
           <DialogDescription>
-            Give {user.name ?? user.email} access to an additional branch.
+            Give {user.name ?? user.email} access to one or more branches. All
+            selected branches receive the same role.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-3 py-2">
+        <div className="space-y-4 py-2">
           <div>
-            <Label htmlFor="branch">Branch</Label>
-            <Select value={branchId} onValueChange={setBranchId}>
-              <SelectTrigger id="branch" className="mt-1">
-                <SelectValue placeholder="Pick a branch…" />
-              </SelectTrigger>
-              <SelectContent>
-                {available.length === 0 ? (
-                  <div className="px-3 py-2 text-sm text-slate-400">User already has every branch</div>
-                ) : (
-                  available.map((b) => (
-                    <SelectItem key={b.id} value={b.id}>
-                      {b.name}
-                    </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <Label htmlFor="role">Role on this branch</Label>
-            <Select value={role} onValueChange={(v) => setRole(v as typeof role)}>
+            <Label htmlFor="role">Role</Label>
+            <Select value={role} onValueChange={(v) => setRole(v as GrantableRole)}>
               <SelectTrigger id="role" className="mt-1">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="BRANCH_MANAGER">Branch Manager</SelectItem>
-                <SelectItem value="BRANCH_STAFF">Branch Staff</SelectItem>
+                {ROLE_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{roleHint}</p>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between">
+              <Label>Branches</Label>
+              <div className="text-xs text-slate-500 dark:text-slate-400">
+                {selected.size} selected
+              </div>
+            </div>
+
+            {available.length === 0 ? (
+              <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-4 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-400">
+                This user already has access to every branch.
+              </div>
+            ) : (
+              <>
+                <div className="mt-1 flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                    <Input
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      placeholder="Filter branches…"
+                      className="h-8 pl-8 text-sm"
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={selectAllFiltered}
+                    disabled={filteredAvailable.length === 0}
+                  >
+                    Select all
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={clearSelection}
+                    disabled={selected.size === 0}
+                  >
+                    Clear
+                  </Button>
+                </div>
+
+                <div className="mt-2 max-h-64 overflow-y-auto rounded-md border border-slate-200 dark:border-slate-700">
+                  {filteredAvailable.length === 0 ? (
+                    <div className="px-3 py-4 text-center text-xs text-slate-500 dark:text-slate-400">
+                      No branches match.
+                    </div>
+                  ) : (
+                    <ul className="divide-y divide-slate-100 dark:divide-slate-700">
+                      {filteredAvailable.map((b) => {
+                        const isSelected = selected.has(b.id)
+                        return (
+                          <li
+                            key={b.id}
+                            className={cn(
+                              'flex cursor-pointer items-center gap-3 px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-800/50',
+                              isSelected && 'bg-slate-50 dark:bg-slate-800/50',
+                            )}
+                            onClick={() => toggleBranch(b.id)}
+                          >
+                            <Checkbox
+                              checked={isSelected}
+                              onCheckedChange={() => toggleBranch(b.id)}
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                            <Building2 className="h-3.5 w-3.5 text-slate-400" />
+                            <span className="text-slate-700 dark:text-slate-200">{b.name}</span>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  )}
+                </div>
+              </>
+            )}
           </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button
             onClick={() => grantMutation.mutate()}
-            disabled={grantMutation.isPending || !branchId || available.length === 0}
+            disabled={grantMutation.isPending || selected.size === 0}
           >
             {grantMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Grant Access
+            Grant access to {selected.size || 0} {selected.size === 1 ? 'branch' : 'branches'}
           </Button>
         </DialogFooter>
       </DialogContent>

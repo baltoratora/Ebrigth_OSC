@@ -2,8 +2,10 @@ import { type NextRequest, NextResponse } from 'next/server'
 import { headers } from 'next/headers'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
+import { Prisma } from '@prisma/client'
 import { auth } from '@/lib/crm/auth'
 import { prisma } from '@/lib/crm/db'
+import { normalizePhone } from '@/lib/crm/utils'
 import { logAudit } from '@/lib/crm/audit'
 
 const SubmitSchema = z.object({
@@ -104,92 +106,117 @@ export async function POST(req: NextRequest) {
     }
     const newLeadStage = pipeline.stages[0]
 
-    // Optional: lookup "Website" lead source, create if missing
+    // Leads submitted through the CNS trial form are tagged with the
+    // "CNS Form" lead source so they're distinguishable in the Opportunities
+    // board / lead-source filter (created on first use if missing).
     let leadSource = await prisma.crm_lead_source.findFirst({
-      where: { tenantId: tenant.id, name: 'Website' },
+      where: { tenantId: tenant.id, name: 'CNS Form' },
     })
     if (!leadSource) {
       leadSource = await prisma.crm_lead_source.create({
-        data: { tenantId: tenant.id, name: 'Website' },
+        data: { tenantId: tenant.id, name: 'CNS Form' },
       })
     }
 
     // One contact + opportunity PER child, mirroring the master_leads_base
     // sibling-explosion path. Each contact's firstName/lastName holds the
-    // child's name; parentFullName carries the parent. externalSourceId uses
-    // a single submission UUID + sibling index so the lead-detail page can
-    // resolve siblings via the same `<uuid>#<idx>` scheme used for Wix.
-    const submissionId = randomUUID()
+    // child's name; parentFullName carries the parent.
+    //
+    // IDEMPOTENCY: the externalSourceId is a DETERMINISTIC key per (parent,
+    // child) — parent's normalised phone (email fallback) + the child's name —
+    // NOT a fresh random UUID per request. A random id meant every re-submit
+    // (double-click, retry, back-then-resubmit) created a brand-new lead, which
+    // is the duplicate-lead bug. The deterministic key + the
+    // @@unique(tenantId, externalSourceTable, externalSourceId) index make a
+    // repeat submission a no-op that reuses the existing lead.
+    const parentKey =
+      normalizePhone(parsed.data.parentPhone) || parsed.data.parentEmail.trim().toLowerCase()
+    const childKey = (name: string) => name.trim().toLowerCase().replace(/\s+/g, '-')
+    const keyed = parsed.data.children.map((child) => ({
+      child,
+      externalSourceId: `trial:${parentKey}:${childKey(child.name)}`,
+    }))
+    const keys = keyed.map((k) => k.externalSourceId)
 
-    const contacts = await prisma.$transaction(async (tx) => {
-      const created = []
-      for (let i = 0; i < parsed.data.children.length; i++) {
-        const child = parsed.data.children[i]
-        const { firstName, lastName } = splitName(child.name)
-
-        const c = await tx.crm_contact.create({
-          data: {
-            tenantId:            tenant.id,
-            branchId,
-            firstName,
-            lastName,
-            email:               parsed.data.parentEmail,
-            phone:               parsed.data.parentPhone,
-            leadSourceId:        leadSource!.id,
-            preferredBranchId:   branchId,
-            parentFullName:      parsed.data.parentName,
-            childAge1:           child.age,
-            externalSourceTable: 'trial_form',
-            externalSourceId:    `${submissionId}#${i + 1}`,
-          },
-        })
-
-        await tx.crm_opportunity.create({
-          data: {
-            tenantId:   tenant.id,
-            branchId,
-            contactId:  c.id,
-            pipelineId: pipeline.id,
-            stageId:    newLeadStage.id,
-            value:      0,
-          },
-        })
-
-        // Attach remarks once on the first sibling to avoid duplicating the
-        // same note across every card.
-        if (i === 0 && parsed.data.remarks?.trim()) {
-          await tx.crm_note.create({
-            data: {
-              tenantId:  tenant.id,
-              contactId: c.id,
-              body:      parsed.data.remarks.trim(),
-            },
-          })
-        }
-
-        created.push(c)
-      }
-      return created
+    // Skip children that already have a lead from a prior submit (idempotent).
+    const already = await prisma.crm_contact.findMany({
+      where: { tenantId: tenant.id, externalSourceTable: 'trial_form', externalSourceId: { in: keys } },
+      select: { externalSourceId: true },
     })
+    const have = new Set(already.map((c) => c.externalSourceId))
+    const toCreate = keyed.filter((k) => !have.has(k.externalSourceId))
+
+    if (toCreate.length > 0) {
+      try {
+        await prisma.$transaction(async (tx) => {
+          for (const { child, externalSourceId } of toCreate) {
+            const { firstName, lastName } = splitName(child.name)
+            const c = await tx.crm_contact.create({
+              data: {
+                tenantId:            tenant.id,
+                branchId,
+                firstName,
+                lastName,
+                email:               parsed.data.parentEmail,
+                phone:               parsed.data.parentPhone,
+                leadSourceId:        leadSource!.id,
+                preferredBranchId:   branchId,
+                parentFullName:      parsed.data.parentName,
+                childAge1:           child.age,
+                // Parent's free-text remarks from the form — stored on every
+                // sibling so it shows on whichever child's card is opened.
+                remarks:             parsed.data.remarks?.trim() || null,
+                externalSourceTable: 'trial_form',
+                externalSourceId,
+              },
+            })
+            await tx.crm_opportunity.create({
+              data: {
+                tenantId:   tenant.id,
+                branchId,
+                contactId:  c.id,
+                pipelineId: pipeline.id,
+                stageId:    newLeadStage.id,
+                value:      0,
+              },
+            })
+          }
+        })
+      } catch (e) {
+        // Race: a concurrent identical submit inserted the same key first. The
+        // unique index rolled this transaction back, so no duplicate persisted —
+        // treat as success and fall through to re-read the existing rows.
+        if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002')) throw e
+      }
+    }
+
+    // Full contact set for this submission (existing + newly created).
+    const finalContacts = await prisma.crm_contact.findMany({
+      where: { tenantId: tenant.id, externalSourceTable: 'trial_form', externalSourceId: { in: keys } },
+      select: { id: true },
+    })
+    const contactIds = finalContacts.map((c) => c.id)
 
     void logAudit({
       tenantId: tenant.id,
       action: 'CREATE',
       entity: 'crm_contact',
-      entityId: contacts[0].id,
+      entityId: contactIds[0],
       meta: {
         source:           'trial-form',
         numChildren:      parsed.data.numChildren,
         preferredBranch:  parsed.data.preferredBranch,
-        submissionId,
-        contactIds:       contacts.map((c) => c.id),
+        submissionId:     randomUUID(),
+        created:          toCreate.length,
+        reused:           have.size,
+        contactIds,
       },
     })
 
     return NextResponse.json({
       success:    true,
-      contactId:  contacts[0].id,
-      contactIds: contacts.map((c) => c.id),
+      contactId:  contactIds[0],
+      contactIds,
     })
   } catch (e) {
     console.error('[POST /api/crm/forms/trial-submit]', e)

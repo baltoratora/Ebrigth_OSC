@@ -7,6 +7,7 @@ import {
   InvitationRejected,
 } from "@pcm/_lib/events.server";
 import { BranchCode, InvitationStatus, InviteType } from "@pcm/_types";
+import { requireSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,9 @@ export const dynamic = "force-dynamic";
 // another day / etc.). The 409 code signals "valid request but conflicts
 // with current state" so the client can distinguish from a real server error.
 export async function POST(req: NextRequest) {
+  const auth = await requireSession();
+  if (auth.error) return auth.error;
+
   try {
     const body = await req.json();
     const { eventId, sessionId, studentId, branch, invitedBy } = body;

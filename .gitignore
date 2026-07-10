@@ -1,5 +1,8 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
+# local dev server log (from `npm run dev` background runs)
+.devserver.log
+
 # dependencies
 /node_modules
 /.pnp
@@ -57,3 +60,9 @@ dist/
 test-results/
 playwright-report/
 playwright/.cache/
+
+# GHL stage-sync data artifacts (contain lead PII — keep local, never commit)
+docs/opportunities_combined.xlsx
+docs/opportunities_combined.csv
+docs/ghl-sync-rollback*.json
+docs/ghl-sync-skips.json

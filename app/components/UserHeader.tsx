@@ -16,6 +16,32 @@ export default function UserHeader({
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
+  // Pull the full name from the user's BranchStaff record (matched by email).
+  // Falls back to the prop while loading / if there's no staff match, so the
+  // header never renders blank.
+  const [staffName, setStaffName] = useState<string | null>(null);
+  const [staffEmail, setStaffEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/me")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        if (typeof data.name === "string" && data.name.trim()) setStaffName(data.name.trim());
+        if (typeof data.email === "string" && data.email) setStaffEmail(data.email);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const displayName = staffName || userName;
+  const displayEmail = staffEmail || userEmail;
+  const initials =
+    displayName.trim().split(/\s+/).slice(0, 2).map((n) => n[0]).join("").toUpperCase() || "U";
+
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
@@ -43,10 +69,10 @@ export default function UserHeader({
         className="flex items-center gap-3 px-4 py-2 rounded-lg hover:bg-white/20 transition-colors"
       >
         <div className="w-10 h-10 bg-red-500 rounded-full flex items-center justify-center text-white font-bold text-lg">
-          {userName.split(" ").map((n) => n[0]).join("")}
+          {initials}
         </div>
         <div className="text-left hidden sm:block">
-          <p className="text-sm font-semibold text-white">{userName}</p>
+          <p className="text-sm font-semibold text-white">{displayName}</p>
         </div>
       </button>
 
@@ -55,8 +81,8 @@ export default function UserHeader({
         <div className="absolute right-0 mt-2 w-64 bg-white rounded-lg shadow-xl border border-gray-200 z-50">
           {/* User Info */}
           <div className="px-4 py-4 border-b border-gray-200">
-            <p className="text-sm font-semibold text-gray-900">{userName}</p>
-            <p className="text-xs text-gray-500 mt-1">{userEmail}</p>
+            <p className="text-sm font-semibold text-gray-900">{displayName}</p>
+            <p className="text-xs text-gray-500 mt-1">{displayEmail}</p>
           </div>
 
           {/* Menu Items */}

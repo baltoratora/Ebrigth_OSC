@@ -46,7 +46,7 @@ export function NavItem({
       {!collapsed && badge != null && badge > 0 && (
         <span
           className={cn(
-            'ml-auto flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-semibold',
+            'ml-auto flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-xs font-semibold',
             isActive
               ? 'bg-white/20 text-white'
               : 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300',

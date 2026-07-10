@@ -480,7 +480,14 @@ h1, h2, h3, h4 {
 
 @media print {
   @page {
-    margin: 1cm;
+    /* margin: 0 — the .fa-print-cert-page wrapper is sized to a full
+       A4 page (210×297mm) and controls layout edge-to-edge. */
+    size: A4;
+    margin: 0;
+  }
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
   }
   body * {
     visibility: hidden;
@@ -499,14 +506,66 @@ h1, h2, h3, h4 {
     visibility: visible;
   }
   /* Each bulk-print certificate gets its own page. The single-preview
-     flow doesn't wrap with .fa-print-cert-page so it still prints on one page. */
+     flow doesn't wrap with .fa-print-cert-page so it still prints on one page.
+     Visibility override is required because `body *` is visibility:hidden
+     above — without revealing this subtree, bulk-print pages come out
+     blank. Unlike .fa-print-cert, this rule does NOT set position:absolute,
+     so multiple .fa-print-cert-page siblings flow normally and each
+     lands on its own A4 sheet via page-break-after.
+
+     print-color-adjust: exact forces the browser to print background
+     colours and gradient fills as designed — without it, the red banner,
+     slate identity strip, and red-bordered Remarks box all wash out
+     because Chrome strips background colours by default. */
+  .fa-print-cert-page,
+  .fa-print-cert-page * {
+    visibility: visible;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    color-adjust: exact;
+  }
+  /* Print mode — STRICTLY one cert per A4 page, always.
+     Wrapper IS the page (210×297mm) with overflow:hidden so content
+     can never spill. Inner element gets zoom 0.85 + form char-limit
+     400 to keep content within the page budget. */
   .fa-print-cert-page {
+    width: 210mm !important;
+    height: 297mm !important;
+    max-width: none !important;
+    padding: 0 !important;
+    margin: 0 auto !important;
+    box-sizing: border-box;
+    overflow: hidden;
     page-break-after: always;
     break-after: page;
+  }
+  .fa-print-cert-page > * {
+    /* 0.92 — fills the page for typical-length reports. Trade-off
+       documented with the user: reports with Remarks near the 400-char
+       max may have the bottom of "Marketing" slightly clipped, since
+       no zoom value fits the longest possible content AND eliminates
+       the empty band for short content at the same time. */
+    zoom: 0.92;
   }
   .fa-print-cert-page:last-child {
     page-break-after: auto;
     break-after: auto;
+  }
+  /* Banner h1 — slightly smaller than the 40px on-screen. */
+  .fa-print-cert-page h1 {
+    font-size: 32px !important;
+    margin-top: 10px !important;
+  }
+  /* Section headings (Score, Remarks). */
+  .fa-print-cert-page h2 {
+    font-size: 22px !important;
+    margin-top: 16px !important;
+    margin-bottom: 10px !important;
+  }
+  /* Slate block (identity + score rows) — moderate trim. */
+  .fa-print-cert-page .px-10.py-7 {
+    padding-top: 16px !important;
+    padding-bottom: 16px !important;
   }
 }
 

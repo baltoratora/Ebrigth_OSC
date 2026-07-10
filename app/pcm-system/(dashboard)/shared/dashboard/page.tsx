@@ -1,14 +1,29 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useFAStore } from "@pcm/_lib/store";
 import { useCurrentUser } from "@pcm/_hooks/useCurrentUser";
 import { AppShell } from "@pcm/_components/shared/AppShell";
+import { Modal } from "@pcm/_components/shared/Modal";
 import {
   Users, CheckCircle2, XCircle, CalendarClock, TrendingUp,
-  Calendar, CalendarRange, BadgeCheck,
+  Calendar, CalendarRange, BadgeCheck, Receipt,
 } from "lucide-react";
-import { BRANCHES, BranchCode } from "@pcm/_types";
+
+/** One renewal row from /api/pcm/renewal-details (cash from finance_renewals,
+ *  coach resolved by name match — may be blank when no confident match). */
+interface RenewalRow {
+  docNo: string;
+  docDate: string | null;
+  branch: string;
+  studentName: string;
+  studentId: string | null;
+  gradeChapter: string | null;
+  coachName: string | null;
+  package: string | null;
+  amount: number;
+}
+import { BRANCHES, BranchCode, allowedBranchCodes } from "@pcm/_types";
 import {
   format, parseISO, startOfWeek, endOfWeek, startOfMonth, endOfMonth,
   startOfYear, endOfYear, isWithinInterval,
@@ -21,8 +36,16 @@ export default function DashboardPage() {
   const events = useFAStore(s => s.events);
   const sessions = useFAStore(s => s.sessions);
   const invitations = useFAStore(s => s.invitations);
+  const students = useFAStore(s => s.students);
+  const loadStudents = useFAStore(s => s.loadStudents);
+  // Ensure the per-branch student counts are available for the coverage cards
+  // (no-op if the store already loaded them on login).
+  useEffect(() => { loadStudents(); }, [loadStudents]);
 
-  const [rangePreset, setRangePreset] = useState<RangePreset>("thisMonth");
+  // Default to "all" so the dashboard isn't accidentally empty when the
+  // current month happens to have no events yet. BMs can narrow down with
+  // the range buttons.
+  const [rangePreset, setRangePreset] = useState<RangePreset>("all");
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd]     = useState("");
   const [branchFilter, setBranchFilter] = useState<BranchCode | "all">(
@@ -31,6 +54,8 @@ export default function DashboardPage() {
 
   const effectiveBranch: BranchCode | "all" =
     user?.role === "BM" ? (user.branch ?? "all") : branchFilter;
+  // Hard region boundary: null = all branches (MKT); RM = only their region.
+  const allowedBranches = useMemo(() => allowedBranchCodes(user), [user]);
 
   // Active date range
   const range = useMemo(() => {
@@ -60,10 +85,11 @@ export default function DashboardPage() {
   const filteredInvs = useMemo(() => {
     return invitations.filter(i => {
       if (!sessionIdsInRange.has(i.sessionId)) return false;
+      if (allowedBranches && !allowedBranches.includes(i.branch)) return false; // region boundary
       if (effectiveBranch !== "all" && i.branch !== effectiveBranch) return false;
       return true;
     });
-  }, [invitations, sessionIdsInRange, effectiveBranch]);
+  }, [invitations, sessionIdsInRange, effectiveBranch, allowedBranches]);
 
   const stats = useMemo(() => {
     const invited      = filteredInvs.length;
@@ -71,6 +97,12 @@ export default function DashboardPage() {
     const attended     = filteredInvs.filter(i => i.status === "attended").length;
     const absent       = filteredInvs.filter(i => i.status === "no_show" || i.status === "declined").length;
     const rescheduled  = filteredInvs.filter(i => i.status === "rescheduled").length;
+
+    // Payment breakdown — academy wants visibility into who attended AND
+    // paid, who attended but hasn't paid yet, and who didn't show.
+    const attendedPaid    = filteredInvs.filter(i => i.status === "attended" && i.paid).length;
+    const attendedUnpaid  = filteredInvs.filter(i => i.status === "attended" && !i.paid).length;
+    const notAttended     = invited - attended;
 
     const progressInvs = filteredInvs.filter(i => i.inviteType === "progress");
     const renewalInvs  = filteredInvs.filter(i => i.inviteType === "renewal");
@@ -82,6 +114,7 @@ export default function DashboardPage() {
 
     return {
       invited, confirmed, attended, absent, rescheduled,
+      attendedPaid, attendedUnpaid, notAttended,
       progressInvited: progressInvs.length,
       progressAttended,
       renewalInvited: renewalInvs.length,
@@ -90,64 +123,95 @@ export default function DashboardPage() {
     };
   }, [filteredInvs]);
 
+  // Outcome breakdown scope. Paid/Unpaid only applies to RENEWAL students, so
+  // "Overall" mixes in Progress attendees (who never pay) — the "PCM Renewal"
+  // scope answers the payment question accurately.
+  const [outcomeScope, setOutcomeScope] = useState<"overall" | "renewal">("overall");
+  const outcomeInvs = useMemo(
+    () => outcomeScope === "renewal" ? filteredInvs.filter(i => i.inviteType === "renewal") : filteredInvs,
+    [filteredInvs, outcomeScope],
+  );
+
+  // ── Renewal cash drill-down ──────────────────────────────────────────────
+  // Who renewed (paid), their coach, package and RM — pulled live from
+  // finance_renewals (actual invoiced money), filtered by the same branch +
+  // date range as the dashboard.
+  const [renewalModalOpen, setRenewalModalOpen] = useState(false);
+  const [renewalLoading, setRenewalLoading] = useState(false);
+  const [renewalData, setRenewalData] =
+    useState<{ rows: RenewalRow[]; total: number; packs: number } | null>(null);
+
+  async function openRenewalDetails() {
+    setRenewalModalOpen(true);
+    setRenewalLoading(true);
+    setRenewalData(null);
+    const p = new URLSearchParams();
+    if (effectiveBranch !== "all") p.set("branch", effectiveBranch);
+    if (range) {
+      p.set("start", format(range.start, "yyyy-MM-dd"));
+      p.set("end", format(range.end, "yyyy-MM-dd"));
+    }
+    try {
+      const res = await fetch(`/api/pcm/renewal-details?${p.toString()}`, { cache: "no-store" });
+      const data = res.ok ? await res.json() : { rows: [], total: 0, packs: 0 };
+      if (allowedBranches) {
+        // RM: keep only their region's rows and recompute totals.
+        const rows = (data.rows ?? []).filter((r: { branch: string }) => allowedBranches.includes(r.branch));
+        const total = rows.reduce((s: number, r: { amount: number }) => s + (r.amount || 0), 0);
+        const packs = new Set(rows.map((r: { docNo: string }) => r.docNo)).size;
+        setRenewalData({ rows, total, packs });
+      } else {
+        setRenewalData(data);
+      }
+    } catch {
+      setRenewalData({ rows: [], total: 0, packs: 0 });
+    } finally {
+      setRenewalLoading(false);
+    }
+  }
+  const outcomeStats = useMemo(() => {
+    // Payment is now independent of attendance (a student can pay without
+    // attending), so the primary split is Paid vs Unpaid; attendance is shown
+    // as a sub-count under each.
+    const isAtt = (i: typeof outcomeInvs[number]) => i.status === "attended";
+    const paidList   = outcomeInvs.filter(i => i.paid);
+    const unpaidList = outcomeInvs.filter(i => !i.paid);
+    return {
+      invited: outcomeInvs.length,
+      paid: paidList.length,
+      unpaid: unpaidList.length,
+      paidAttended:      paidList.filter(isAtt).length,
+      paidNotAttended:   paidList.filter(i => !isAtt(i)).length,
+      unpaidAttended:    unpaidList.filter(isAtt).length,
+      unpaidNotAttended: unpaidList.filter(i => !isAtt(i)).length,
+    };
+  }, [outcomeInvs]);
+
   // Per-(event, branch) breakdown. Each row is one branch within one event.
   // Branches with zero invitations in an event are skipped so the table
   // stays compact. When the page-level branch filter is set, only that
   // branch's rows survive.
-  const eventBreakdown = useMemo(() => {
-    type Row = {
-      key: string;
-      event: typeof events[number];
-      branch: BranchCode;
-      invited: number;
-      confirmed: number;
-      attended: number;
-      absent: number;
-      rescheduled: number;
-      progress: number;
-      renewal: number;
-      pct: number;
-      /** True for the FIRST row of an event group — the table renders the
-       *  event name + date only on that row to visually group rows together. */
-      isFirstOfEvent: boolean;
+  // Per-branch invite-coverage cards. Target ("should invite") = the branch's
+  // total students ÷ 12; invited = invitations in the selected period. Respects
+  // region (RM) and branch (BM) scope like the rest of the page.
+  const branchCards = useMemo(() => {
+    const inScope = (code: string) => {
+      if (allowedBranches && !allowedBranches.includes(code)) return false;
+      if (effectiveBranch !== "all" && code !== effectiveBranch) return false;
+      return true;
     };
-    const rows: Row[] = [];
-    const sortedEvents = [...eventsInRange].sort((a, b) =>
-      b.startDate.localeCompare(a.startDate)
-    );
-    for (const event of sortedEvents) {
-      const evInvs = filteredInvs.filter(i => i.eventId === event.id);
-      // Branches touched by this event, ordered by their BRANCHES list index
-      // so the table is stable across renders.
-      const branchesInEvent = BRANCHES
-        .map(b => b.code as BranchCode)
-        .filter(code => evInvs.some(i => i.branch === code));
-      let isFirst = true;
-      for (const branch of branchesInEvent) {
-        const branchInvs = evInvs.filter(i => i.branch === branch);
-        const invited     = branchInvs.length;
-        const confirmed   = branchInvs.filter(i => i.status === "confirmed" || i.status === "attended").length;
-        const attended    = branchInvs.filter(i => i.status === "attended").length;
-        const absent      = branchInvs.filter(i => i.status === "no_show" || i.status === "declined").length;
-        const rescheduled = branchInvs.filter(i => i.status === "rescheduled").length;
-        const progress    = branchInvs.filter(i => i.inviteType === "progress").length;
-        const renewal     = branchInvs.filter(i => i.inviteType === "renewal").length;
-        const pct = invited > 0 ? Math.round((attended / invited) * 100) : 0;
-        rows.push({
-          key: `${event.id}:${branch}`,
-          event, branch, invited, confirmed, attended, absent, rescheduled,
-          progress, renewal, pct, isFirstOfEvent: isFirst,
-        });
-        isFirst = false;
-      }
-    }
-    return rows;
-  }, [eventsInRange, filteredInvs]);
-
-  const totalEventsShown = useMemo(
-    () => new Set(eventBreakdown.map(r => r.event.id)).size,
-    [eventBreakdown],
-  );
+    return BRANCHES
+      .filter(b => inScope(b.code))
+      .map(b => {
+        const totalStudents = students.filter(s => s.branch === b.code).length;
+        const shouldInvite = Math.round(totalStudents / 12);
+        const invited = filteredInvs.filter(i => i.branch === b.code).length;
+        const pct = shouldInvite > 0 ? Math.round((invited / shouldInvite) * 100) : 0;
+        return { code: b.code, name: b.name, totalStudents, shouldInvite, invited, pct };
+      })
+      // Hide branches with neither students nor invitations so the grid stays tidy.
+      .filter(c => c.totalStudents > 0 || c.invited > 0);
+  }, [students, filteredInvs, allowedBranches, effectiveBranch]);
 
   return (
     <AppShell>
@@ -228,8 +292,8 @@ export default function DashboardPage() {
                 value={branchFilter}
                 onChange={e => setBranchFilter(e.target.value as BranchCode | "all")}
               >
-                <option value="all">All branches</option>
-                {BRANCHES.map(b => (
+                <option value="all">{allowedBranches ? "All my region" : "All branches"}</option>
+                {BRANCHES.filter(b => !allowedBranches || allowedBranches.includes(b.code)).map(b => (
                   <option key={b.code} value={b.code}>{b.code} — {b.name}</option>
                 ))}
               </select>
@@ -263,8 +327,86 @@ export default function DashboardPage() {
           attended={stats.renewalAttended}
           totalAttended={stats.attended}
           accent="cyan"
+          onViewDetails={openRenewalDetails}
         />
       </div>
+
+      <Modal
+        open={renewalModalOpen}
+        onClose={() => setRenewalModalOpen(false)}
+        kicker="PCM Renewal"
+        title="Who renewed — coach, package & cash"
+        description={`Actual invoiced renewals (from finance) for ${effectiveBranch === "all" ? "all branches" : effectiveBranch}${range ? ` · ${range.label}` : " · all time"}.`}
+        size="xl"
+      >
+        {renewalLoading ? (
+          <div className="p-8 text-center text-sm text-ink-400">Loading renewals…</div>
+        ) : !renewalData || renewalData.rows.length === 0 ? (
+          <div className="p-8 text-center text-sm text-ink-400">No renewals found for this branch / period.</div>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-1 mb-3 text-sm">
+              <span className="text-ink-500">Total packs: <strong className="text-ink-900">{renewalData.packs}</strong></span>
+              <span className="text-ink-500">Total renewals: <strong className="text-ink-900">RM {renewalData.total.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></span>
+              <span className="text-ink-400 text-xs">{renewalData.rows.length} student row{renewalData.rows.length !== 1 ? "s" : ""}</span>
+            </div>
+            <div className="max-h-[55vh] overflow-y-auto rounded-lg border border-ivory-300">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-ivory-100 text-ink-500 text-[11px] uppercase tracking-wider">
+                  <tr>
+                    <th className="text-left px-3 py-2">Student</th>
+                    <th className="text-left px-3 py-2">Coach</th>
+                    {effectiveBranch === "all" && <th className="text-left px-3 py-2">Branch</th>}
+                    <th className="text-left px-3 py-2">Package</th>
+                    <th className="text-right px-3 py-2">Amount (RM)</th>
+                    <th className="text-left px-3 py-2">Date</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {renewalData.rows.map((r, i) => (
+                    <tr key={`${r.docNo}-${i}`} className="border-t border-ivory-200">
+                      <td className="px-3 py-2">
+                        <div className="font-medium text-ink-900">{r.studentName}</div>
+                        <div className="text-[11px] text-ink-400">
+                          {r.studentId ? `#${r.studentId}` : "not matched"}{r.gradeChapter ? ` · ${r.gradeChapter}` : ""}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-ink-700">{r.coachName || <span className="text-ink-300">—</span>}</td>
+                      {effectiveBranch === "all" && <td className="px-3 py-2 font-mono text-xs text-ink-600">{r.branch}</td>}
+                      <td className="px-3 py-2 font-mono text-xs text-ink-700">{r.package || "—"}</td>
+                      <td className="px-3 py-2 text-right font-semibold text-ink-900">{r.amount.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                      <td className="px-3 py-2 text-xs text-ink-500">{r.docDate ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-2 text-[11px] text-ink-400">
+              Coach is matched from the student record by name; a blank coach or "not matched" means no confident name match in the student list.
+            </p>
+          </>
+        )}
+      </Modal>
+
+      {/* Payment breakdown — Paid vs Unpaid (payment is independent of
+          attendance now), with an attended / not-attended sub-count under
+          each so academy still sees who showed up. */}
+      <PaymentBreakdown
+        paid={outcomeStats.paid}
+        unpaid={outcomeStats.unpaid}
+        paidAttended={outcomeStats.paidAttended}
+        paidNotAttended={outcomeStats.paidNotAttended}
+        unpaidAttended={outcomeStats.unpaidAttended}
+        unpaidNotAttended={outcomeStats.unpaidNotAttended}
+        totalInvited={outcomeStats.invited}
+        scope={outcomeScope}
+        onScopeChange={setOutcomeScope}
+      />
+
+      {/* Per-student list of who fell into which bucket. Useful for chasing
+          up unpaid attendees and re-inviting the no-shows. Respects the same
+          Overall / PCM Renewal scope toggle. */}
+      <OutcomeStudentLists invitations={outcomeInvs} />
 
       {/* Attendance rate = attended / invited. Single calmer gradient card. */}
       <div className="rounded-2xl shadow-sm mb-6 border border-violet-200 bg-white overflow-hidden">
@@ -290,75 +432,69 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* By-event-and-branch table — tone-matched header */}
+      {/* Invite coverage by branch — card grid. Each card: total students,
+          target ("should invite" = total ÷ 12), and invited this period. */}
       <div className="rounded-2xl bg-white shadow-sm border border-ivory-300 overflow-hidden">
         <div className="bg-gradient-to-r from-violet-50 to-indigo-50 px-5 py-3 flex items-center justify-between border-b border-ivory-300">
-          <h2 className="text-base font-semibold text-violet-900">By event &amp; branch</h2>
+          <h2 className="text-base font-semibold text-violet-900">Invite coverage by branch</h2>
           <span className="text-xs text-ink-500">
-            {totalEventsShown} event{totalEventsShown !== 1 ? "s" : ""} · {eventBreakdown.length} branch row{eventBreakdown.length !== 1 ? "s" : ""}
+            Target = total students ÷ 12 · {branchCards.length} branch{branchCards.length !== 1 ? "es" : ""}
           </span>
         </div>
-        {eventBreakdown.length === 0 ? (
+        {branchCards.length === 0 ? (
           <div className="p-8 text-center text-sm text-ink-400">
-            No invitations fall in this range.
+            No branch data for this range.
           </div>
         ) : (
-          <table className="fa-table">
-            <thead>
-              <tr>
-                <th>Event</th>
-                <th>Date</th>
-                <th>Branch</th>
-                <th>Invited</th>
-                <th>Confirmed</th>
-                <th>Attended</th>
-                <th>Absent</th>
-                <th>Rescheduled</th>
-                <th>Progress</th>
-                <th>Renewal</th>
-                <th>%</th>
-              </tr>
-            </thead>
-            <tbody>
-              {eventBreakdown.map(row => (
-                <tr
-                  key={row.key}
-                  className={row.isFirstOfEvent ? "border-t-2 border-violet-200" : undefined}
-                >
-                  <td className="font-medium text-ink-900">
-                    {row.isFirstOfEvent ? row.event.name : <span className="text-ink-300">·</span>}
-                  </td>
-                  <td className="text-xs text-ink-500 font-mono">
-                    {row.isFirstOfEvent ? format(parseISO(row.event.startDate), "d MMM yyyy") : ""}
-                  </td>
-                  <td>
-                    <span
-                      className="fa-mono text-[11px] uppercase px-2 py-0.5 rounded bg-violet-100 text-violet-700 font-bold"
-                      style={{ letterSpacing: "0.06em" }}
-                    >
-                      {row.branch}
+          <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            {branchCards.map(c => {
+              const met = c.shouldInvite > 0 && c.invited >= c.shouldInvite;
+              const tone = met ? "emerald" : c.pct >= 50 ? "amber" : "rose";
+              const head =
+                tone === "emerald" ? "from-emerald-500 to-emerald-600"
+                : tone === "amber" ? "from-amber-500 to-amber-600"
+                : "from-rose-500 to-rose-600";
+              const bar =
+                tone === "emerald" ? "bg-emerald-500" : tone === "amber" ? "bg-amber-500" : "bg-rose-500";
+              const barPct = Math.min(100, c.pct);
+              return (
+                <div key={c.code} className="rounded-xl border border-ivory-300 shadow-sm overflow-hidden bg-white">
+                  <div className={`bg-gradient-to-r ${head} px-3 py-2 flex items-center justify-between`}>
+                    <span className="fa-mono text-xs font-bold uppercase text-white" style={{ letterSpacing: "0.08em" }} title={c.name}>
+                      {c.code}
                     </span>
-                  </td>
-                  <td className="font-mono">{row.invited}</td>
-                  <td className="font-mono text-indigo-700">{row.confirmed}</td>
-                  <td className="font-mono text-emerald-700">{row.attended}</td>
-                  <td className="font-mono text-rose-600">{row.absent}</td>
-                  <td className="font-mono text-amber-700">{row.rescheduled}</td>
-                  <td className="font-mono text-violet-700">{row.progress}</td>
-                  <td className="font-mono text-cyan-700">{row.renewal}</td>
-                  <td>
-                    <span
-                      className={`font-mono font-bold ${
-                        row.pct >= 80 ? "text-emerald-600" : row.pct >= 50 ? "text-amber-600" : "text-rose-600"
-                      }`}
-                    >
-                      {row.pct}%
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    <span className="text-[11px] font-bold text-white/90">{c.pct}%</span>
+                  </div>
+                  <div className="px-4 pt-3 pb-2">
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-2xl font-black text-ink-900 leading-none">{c.invited}</span>
+                      <span className="text-base text-ink-300 font-semibold leading-none">/ {c.shouldInvite}</span>
+                    </div>
+                    <div className="fa-mono text-[9px] uppercase text-ink-400 mt-1" style={{ letterSpacing: "0.1em" }}>
+                      Invited / Target
+                    </div>
+                    <div className="w-full h-2 bg-ivory-200 rounded-full overflow-hidden mt-2">
+                      <div className={`h-full ${bar} rounded-full transition-all`} style={{ width: `${barPct}%` }} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 border-t border-ivory-200">
+                    <div className="px-3 py-2 text-center border-r border-ivory-200">
+                      <div className="text-lg font-bold text-ink-900 leading-none">{c.totalStudents}</div>
+                      <div className="fa-mono text-[9px] uppercase text-ink-400 mt-1" style={{ letterSpacing: "0.08em" }}>
+                        Total students
+                      </div>
+                    </div>
+                    <div className="px-3 py-2 text-center">
+                      <div className="text-lg font-bold text-violet-700 leading-none">{c.shouldInvite}</div>
+                      <div className="fa-mono text-[9px] uppercase text-ink-400 mt-1" style={{ letterSpacing: "0.08em" }}>
+                        Should invite
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
     </AppShell>
@@ -407,13 +543,14 @@ function CalmStatCard({
 }
 
 function TypeSplitCard({
-  label, invited, attended, totalAttended, accent,
+  label, invited, attended, totalAttended, accent, onViewDetails,
 }: {
   label: string;
   invited: number;
   attended: number;
   totalAttended: number;
   accent: Accent;
+  onViewDetails?: () => void;
 }) {
   // Two ratios surfaced for the BM:
   //   • internal: this type's attendance rate  (attended / invited)
@@ -427,9 +564,20 @@ function TypeSplitCard({
       <div className="p-4 pl-5">
         <div className="flex items-center justify-between mb-3">
           <h3 className={`text-base font-bold ${a.text}`}>{label}</h3>
-          <span className={`fa-mono text-[10px] font-bold ${a.text}`} style={{ letterSpacing: "0.06em" }}>
-            {internalPct}%
-          </span>
+          <div className="flex items-center gap-2">
+            {onViewDetails && (
+              <button
+                onClick={onViewDetails}
+                className={`inline-flex items-center gap-1 rounded-md border border-current/30 px-2 py-0.5 text-[10px] font-semibold ${a.text} hover:bg-white/60 transition-colors`}
+                title="See who renewed, their coach, package and RM paid"
+              >
+                <Receipt className="w-3 h-3" /> View renewals
+              </button>
+            )}
+            <span className={`fa-mono text-[10px] font-bold ${a.text}`} style={{ letterSpacing: "0.06em" }}>
+              {internalPct}%
+            </span>
+          </div>
         </div>
         <div className="flex items-baseline gap-2 mb-2">
           <span className="text-3xl font-black text-ink-900">{invited}</span>
@@ -447,6 +595,253 @@ function TypeSplitCard({
         <div className="text-[11px] text-ink-500 mt-2">
           {shareOfAttended}% of total attended is {label.replace("PCM ", "")}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Payment breakdown — Paid vs Unpaid (payment is independent of attendance
+ * now). A two-segment stacked bar (Paid green / Unpaid rose) plus two cards,
+ * each carrying an attended / not-attended sub-count so attendance stays
+ * visible without tying it to payment.
+ */
+function PaymentBreakdown({
+  paid, unpaid, paidAttended, paidNotAttended, unpaidAttended, unpaidNotAttended,
+  totalInvited, scope, onScopeChange,
+}: {
+  paid: number;
+  unpaid: number;
+  paidAttended: number;
+  paidNotAttended: number;
+  unpaidAttended: number;
+  unpaidNotAttended: number;
+  totalInvited: number;
+  scope: "overall" | "renewal";
+  onScopeChange: (s: "overall" | "renewal") => void;
+}) {
+  const pct = (n: number) => (totalInvited > 0 ? Math.round((n / totalInvited) * 100) : 0);
+  const paidPct   = pct(paid);
+  const unpaidPct = pct(unpaid);
+
+  return (
+    <div className="rounded-2xl bg-white border border-ivory-300 shadow-sm p-4 mb-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+        <div className="flex items-center gap-3">
+          <h3 className="fa-display text-base text-ink-900">Outcome breakdown</h3>
+          {/* Overall vs PCM Renewal — paid/unpaid is only meaningful for renewals */}
+          <div className="inline-flex rounded-lg border border-ivory-300 overflow-hidden text-[11px] font-semibold">
+            {(["overall", "renewal"] as const).map(s => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => onScopeChange(s)}
+                className={`px-3 py-1 transition-colors ${
+                  scope === s ? "bg-violet-600 text-white" : "bg-white text-ink-500 hover:bg-ivory-100"
+                }`}
+              >
+                {s === "overall" ? "Overall" : "PCM Renewal"}
+              </button>
+            ))}
+          </div>
+        </div>
+        <span className="text-[11px] text-ink-500">
+          across {totalInvited} {scope === "renewal" ? "renewal" : "invited"} student{totalInvited !== 1 ? "s" : ""}
+        </span>
+      </div>
+
+      {/* Stacked bar */}
+      <div
+        className="w-full h-4 rounded-full overflow-hidden flex bg-ivory-100 border border-ivory-300 mb-3"
+        role="img"
+        aria-label={`Paid ${paid}, unpaid ${unpaid}`}
+      >
+        {paid > 0 && (
+          <div
+            className="h-full bg-emerald-500"
+            style={{ width: `${paidPct}%` }}
+            title={`Paid: ${paid} (${paidPct}%)`}
+          />
+        )}
+        {unpaid > 0 && (
+          <div
+            className="h-full bg-rose-400"
+            style={{ width: `${unpaidPct}%` }}
+            title={`Unpaid: ${unpaid} (${unpaidPct}%)`}
+          />
+        )}
+      </div>
+
+      {/* Two cards — payment split, attendance shown as a sub-count on each */}
+      <div className="grid grid-cols-2 gap-3">
+        <BucketCard
+          label="Paid"
+          value={paid}
+          pct={paidPct}
+          accentBg="bg-emerald-50"
+          accentBorder="border-emerald-200"
+          accentText="text-emerald-700"
+          accentDot="bg-emerald-500"
+          sub={`${paidAttended} attended · ${paidNotAttended} not attended`}
+        />
+        <BucketCard
+          label="Unpaid"
+          value={unpaid}
+          pct={unpaidPct}
+          accentBg="bg-rose-50"
+          accentBorder="border-rose-200"
+          accentText="text-rose-700"
+          accentDot="bg-rose-400"
+          sub={`${unpaidAttended} attended · ${unpaidNotAttended} not attended`}
+        />
+      </div>
+    </div>
+  );
+}
+
+function BucketCard({
+  label, value, pct, accentBg, accentBorder, accentText, accentDot, sub,
+}: {
+  label: string; value: number; pct: number;
+  accentBg: string; accentBorder: string; accentText: string; accentDot: string;
+  sub?: string;
+}) {
+  return (
+    <div className={`rounded-xl ${accentBg} ${accentBorder} border p-3`}>
+      <div className="flex items-center gap-1.5 mb-1">
+        <span className={`w-2 h-2 rounded-full ${accentDot}`} aria-hidden="true" />
+        <span
+          className={`fa-mono text-[10px] uppercase ${accentText} font-bold`}
+          style={{ letterSpacing: "0.1em" }}
+        >
+          {label}
+        </span>
+      </div>
+      <div className="text-3xl font-black text-ink-900 leading-none">{value}</div>
+      <div className="text-[11px] text-ink-500 mt-1">{pct}% of invited</div>
+      {sub && <div className="text-[11px] text-ink-500 mt-0.5">└ {sub}</div>}
+    </div>
+  );
+}
+
+/**
+ * Three side-by-side lists naming the students in each outcome bucket.
+ * Sits below the stacked breakdown bar and complements its numbers with
+ * actionable names — academy wants to chase up the unpaid attendees and
+ * re-invite the no-shows.
+ *
+ * The page already computed `filteredInvs` (event range + branch filter
+ * applied), so this component just buckets them and renders.
+ */
+function OutcomeStudentLists({ invitations }: { invitations: import("@pcm/_types").Invitation[] }) {
+  const students = useFAStore(s => s.students);
+  const events = useFAStore(s => s.events);
+  const sessions = useFAStore(s => s.sessions);
+
+  // Small lookups so the row rendering stays cheap regardless of how
+  // many invitations are in the bucket.
+  const studentsById = useMemo(() => {
+    const m = new Map<string, import("@pcm/_types").Student>();
+    for (const s of students) m.set(s.id, s);
+    return m;
+  }, [students]);
+  const eventNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const e of events) m.set(e.id, e.name);
+    return m;
+  }, [events]);
+  const sessionLabel = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of sessions) m.set(s.id, `D${s.dayNumber}·S${s.sessionNumber} ${s.startTime}`);
+    return m;
+  }, [sessions]);
+
+  const paid   = invitations.filter(i => i.paid);
+  const unpaid = invitations.filter(i => !i.paid);
+
+  function rowOf(inv: import("@pcm/_types").Invitation) {
+    const student = studentsById.get(inv.studentId);
+    return {
+      key: inv.id,
+      // Live record name → name resolved server-side (snapshot / archived) → id.
+      name: student?.name ?? inv.studentName ?? `#${inv.studentId}`,
+      branch: inv.branch,
+      grade: inv.targetGrade || student?.grade || "?",
+      eventName: eventNameById.get(inv.eventId) ?? "—",
+      sessionLabel: sessionLabel.get(inv.sessionId) ?? "—",
+      attended: inv.status === "attended",
+    };
+  }
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-6">
+      <OutcomeBucket
+        title="Paid"
+        rows={paid.map(rowOf)}
+        accentBg="bg-emerald-50"
+        accentBorder="border-emerald-200"
+        accentText="text-emerald-700"
+      />
+      <OutcomeBucket
+        title="Unpaid"
+        rows={unpaid.map(rowOf)}
+        accentBg="bg-rose-50"
+        accentBorder="border-rose-200"
+        accentText="text-rose-700"
+      />
+    </div>
+  );
+}
+
+function OutcomeBucket({
+  title, rows, accentBg, accentBorder, accentText,
+}: {
+  title: string;
+  rows: Array<{ key: string; name: string; branch: string; grade: number | string; eventName: string; sessionLabel: string; attended: boolean }>;
+  accentBg: string; accentBorder: string; accentText: string;
+}) {
+  return (
+    <div className={`rounded-xl ${accentBg} ${accentBorder} border overflow-hidden flex flex-col`} style={{ minHeight: 200 }}>
+      <div className="px-4 py-2 border-b border-ivory-300 flex items-center justify-between">
+        <span
+          className={`fa-mono text-[10px] uppercase ${accentText} font-bold`}
+          style={{ letterSpacing: "0.1em" }}
+        >
+          {title}
+        </span>
+        <span className={`fa-mono text-[11px] ${accentText} font-bold`}>{rows.length}</span>
+      </div>
+      <div className="max-h-[280px] overflow-y-auto p-2 space-y-1.5 flex-1">
+        {rows.length === 0 ? (
+          <div className="p-3 text-center text-xs text-ink-400 italic">No students in this bucket.</div>
+        ) : (
+          rows.map(r => (
+            <div
+              key={r.key}
+              className="px-2.5 py-1.5 rounded bg-white border border-ivory-300 text-xs"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold text-ink-900 truncate">{r.name}</span>
+                <span className="fa-mono text-[10px] font-bold text-ink-500 flex-shrink-0">
+                  {r.branch} · G{r.grade}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2 mt-0.5">
+                <span className="text-[10px] text-ink-500 truncate">
+                  {r.eventName} · {r.sessionLabel}
+                </span>
+                <span
+                  className={`fa-mono text-[9px] uppercase font-bold flex-shrink-0 px-1.5 py-0.5 rounded ${
+                    r.attended ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-600"
+                  }`}
+                  style={{ letterSpacing: "0.06em" }}
+                >
+                  {r.attended ? "Attended" : "Not attended"}
+                </span>
+              </div>
+            </div>
+          ))
+        )}
       </div>
     </div>
   );

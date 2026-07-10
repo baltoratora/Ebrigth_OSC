@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { hrfsPrisma } from '@/lib/hrfs';
 import { requireSession, requireRole, assertSameBranch, canSeeAllBranches } from '@/lib/auth';
 import {
   ADMIN_ROLES,
@@ -7,6 +7,14 @@ import {
   isEmployee, isExecutive, isIntern,
 } from '@/lib/roles';
 import { isValidEmployeeId } from '@/lib/employeeId';
+import { COACH_ROLES_WITH_LEGACY } from '@/lib/constants';
+import { syncEmployeeToDataSet } from '@/lib/hrms/employee-dataset-sync';
+
+// Fire-and-forget push of one employee to the Process Street data set. Never
+// blocks or fails the employee request (best-effort; no-ops if PS unconfigured).
+function pushToProcessStreet(branchStaffId: number): void {
+  void syncEmployeeToDataSet(branchStaffId).catch(() => {});
+}
 
 // Map BranchStaff DB row → Employee shape expected by the frontend
 function toEmployee(s: Record<string, unknown>) {
@@ -22,6 +30,7 @@ function toEmployee(s: Record<string, unknown>) {
     dob: (s.dob as string) || '',
     homeAddress: (s.home_address as string) || '',
     branch: (s.branch as string) || '',
+    department: (s.department as string) || '',
     role: (s.role as string) || '',
     contract: (s.contract as string) || '',
     startDate: (s.start_date as string) || '',
@@ -40,7 +49,6 @@ function toEmployee(s: Record<string, unknown>) {
     Bank_Account: (s.bank_account as string) || '',
     University: (s.university as string) || '',
     accessStatus: (s.accessStatus as string) || 'AUTHORIZED',
-    biometricTemplate: (s.biometricTemplate as string) || null,
     registeredAt: s.createdAt ? new Date(s.createdAt as string).toISOString() : '',
     updatedAt: s.updatedAt ? new Date(s.updatedAt as string).toISOString() : '',
     trainingStartDate: (s.trainingStartDate as string) || '',
@@ -51,7 +59,7 @@ function toEmployee(s: Record<string, unknown>) {
 // Strict allowlist mapper for ACADEMY callers. Returns ONLY the 10 keys the
 // Academy role is permitted to see. Sensitive fields (NRIC, DOB, home_address,
 // bank, emergency contact, university, gender, nickname, employeeId,
-// biometricTemplate, accessStatus, probation, endDate, rate, hire_date,
+// accessStatus, probation, endDate, rate, hire_date,
 // signed_date, employment_type, email) MUST NOT leak over the wire.
 function toEmployeeForAcademy(s: Record<string, unknown>) {
   return {
@@ -93,7 +101,7 @@ export async function GET(request: Request) {
   if (isEmployee(callerRole) || isExecutive(callerRole) || isIntern(callerRole)) {
     const email = sessionUser?.email;
     if (!email) return NextResponse.json([]);
-    const self = await prisma.branchStaff.findFirst({
+    const self = await hrfsPrisma.branchStaff.findFirst({
       where: { email: { equals: email, mode: 'insensitive' } },
       orderBy: { id: 'asc' },
     });
@@ -117,10 +125,10 @@ export async function GET(request: Request) {
   // Academy callers are restricted to FT/PT coaches. This intersects with any
   // client-supplied role filter, so passing role=BM yields an empty result.
   if (isAcademy(callerRole)) {
-    where.role = { in: ["FT - Coach", "PT - Coach"] };
+    where.role = { in: [...COACH_ROLES_WITH_LEGACY] };
   }
 
-  const staff = await prisma.branchStaff.findMany({ where, orderBy: { id: 'asc' } });
+  const staff = await hrfsPrisma.branchStaff.findMany({ where, orderBy: { id: 'asc' } });
 
   const mapper = isAcademy(callerRole) ? toEmployeeForAcademy : toEmployee;
   let results = staff.map(mapper);
@@ -144,9 +152,9 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json();
-    const { employeeId, fullName, email, phone, branch, role, gender, nickName, nric, dob,
+    const { employeeId, fullName, email, phone, branch, department, role, gender, nickName, nric, dob,
             homeAddress, contract, startDate, endDate, probation, rate,
-            Emc_Number, Emc_Email, Emc_Relationship, Signed_Date, Emp_Hire_Date,
+            Emc_Number, Emc_Email, Emc_Relationship, Signed_Date,
             Emp_Type, Emp_Status, Bank, Bank_Name, Bank_Account, University } = body;
 
     if (!fullName || !email || !phone || !branch || !role) {
@@ -157,7 +165,7 @@ export async function POST(request: Request) {
       if (!isValidEmployeeId(employeeId)) {
         return NextResponse.json({ error: 'Employee ID must be exactly 8 digits' }, { status: 400 });
       }
-      const existingByEmployeeId = await prisma.branchStaff.findFirst({ where: { employeeId } });
+      const existingByEmployeeId = await hrfsPrisma.branchStaff.findFirst({ where: { employeeId } });
       if (existingByEmployeeId) {
         return NextResponse.json({ error: 'Employee ID already exists' }, { status: 409 });
       }
@@ -170,12 +178,12 @@ export async function POST(request: Request) {
     const normalizedNickName = nickName ? nickName.toUpperCase() : null;
     const normalizedHomeAddress = homeAddress ? homeAddress.toUpperCase() : null;
 
-    const existingByEmail = await prisma.branchStaff.findFirst({ where: { email } });
+    const existingByEmail = await hrfsPrisma.branchStaff.findFirst({ where: { email } });
     if (existingByEmail) {
       return NextResponse.json({ error: 'Email already exists' }, { status: 409 });
     }
 
-    const newStaff = await prisma.branchStaff.create({
+    const newStaff = await hrfsPrisma.branchStaff.create({
       data: {
         name: normalizedFullName,
         gender: gender || 'MALE',
@@ -186,6 +194,7 @@ export async function POST(request: Request) {
         dob: dob || null,
         home_address: normalizedHomeAddress,
         branch,
+        department: department || null,
         role,
         contract: contract || '12 MONTH',
         start_date: startDate || null,
@@ -207,6 +216,7 @@ export async function POST(request: Request) {
       },
     });
 
+    pushToProcessStreet(newStaff.id);
     return NextResponse.json(
       { message: 'Employee registered successfully', data: toEmployee(newStaff as Record<string, unknown>) },
       { status: 201 }
@@ -235,11 +245,11 @@ export async function PUT(request: Request) {
 
   try {
     const body = await request.json();
-    const { id, fullName, email, phone, branch, role, gender, nickName, nric, dob,
+    const { id, fullName, email, phone, branch, department, role, gender, nickName, nric, dob,
             homeAddress, contract, startDate, endDate, probation, rate, accessStatus,
-            Emc_Number, Emc_Email, Emc_Relationship, Signed_Date, Emp_Hire_Date,
+            Emc_Number, Emc_Email, Emc_Relationship, Signed_Date,
             Emp_Type, Emp_Status, Bank, Bank_Name, Bank_Account, University,
-            employeeId, biometricTemplate,
+            employeeId,
             trainingStartDate, trainingEndDate } = body;
 
     if (!id) {
@@ -255,13 +265,13 @@ export async function PUT(request: Request) {
           { status: 403 },
         );
       }
-      const target = await prisma.branchStaff.findUnique({
+      const target = await hrfsPrisma.branchStaff.findUnique({
         where: { id: parseInt(id) },
         select: { role: true },
       });
-      if (!target || !['FT - Coach', 'PT - Coach'].includes(target.role || '')) {
+      if (!target || !(COACH_ROLES_WITH_LEGACY as readonly string[]).includes(target.role || '')) {
         return NextResponse.json(
-          { error: 'Academy can only edit FT-Coach or PT-Coach' },
+          { error: 'Academy can only edit FT Coach or PT Coach' },
           { status: 403 },
         );
       }
@@ -290,7 +300,7 @@ export async function PUT(request: Request) {
         const branchGuard = assertSameBranch(session, branch);
         if (branchGuard) return branchGuard;
       }
-      const existing = await prisma.branchStaff.findUnique({
+      const existing = await hrfsPrisma.branchStaff.findUnique({
         where: { id: parseInt(id) },
         select: { branch: true },
       });
@@ -305,7 +315,7 @@ export async function PUT(request: Request) {
       if (!isValidEmployeeId(employeeId)) {
         return NextResponse.json({ error: 'Employee ID must be exactly 8 digits' }, { status: 400 });
       }
-      const existingByEmployeeId = await prisma.branchStaff.findFirst({
+      const existingByEmployeeId = await hrfsPrisma.branchStaff.findFirst({
         where: { employeeId, NOT: { id: parseInt(id) } },
       });
       if (existingByEmployeeId) {
@@ -313,7 +323,7 @@ export async function PUT(request: Request) {
       }
     }
 
-    const updated = await prisma.branchStaff.update({
+    const updated = await hrfsPrisma.branchStaff.update({
       where: { id: parseInt(id) },
       data: {
         ...(fullName !== undefined && { name: fullName.toUpperCase() }),
@@ -325,6 +335,7 @@ export async function PUT(request: Request) {
         ...(dob !== undefined && { dob }),
         ...(homeAddress !== undefined && { home_address: homeAddress.toUpperCase() }),
         ...(branch !== undefined && { branch }),
+        ...(department !== undefined && { department: department || null }),
         ...(role !== undefined && { role }),
         ...(contract !== undefined && { contract }),
         ...(startDate !== undefined && { start_date: startDate }),
@@ -332,7 +343,6 @@ export async function PUT(request: Request) {
         ...(probation !== undefined && { probation }),
         ...(rate !== undefined && { rate }),
         ...(accessStatus !== undefined && { accessStatus }),
-        ...(biometricTemplate !== undefined && { biometricTemplate }),
         ...(Emc_Number !== undefined && { emergency_phone: Emc_Number }),
         ...(Emc_Email !== undefined && { emergency_name: Emc_Email }),
         ...(Emc_Relationship !== undefined && { emergency_relation: Emc_Relationship }),
@@ -349,6 +359,7 @@ export async function PUT(request: Request) {
       },
     });
 
+    pushToProcessStreet(updated.id);
     return NextResponse.json({
       message: 'Employee updated successfully',
       data: toEmployee(updated as Record<string, unknown>),
@@ -371,7 +382,7 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: 'Employee ID is required' }, { status: 400 });
     }
 
-    const existing = await prisma.branchStaff.findUnique({
+    const existing = await hrfsPrisma.branchStaff.findUnique({
       where: { id: parseInt(id) },
       select: { branch: true },
     });
@@ -381,8 +392,10 @@ export async function DELETE(request: Request) {
     const idGuard = assertSameBranch(session, existing.branch);
     if (idGuard) return idGuard;
 
-    const deleted = await prisma.branchStaff.delete({ where: { id: parseInt(id) } });
+    const deleted = await hrfsPrisma.branchStaff.delete({ where: { id: parseInt(id) } });
 
+    // Employee is gone from the DB → this removes their Process Street row.
+    pushToProcessStreet(parseInt(id));
     return NextResponse.json({
       message: 'Employee deleted successfully',
       data: toEmployee(deleted as Record<string, unknown>),

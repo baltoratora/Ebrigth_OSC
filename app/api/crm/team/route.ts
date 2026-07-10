@@ -2,19 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { headers } from 'next/headers'
 import { auth } from '@/lib/crm/auth'
 import { prisma } from '@/lib/crm/db'
+import { resolveCrmAdminSession } from '@/lib/crm/admin-session'
 
-async function resolveSession() {
-  const session = await auth.api.getSession({ headers: await headers() })
-  if (!session?.user?.id) return null
-
-  const userBranch = await prisma.crm_user_branch.findFirst({
-    where: { userId: session.user.id },
-    select: { tenantId: true, role: true },
-  })
-  if (!userBranch) return null
-
-  return { tenantId: userBranch.tenantId, userId: session.user.id, role: userBranch.role }
-}
+// Read-only viewer (CEO) gets a synthetic elevated reader so the Team page
+// renders. This route is GET-only; team writes live in team/{invite,role,
+// deactivate} which keep their own (link-gated) checks + the middleware backstop.
+const resolveSession = resolveCrmAdminSession
 
 // ─── GET /api/crm/team ────────────────────────────────────────────────────────
 
