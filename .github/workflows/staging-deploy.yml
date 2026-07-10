@@ -17,7 +17,7 @@ jobs:
         with:
           host: 103.209.156.225
           username: deploy
-          key: ${{ secrets.STAGING_SSH_KEY }}
+          key: ${{ secrets.STAGING_SSH_KEY_LOGHAN }}
           # 45m wasn't enough when deploy.sh runs the aggressive Docker
           # cleanup — npm ci has to redownload all deps from scratch.
           command_timeout: 90m
